@@ -1,0 +1,20 @@
+[package]
+name = "hew"
+version = "0.1.0"
+edition = "2021"
+description = "High-performance review-first terminal diff viewer with PR-style comments"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+ratatui = "0.29"
+crossterm = "0.28"
+similar = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "serde"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
