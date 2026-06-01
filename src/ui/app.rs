@@ -346,7 +346,7 @@ impl App {
         f.render_widget(Paragraph::new(lines), area);
     }
 
-    fn row_to_line(&self, row: &Row, selected: bool, in_range: bool) -> Line {
+    fn row_to_line(&self, row: &Row, selected: bool, in_range: bool) -> Line<'static> {
         let marker = self.thread_marker(row);
         let (content, base) = match &row.kind {
             RowKind::FileHeader => (

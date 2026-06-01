@@ -42,6 +42,7 @@ pub struct Hunk {
 
 impl Hunk {
     /// Inclusive line span on the given side, covering context + changes.
+    #[allow(dead_code)] // used by anchoring / session navigation (milestone 3+)
     pub fn line_range(&self, side: Side) -> (u32, u32) {
         match side {
             Side::Old => (self.old_start, self.old_start + self.old_count.max(1) - 1),

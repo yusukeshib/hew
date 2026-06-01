@@ -12,6 +12,7 @@ pub struct LineRange {
     pub end: u32,
 }
 
+#[allow(dead_code)] // single() used in tests + session server
 impl LineRange {
     pub fn single(line: u32) -> Self {
         LineRange { start: line, end: line }
@@ -53,6 +54,7 @@ pub struct Thread {
     pub comments: Vec<Comment>,
 }
 
+#[allow(dead_code)] // accessors used by the session server (milestone 3)
 impl Thread {
     pub fn root(&self) -> Option<&Comment> {
         self.comments.first()
@@ -69,6 +71,8 @@ pub struct CommentStore {
     pub threads: Vec<Thread>,
 }
 
+// Several methods are exercised only by the session server (milestone 3).
+#[allow(dead_code)]
 impl CommentStore {
     pub fn new() -> Self {
         Self::default()
