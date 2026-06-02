@@ -238,6 +238,7 @@ pub struct App {
     show_sidebar: bool,
     sidebar_width: u16,
     sidebar_scroll: usize, // top file row of the sidebar (independent of selection)
+    sidebar_sel: usize,    // cursor row in the sidebar (a File or Thread row)
     resizing: bool,        // dragging the sidebar/diff divider
     focus: Focus,
     current_file: usize,          // the diff pane shows only this file
@@ -281,6 +282,7 @@ impl App {
             show_sidebar: true,
             sidebar_width: SIDEBAR_WIDTH,
             sidebar_scroll: 0,
+            sidebar_sel: file_to_sbrow.first().copied().unwrap_or(0),
             resizing: false,
             focus: Focus::Diff,
             current_file: 0,
@@ -546,23 +548,76 @@ impl App {
             (self.sidebar_scroll as isize + delta).clamp(0, max as isize) as usize;
     }
 
-    /// Scroll the list so the current file's row is visible (on selection change).
-    fn reveal_current_file(&mut self) {
+    /// Scroll the list so the sidebar cursor row is visible.
+    fn reveal_sidebar(&mut self) {
         let h = self.sidebar_area.height as usize;
         if h == 0 {
             return;
         }
-        let r = self
-            .file_to_sbrow
-            .get(self.current_file)
-            .copied()
-            .unwrap_or(0);
-        // Include the directory header just above, when present.
+        let r = self.sidebar_sel.min(self.sidebar_rows.len().saturating_sub(1));
+        // Include the row just above (dir header / parent file) when present.
         let target = r.saturating_sub(1);
         if target < self.sidebar_scroll {
             self.sidebar_scroll = target;
         } else if r >= self.sidebar_scroll + h {
             self.sidebar_scroll = r + 1 - h;
+        }
+    }
+
+    /// Is the sidebar row at `idx` a landing spot for the cursor (file/thread)?
+    fn sb_selectable(&self, idx: usize) -> bool {
+        matches!(
+            self.sidebar_rows.get(idx),
+            Some(SbRow::File(_) | SbRow::Thread(_))
+        )
+    }
+
+    /// Move the sidebar cursor to the next/prev selectable row and act on it.
+    fn move_sidebar(&mut self, dir: isize) {
+        let n = self.sidebar_rows.len();
+        let mut i = self.sidebar_sel as isize;
+        loop {
+            i += dir;
+            if i < 0 || i as usize >= n {
+                return;
+            }
+            if self.sb_selectable(i as usize) {
+                self.sidebar_sel = i as usize;
+                self.activate_sidebar();
+                return;
+            }
+        }
+    }
+
+    /// Jump the sidebar cursor to the first/last selectable row.
+    fn sidebar_edge(&mut self, last: bool) {
+        let n = self.sidebar_rows.len();
+        let found = if last {
+            (0..n).rev().find(|&i| self.sb_selectable(i))
+        } else {
+            (0..n).find(|&i| self.sb_selectable(i))
+        };
+        if let Some(i) = found {
+            self.sidebar_sel = i;
+            self.activate_sidebar();
+        }
+    }
+
+    /// Apply the row under the sidebar cursor: switch file or jump to thread.
+    fn activate_sidebar(&mut self) {
+        match self.sidebar_rows.get(self.sidebar_sel) {
+            Some(SbRow::File(fi)) => {
+                let fi = *fi;
+                if fi != self.current_file {
+                    self.set_current_file(fi);
+                }
+                self.reveal_sidebar();
+            }
+            Some(SbRow::Thread(ti)) => {
+                let ti = *ti;
+                self.goto_thread(ti, false);
+            }
+            _ => {}
         }
     }
 
@@ -577,14 +632,16 @@ impl App {
             }
             Some(SbRow::Thread(ti)) => {
                 let ti = *ti;
-                self.goto_thread(ti);
+                self.sidebar_sel = idx;
+                self.goto_thread(ti, true);
             }
             _ => {}
         }
     }
 
     /// Jump the diff pane straight to comment thread `ti` and select its line.
-    fn goto_thread(&mut self, ti: usize) {
+    /// `focus_diff` moves keyboard focus to the diff (used for mouse clicks).
+    fn goto_thread(&mut self, ti: usize, focus_diff: bool) {
         let Some(t) = self.comments.threads.get(ti) else {
             return;
         };
@@ -607,7 +664,18 @@ impl App {
             self.scroll = i.saturating_sub(self.height / 2);
             self.ensure_visible();
         }
-        self.focus = Focus::Diff;
+        // Point the sidebar cursor at this thread's row and keep it on screen.
+        if let Some(r) = self
+            .sidebar_rows
+            .iter()
+            .position(|row| matches!(row, SbRow::Thread(t) if *t == ti))
+        {
+            self.sidebar_sel = r;
+            self.reveal_sidebar();
+        }
+        if focus_diff {
+            self.focus = Focus::Diff;
+        }
     }
 
     /// Place the cursor at the clicked diff row. `anchor` starts a new
@@ -754,7 +822,12 @@ impl App {
     fn set_current_file(&mut self, file: usize) {
         self.sel_anchor = None;
         self.current_file = file.min(self.changeset.files.len().saturating_sub(1));
-        self.reveal_current_file();
+        self.sidebar_sel = self
+            .file_to_sbrow
+            .get(self.current_file)
+            .copied()
+            .unwrap_or(0);
+        self.reveal_sidebar();
         let (start, _) = self.file_range();
         self.scroll = start;
         self.selected = self.first_selectable().unwrap_or(start);
@@ -859,14 +932,15 @@ impl App {
         }
     }
 
-    /// Navigation when the file sidebar is focused: move by file.
+    /// Navigation when the file sidebar is focused: move by row (files and the
+    /// comment threads nested under them).
     fn on_key_sidebar(&mut self, code: KeyCode) {
         match code {
-            KeyCode::Char('j') | KeyCode::Down => self.jump_file(1),
-            KeyCode::Char('k') | KeyCode::Up => self.jump_file(-1),
-            KeyCode::Char('g') | KeyCode::Home => self.jump_file(isize::MIN / 2),
-            KeyCode::Char('G') | KeyCode::End => self.jump_file(isize::MAX / 2),
-            // Enter the diff with the current file selected.
+            KeyCode::Char('j') | KeyCode::Down => self.move_sidebar(1),
+            KeyCode::Char('k') | KeyCode::Up => self.move_sidebar(-1),
+            KeyCode::Char('g') | KeyCode::Home => self.sidebar_edge(false),
+            KeyCode::Char('G') | KeyCode::End => self.sidebar_edge(true),
+            // Enter the diff with the current row selected.
             KeyCode::Enter | KeyCode::Char('l') => self.focus = Focus::Diff,
             _ => {}
         }
@@ -1182,8 +1256,11 @@ impl App {
                         .map(|f| base_of(f.display_path()))
                         .unwrap_or_default();
                     let name = format!("{:<width$}", elide_left(base, avail), width = avail);
-                    let bg = if is_cur {
-                        Some(if focused { FOCUS_BG } else { UNFOCUS_BG })
+                    let is_cursor = focused && idx == self.sidebar_sel;
+                    let bg = if is_cursor {
+                        Some(FOCUS_BG)
+                    } else if is_cur {
+                        Some(UNFOCUS_BG)
                     } else {
                         None
                     };
@@ -1235,7 +1312,14 @@ impl App {
                                 && t.range.contains(l)
                         })
                         .unwrap_or(false);
-                    let bg = active.then_some(if focused { FOCUS_BG } else { UNFOCUS_BG });
+                    let is_cursor = focused && idx == self.sidebar_sel;
+                    let bg = if is_cursor {
+                        Some(FOCUS_BG)
+                    } else if active {
+                        Some(UNFOCUS_BG)
+                    } else {
+                        None
+                    };
                     let wbg = |st: Style| match bg {
                         Some(b) => st.bg(b),
                         None => st,
