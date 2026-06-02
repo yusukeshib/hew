@@ -1,8 +1,19 @@
 [package]
-name = "hew"
+name = "hewdiff"
 version = "0.1.0"
 edition = "2021"
 description = "High-performance review-first terminal diff viewer with PR-style comments"
+license = "MIT"
+repository = "https://github.com/yusukeshib/hew"
+readme = "README.md"
+keywords = ["diff", "patch", "review", "tui", "terminal"]
+categories = ["command-line-utilities", "development-tools"]
+exclude = ["examples/", ".github/"]
+
+# Crate is `hewdiff` (the `hew` name is taken on crates.io); the binary stays `hew`.
+[[bin]]
+name = "hew"
+path = "src/main.rs"
 
 [dependencies]
 anyhow = "1"
