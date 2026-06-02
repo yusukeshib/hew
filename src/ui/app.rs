@@ -11,7 +11,9 @@ use crossterm::event::{
     self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
 };
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use ratatui::widgets::{
+    Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -61,6 +63,8 @@ enum Focus {
 }
 
 const SIDEBAR_WIDTH: u16 = 30;
+const MIN_SIDEBAR: u16 = 14;
+const MIN_DIFF: u16 = 20;
 /// Selection background when the pane is focused / unfocused.
 const FOCUS_BG: Color = SEL_BG;
 const UNFOCUS_BG: Color = Color::Rgb(40, 42, 48);
@@ -146,6 +150,9 @@ pub struct App {
     watch: Option<Watch>,
     needs_clear: bool,
     show_sidebar: bool,
+    sidebar_width: u16,
+    sidebar_scroll: usize, // top file row of the sidebar (independent of selection)
+    resizing: bool,        // dragging the sidebar/diff divider
     focus: Focus,
     current_file: usize,          // the diff pane shows only this file
     sel_anchor: Option<usize>,    // drag-selection anchor (cursor = `selected`)
@@ -180,6 +187,9 @@ impl App {
             watch: None,
             needs_clear: false,
             show_sidebar: true,
+            sidebar_width: SIDEBAR_WIDTH,
+            sidebar_scroll: 0,
+            resizing: false,
             focus: Focus::Diff,
             current_file: 0,
             sel_anchor: None,
@@ -300,15 +310,33 @@ impl App {
         Ok(())
     }
 
-    /// Mouse: wheel scrolls the pane under the pointer; left-click selects.
+    /// Column of the draggable sidebar/diff divider, if the sidebar is shown.
+    fn divider_col(&self) -> Option<u16> {
+        (self.sidebar_area.width > 0).then(|| self.sidebar_area.x + self.sidebar_area.width - 1)
+    }
+
+    /// Resize the sidebar so its divider sits at column `col`.
+    fn resize_to(&mut self, col: u16) {
+        let total = self.sidebar_area.width + self.diff_area.width;
+        let max = total.saturating_sub(MIN_DIFF).max(MIN_SIDEBAR);
+        self.sidebar_width = (col.saturating_sub(self.sidebar_area.x) + 1).clamp(MIN_SIDEBAR, max);
+    }
+
+    /// Mouse: wheel scrolls the pane under the pointer; left-click selects;
+    /// dragging the divider resizes the sidebar.
     fn on_mouse(&mut self, me: MouseEvent) {
         let (col, row) = (me.column, me.row);
+        let on_divider = self.divider_col() == Some(col);
         let over_sidebar = self.sidebar_area.width > 0 && hit(self.sidebar_area, col, row);
         match me.kind {
+            MouseEventKind::Up(_) => self.resizing = false,
+            MouseEventKind::Drag(MouseButton::Left) if self.resizing => self.resize_to(col),
+            MouseEventKind::Down(MouseButton::Left) if on_divider => self.resizing = true,
+            // Wheel scrolls the pane under the pointer. Over the sidebar it
+            // moves the list only — selection/focus are left untouched.
             MouseEventKind::ScrollDown => {
                 if over_sidebar {
-                    self.focus = Focus::Sidebar;
-                    self.jump_file(1);
+                    self.scroll_sidebar(3);
                 } else {
                     self.focus = Focus::Diff;
                     self.scroll_view(3);
@@ -316,8 +344,7 @@ impl App {
             }
             MouseEventKind::ScrollUp => {
                 if over_sidebar {
-                    self.focus = Focus::Sidebar;
-                    self.jump_file(-1);
+                    self.scroll_sidebar(-3);
                 } else {
                     self.focus = Focus::Diff;
                     self.scroll_view(-3);
@@ -376,12 +403,31 @@ impl App {
         self.pending_copy = Some(lines.join("\n"));
     }
 
-    fn click_sidebar(&mut self, row: u16) {
+    /// Scroll the file list independently of the selection.
+    fn scroll_sidebar(&mut self, delta: isize) {
         let h = self.sidebar_area.height as usize;
-        let cur = self.current_file;
-        let scroll = if cur >= h { cur + 1 - h } else { 0 };
+        let n = self.changeset.files.len();
+        let max = n.saturating_sub(h);
+        self.sidebar_scroll =
+            (self.sidebar_scroll as isize + delta).clamp(0, max as isize) as usize;
+    }
+
+    /// Scroll the list so the current file is visible (on selection change).
+    fn reveal_current_file(&mut self) {
+        let h = self.sidebar_area.height as usize;
+        if h == 0 {
+            return;
+        }
+        if self.current_file < self.sidebar_scroll {
+            self.sidebar_scroll = self.current_file;
+        } else if self.current_file >= self.sidebar_scroll + h {
+            self.sidebar_scroll = self.current_file + 1 - h;
+        }
+    }
+
+    fn click_sidebar(&mut self, row: u16) {
         let off = row.saturating_sub(self.sidebar_area.y) as usize;
-        let idx = scroll + off;
+        let idx = self.sidebar_scroll + off;
         if idx < self.changeset.files.len() {
             self.focus = Focus::Sidebar;
             self.set_current_file(idx);
@@ -528,6 +574,7 @@ impl App {
     fn set_current_file(&mut self, file: usize) {
         self.sel_anchor = None;
         self.current_file = file.min(self.changeset.files.len().saturating_sub(1));
+        self.reveal_current_file();
         let (start, _) = self.file_range();
         self.scroll = start;
         self.selected = self.first_selectable().unwrap_or(start);
@@ -842,17 +889,31 @@ impl App {
         let (diff_area, sidebar_area) = if sidebar {
             let cols = Layout::default()
                 .direction(Direction::Horizontal)
-                .constraints([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(1)])
+                .constraints([Constraint::Length(self.sidebar_width), Constraint::Min(1)])
                 .split(body);
             self.render_sidebar(f, cols[0]);
             (cols[1], cols[0])
         } else {
             (body, Rect::default())
         };
-        self.diff_area = diff_area;
         self.sidebar_area = sidebar_area;
         self.height = diff_area.height as usize;
-        self.render_diff(f, diff_area);
+        // Reserve the rightmost column for a scrollbar when the file overflows.
+        let (fr_start, fr_end) = self.file_range();
+        let overflow = fr_end - fr_start > self.height;
+        let content = if overflow {
+            Rect {
+                width: diff_area.width.saturating_sub(1),
+                ..diff_area
+            }
+        } else {
+            diff_area
+        };
+        self.diff_area = content;
+        self.render_diff(f, content);
+        if overflow {
+            self.render_diff_scrollbar(f, diff_area);
+        }
 
         // Status line.
         f.render_widget(
@@ -884,13 +945,13 @@ impl App {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        let w = inner.width as usize;
         let h = inner.height as usize;
         let n = self.changeset.files.len();
         let cur = Some(self.current_file);
-        // Scroll the list so the current file stays visible.
-        let cur_i = self.current_file;
-        let scroll = if cur_i >= h { cur_i + 1 - h } else { 0 };
+        // Reserve a column for the scrollbar when the list overflows.
+        let need_sb = n > h;
+        let w = (inner.width as usize).saturating_sub(if need_sb { 1 } else { 0 });
+        let scroll = self.sidebar_scroll.min(n.saturating_sub(h));
 
         let mut lines: Vec<Line> = Vec::new();
         for idx in scroll..n.min(scroll + h) {
@@ -930,6 +991,34 @@ impl App {
             ]));
         }
         f.render_widget(Paragraph::new(lines), inner);
+        if need_sb {
+            let mut sb = ScrollbarState::new(n).position(scroll);
+            f.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(None)
+                    .end_symbol(None),
+                inner,
+                &mut sb,
+            );
+        }
+    }
+
+    /// A vertical scrollbar on the right edge of `area` for the diff pane.
+    fn render_diff_scrollbar(&self, f: &mut Frame, area: Rect) {
+        let (start, end) = self.file_range();
+        let total = end - start;
+        if total <= self.height {
+            return;
+        }
+        let pos = self.scroll.saturating_sub(start);
+        let mut sb = ScrollbarState::new(total).position(pos);
+        f.render_stateful_widget(
+            Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                .begin_symbol(None)
+                .end_symbol(None),
+            area,
+            &mut sb,
+        );
     }
 
     fn render_unified(&self, f: &mut Frame, area: Rect) {

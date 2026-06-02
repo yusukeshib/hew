@@ -79,7 +79,9 @@ refreshes. Watching only applies to file inputs — a stdin patch can't be re-re
 
 **Mouse**: click a file in the sidebar to open it, click a diff line to place the
 cursor, **drag to select a range** of lines, and use the **wheel** to scroll the
-pane under the pointer (sidebar = change file, diff = scroll). `y` copies the
+pane under the pointer. Scrolling the file list just moves the list — it leaves
+the selected file unchanged. **Drag the sidebar/diff divider** to resize the
+sidebar. Both panes show a **scrollbar** when content overflows. `y` copies the
 selection to the clipboard via OSC 52 (works in terminals that support it).
 
 Multi-file diffs show a **file list sidebar** (paths + `+adds`/`-dels`, current
