@@ -25,11 +25,6 @@ pub struct App {
 }
 
 impl App {
-    #[allow(dead_code)] // convenience constructor; ui::run uses with_comments
-    pub fn new(title: String, changeset: Changeset) -> Self {
-        Self::with_comments(title, changeset, CommentStore::new())
-    }
-
     /// Construct with a pre-loaded comment store (e.g. from a sidecar JSON).
     pub fn with_comments(title: String, changeset: Changeset, comments: CommentStore) -> Self {
         let rows = build_rows(&changeset);
