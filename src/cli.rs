@@ -17,4 +17,9 @@ pub struct Cli {
     /// Print the parsed changeset as JSON and exit (no TUI).
     #[arg(long)]
     pub json: bool,
+
+    /// Reload the patch file and/or comments sidecar when they change on disk.
+    /// (Has no effect when the patch is read from stdin.)
+    #[arg(long)]
+    pub watch: bool,
 }

@@ -39,6 +39,16 @@ Load review comments from a sidecar JSON file:
 hew change.patch --comments review.json
 ```
 
+Reload automatically when the patch or comments file changes on disk:
+
+```sh
+hew change.patch --comments review.json --watch
+```
+
+Since hew is read-only, `--watch` *is* the editing workflow: edit
+`review.json` (or regenerate the patch) in another window and the view
+refreshes. Watching only applies to file inputs — a stdin patch can't be re-read.
+
 ### Options
 
 | Flag | Meaning |
@@ -46,6 +56,7 @@ hew change.patch --comments review.json
 | `FILE` (positional) | Patch file to review. Omit or use `-` for stdin. |
 | `--comments <FILE>` | Sidecar JSON of review comments to load. |
 | `--json` | Print the parsed changeset as JSON and exit (no TUI). |
+| `--watch` | Reload the patch/comments files when they change on disk. |
 
 ## Keys
 
@@ -106,8 +117,8 @@ integration, no patch apply/edit/merge, no structural (AST) diff. Today it is a
 single-pane unified viewer with threaded comments.
 
 Planned: split/stack layouts and a file sidebar, syntax highlighting (syntect →
-tree-sitter), `--watch` reload, and a loopback session server so an agent/CLI can
-drive a running TUI.
+tree-sitter), and a loopback session server so an agent/CLI can drive a running
+TUI.
 
 Note: `hew` parses **plain unified diffs**, not git `format-patch` mailbox output
 (`gh pr diff --patch`). Use a `.diff`/`git diff` stream instead.

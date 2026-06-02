@@ -7,8 +7,27 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
-use std::path::PathBuf;
-use std::time::Duration;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
+
+/// File inputs to reload from when `--watch` is set. `patch` is `None` when the
+/// diff came from stdin (a stream can't be re-read).
+pub struct WatchPaths {
+    pub patch: Option<PathBuf>,
+    pub comments: Option<PathBuf>,
+}
+
+/// Tracks watched files and their last-seen modification times.
+struct Watch {
+    patch: Option<PathBuf>,
+    comments: Option<PathBuf>,
+    patch_mtime: Option<SystemTime>,
+    comments_mtime: Option<SystemTime>,
+}
+
+fn file_mtime(p: &Path) -> Option<SystemTime> {
+    std::fs::metadata(p).and_then(|m| m.modified()).ok()
+}
 
 /// Read-only diff/comment viewer state. Comments are loaded from a sidecar and
 /// only displayed/navigated — hew never mutates them.
@@ -21,6 +40,7 @@ pub struct App {
     scroll: usize,   // top row of viewport
     height: usize,   // last known viewport height
     status: String,
+    watch: Option<Watch>,
     quit: bool,
 }
 
@@ -39,10 +59,22 @@ impl App {
             status:
                 "q quit  j/k move  ^d/^u half  spc/b page  ^e/^y scroll  g/G top/bot  n/N comment"
                     .into(),
+            watch: None,
             quit: false,
         };
         app.selected = app.first_selectable().unwrap_or(0);
         app
+    }
+
+    /// Enable `--watch`: reload the patch and/or comments file when they change.
+    pub fn watching(mut self, paths: WatchPaths) -> Self {
+        self.watch = Some(Watch {
+            patch_mtime: paths.patch.as_deref().and_then(file_mtime),
+            comments_mtime: paths.comments.as_deref().and_then(file_mtime),
+            patch: paths.patch,
+            comments: paths.comments,
+        });
+        self
     }
 
     fn first_selectable(&self) -> Option<usize> {
@@ -59,8 +91,79 @@ impl App {
                     }
                 }
             }
+            self.poll_reload();
         }
         Ok(())
+    }
+
+    /// On `--watch`: if any watched file's mtime changed, reload it.
+    fn poll_reload(&mut self) {
+        let changed = match self.watch.as_mut() {
+            None => false,
+            Some(w) => {
+                let mut changed = false;
+                if let Some(p) = &w.patch {
+                    let m = file_mtime(p);
+                    if m != w.patch_mtime {
+                        w.patch_mtime = m;
+                        changed = true;
+                    }
+                }
+                if let Some(p) = &w.comments {
+                    let m = file_mtime(p);
+                    if m != w.comments_mtime {
+                        w.comments_mtime = m;
+                        changed = true;
+                    }
+                }
+                changed
+            }
+        };
+        if changed {
+            self.reload();
+        }
+    }
+
+    /// Re-read the watched patch/comments and rebuild, keeping the cursor sane.
+    fn reload(&mut self) {
+        let (patch, comments) = match &self.watch {
+            Some(w) => (w.patch.clone(), w.comments.clone()),
+            None => return,
+        };
+        if let Some(p) = patch {
+            match crate::loader::load_patch(Some(&p)) {
+                Ok(cs) => {
+                    self.changeset = cs;
+                    self.rows = build_rows(&self.changeset);
+                }
+                Err(e) => {
+                    self.status = format!("reload failed: {e}");
+                    return;
+                }
+            }
+        }
+        if let Some(p) = comments {
+            match crate::loader::load_comments(&p) {
+                Ok(store) => self.comments = store,
+                Err(e) => self.status = format!("comments reload failed: {e}"),
+            }
+        }
+        // Keep the selection on a valid, selectable row after the rebuild.
+        let max = self.rows.len().saturating_sub(1);
+        if self.selected > max
+            || !self
+                .rows
+                .get(self.selected)
+                .map(|r| r.is_selectable())
+                .unwrap_or(false)
+        {
+            self.selected = self
+                .nearest_selectable(self.selected.min(max), 1)
+                .or_else(|| self.first_selectable())
+                .unwrap_or(0);
+        }
+        self.ensure_visible();
+        self.status = "reloaded".into();
     }
 
     fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) {

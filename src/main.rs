@@ -28,5 +28,22 @@ fn main() -> Result<()> {
         None => comments::CommentStore::default(),
     };
 
-    ui::run(title, changeset, comments)
+    // --watch reloads file inputs; a stdin patch can't be re-read, so only
+    // watch when there is at least one real file to poll.
+    let watch = if args.watch {
+        let patch = args.file.as_ref().filter(|p| p.as_os_str() != "-").cloned();
+        let comments_path = args.comments.clone();
+        if patch.is_some() || comments_path.is_some() {
+            Some(ui::WatchPaths {
+                patch,
+                comments: comments_path,
+            })
+        } else {
+            None
+        }
+    } else {
+        None
+    };
+
+    ui::run(title, changeset, comments, watch)
 }
