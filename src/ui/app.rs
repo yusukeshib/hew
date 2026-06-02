@@ -2,6 +2,7 @@
 
 use crate::comments::model::CommentStore;
 use crate::diff::model::{Changeset, LineKind, Side};
+use crate::ui::highlight::Highlighter;
 use crate::ui::render_rows::{
     build_rows, build_split_rows, Row, RowKind, SideCell, SplitRow, SplitRowKind,
 };
@@ -9,8 +10,20 @@ use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
+use std::cell::RefCell;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::{Duration, SystemTime};
+
+const ADD_BG: Color = Color::Rgb(20, 42, 24);
+const DEL_BG: Color = Color::Rgb(48, 24, 26);
+const SEL_BG: Color = Color::Rgb(60, 66, 80);
+
+/// Highlighted runs for one line: `(fg color, text)`.
+type LineRuns = Rc<Vec<(Color, String)>>;
+/// Cache key: which file + the exact line text.
+type HlKey = (usize, String);
 
 /// File inputs to reload from when `--watch` is set. `patch` is `None` when the
 /// diff came from stdin (a stream can't be re-read).
@@ -29,16 +42,6 @@ struct Watch {
 
 fn file_mtime(p: &Path) -> Option<SystemTime> {
     std::fs::metadata(p).and_then(|m| m.modified()).ok()
-}
-
-/// Truncate or right-pad `s` to exactly `w` characters.
-fn fit(s: &str, w: usize) -> String {
-    let mut out: String = s.chars().take(w).collect();
-    let len = out.chars().count();
-    if len < w {
-        out.push_str(&" ".repeat(w - len));
-    }
-    out
 }
 
 /// Diff layout: unified (stacked) or split (old | new, like `git delta`).
@@ -62,6 +65,9 @@ pub struct App {
     height: usize,   // last known viewport height
     status: String,
     watch: Option<Watch>,
+    highlighter: Highlighter,
+    /// (file_idx, line text) -> highlighted runs. Viewport-only, grows lazily.
+    hl_cache: RefCell<HashMap<HlKey, LineRuns>>,
     quit: bool,
 }
 
@@ -83,10 +89,67 @@ impl App {
             status: "q quit  j/k move  ^d/^u half  spc/b page  g/G top/bot  n/N comment  tab split"
                 .into(),
             watch: None,
+            highlighter: Highlighter::new(),
+            hl_cache: RefCell::new(HashMap::new()),
             quit: false,
         };
         app.selected = app.first_selectable().unwrap_or(0);
         app
+    }
+
+    /// Highlighted `(color, text)` runs for a line, cached per (file, text).
+    fn highlight(&self, file_idx: usize, text: &str) -> LineRuns {
+        let key = (file_idx, text.to_string());
+        if let Some(v) = self.hl_cache.borrow().get(&key) {
+            return v.clone();
+        }
+        let spans = match self.changeset.files.get(file_idx) {
+            Some(f) => {
+                let syntax = self.highlighter.syntax_for(f.display_path());
+                self.highlighter.line(syntax, text)
+            }
+            None => vec![(Color::Gray, text.to_string())],
+        };
+        let rc = Rc::new(spans);
+        self.hl_cache.borrow_mut().insert(key, rc.clone());
+        rc
+    }
+
+    /// Highlighted spans for `text`, truncated/padded to exactly `width` chars,
+    /// with an optional background applied to every run (and the padding).
+    fn styled_fit(
+        &self,
+        file_idx: usize,
+        text: &str,
+        width: usize,
+        bg: Option<Color>,
+    ) -> Vec<Span<'static>> {
+        let hl = self.highlight(file_idx, text);
+        let mut out = Vec::new();
+        let mut used = 0usize;
+        for (c, s) in hl.iter() {
+            if used >= width {
+                break;
+            }
+            let take: String = s.chars().take(width - used).collect();
+            if take.is_empty() {
+                continue;
+            }
+            used += take.chars().count();
+            let mut st = Style::default().fg(*c);
+            if let Some(b) = bg {
+                st = st.bg(b);
+            }
+            out.push(Span::styled(take, st));
+        }
+        if used < width {
+            let mut st = Style::default();
+            if let Some(b) = bg {
+                st = st.bg(b);
+            }
+            out.push(Span::styled(" ".repeat(width - used), st));
+        }
+        out
     }
 
     /// Enable `--watch`: reload the patch and/or comments file when they change.
@@ -165,6 +228,7 @@ impl App {
                     self.changeset = cs;
                     self.rows = build_rows(&self.changeset);
                     self.split_rows = build_split_rows(&self.changeset);
+                    self.hl_cache.borrow_mut().clear();
                 }
                 Err(e) => {
                     self.status = format!("reload failed: {e}");
@@ -528,63 +592,87 @@ impl App {
                     .line
                     .map(|n| format!("{n:>4}"))
                     .unwrap_or_else(|| "    ".into());
-                let body = fit(&c.text, width.saturating_sub(PREFIX));
-                let mut body_style = match c.kind {
-                    LineKind::Addition => Style::default().fg(Color::Green),
-                    LineKind::Deletion => Style::default().fg(Color::Red),
-                    LineKind::Context => Style::default().fg(Color::Gray),
+                let bg = if selected {
+                    Some(SEL_BG)
+                } else {
+                    match c.kind {
+                        LineKind::Addition => Some(ADD_BG),
+                        LineKind::Deletion => Some(DEL_BG),
+                        LineKind::Context => None,
+                    }
                 };
-                if selected {
-                    body_style = body_style.bg(Color::Rgb(60, 66, 80));
-                }
-                vec![
+                let mut spans = vec![
                     Span::styled(marker, Style::default().fg(Color::Cyan)),
                     Span::styled(format!("{num} "), Style::default().fg(Color::DarkGray)),
-                    Span::styled(body, body_style),
-                ]
+                ];
+                spans.extend(self.styled_fit(file_idx, &c.text, width.saturating_sub(PREFIX), bg));
+                spans
             }
         }
     }
 
     fn row_to_line(&self, row: &Row, selected: bool) -> Line<'static> {
-        let marker = self.thread_marker(row).to_string();
-        let (content, base) = match &row.kind {
-            RowKind::FileHeader => (
+        match &row.kind {
+            RowKind::FileHeader => Line::from(Span::styled(
                 format!("▌ {}", row.text),
                 Style::default()
                     .fg(Color::White)
                     .bg(Color::Rgb(40, 44, 52))
                     .add_modifier(Modifier::BOLD),
-            ),
-            RowKind::HunkHeader => (row.text.clone(), Style::default().fg(Color::Magenta)),
+            )),
+            RowKind::HunkHeader => Line::from(Span::styled(
+                row.text.clone(),
+                Style::default().fg(Color::Magenta),
+            )),
             RowKind::Line {
                 kind,
                 old_line,
                 new_line,
             } => {
+                let marker = self.thread_marker(row);
                 let num = format!(
                     "{:>5} {:>5} ",
                     old_line.map(|n| n.to_string()).unwrap_or_default(),
                     new_line.map(|n| n.to_string()).unwrap_or_default(),
                 );
-                let style = match kind {
-                    LineKind::Addition => Style::default().fg(Color::Green),
-                    LineKind::Deletion => Style::default().fg(Color::Red),
-                    LineKind::Context => Style::default().fg(Color::Gray),
+                let (sign, code) = row.text.split_at(1);
+                let bg = if selected {
+                    Some(SEL_BG)
+                } else {
+                    match kind {
+                        LineKind::Addition => Some(ADD_BG),
+                        LineKind::Deletion => Some(DEL_BG),
+                        LineKind::Context => None,
+                    }
                 };
-                (format!("{num}{}", row.text), style)
+                let sign_color = match kind {
+                    LineKind::Addition => Color::Green,
+                    LineKind::Deletion => Color::Red,
+                    LineKind::Context => Color::DarkGray,
+                };
+                let mut spans = vec![
+                    Span::styled(marker, Style::default().fg(Color::Cyan)),
+                    Span::styled(num, Style::default().fg(Color::DarkGray)),
+                    Span::styled(sign.to_string(), {
+                        let mut st = Style::default().fg(sign_color);
+                        if let Some(b) = bg {
+                            st = st.bg(b);
+                        }
+                        st
+                    }),
+                ];
+                // Highlighted code, with the diff background tint behind it.
+                let hl = self.highlight(row.file_idx, code);
+                for (c, s) in hl.iter() {
+                    let mut st = Style::default().fg(*c);
+                    if let Some(b) = bg {
+                        st = st.bg(b);
+                    }
+                    spans.push(Span::styled(s.clone(), st));
+                }
+                Line::from(spans)
             }
-        };
-        let mut style = base;
-        if selected {
-            style = style
-                .bg(Color::Rgb(60, 66, 80))
-                .add_modifier(Modifier::BOLD);
         }
-        Line::from(vec![
-            Span::styled(marker, Style::default().fg(Color::Cyan)),
-            Span::styled(content, style),
-        ])
     }
 
     /// Gutter marker for the row's own anchor (unified view).

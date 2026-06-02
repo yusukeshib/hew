@@ -1,4 +1,5 @@
 pub mod app;
+pub mod highlight;
 pub mod render_rows;
 
 use anyhow::Result;

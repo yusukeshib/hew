@@ -1,0 +1,59 @@
+//! Lazy, per-line syntax highlighting via syntect (pure-Rust fancy-regex).
+//!
+//! Highlighting is intentionally line-isolated: each diff line is highlighted on
+//! its own (no cross-line state), which keeps it cheap and trivially cacheable
+//! for viewport-only rendering. Multi-line constructs (block comments, multiline
+//! strings) won't carry state across hunk gaps — an accepted trade-off for a
+//! diff viewer that never sees the whole file.
+
+use ratatui::style::Color;
+use syntect::easy::HighlightLines;
+use syntect::highlighting::{Theme, ThemeSet};
+use syntect::parsing::{SyntaxReference, SyntaxSet};
+
+pub struct Highlighter {
+    ps: SyntaxSet,
+    theme: Theme,
+}
+
+impl Highlighter {
+    pub fn new() -> Self {
+        let ps = SyntaxSet::load_defaults_nonewlines();
+        let ts = ThemeSet::load_defaults();
+        let theme = ts
+            .themes
+            .get("base16-ocean.dark")
+            .or_else(|| ts.themes.values().next())
+            .cloned()
+            .expect("syntect ships default themes");
+        Highlighter { ps, theme }
+    }
+
+    /// Resolve a syntax by file path (extension or filename), else plain text.
+    pub fn syntax_for(&self, path: &str) -> &SyntaxReference {
+        let p = std::path::Path::new(path);
+        let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("");
+        self.ps
+            .find_syntax_by_extension(ext)
+            .or_else(|| {
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                self.ps.find_syntax_by_token(name)
+            })
+            .unwrap_or_else(|| self.ps.find_syntax_plain_text())
+    }
+
+    /// Highlight one line into `(fg color, text)` runs.
+    pub fn line(&self, syntax: &SyntaxReference, text: &str) -> Vec<(Color, String)> {
+        let mut h = HighlightLines::new(syntax, &self.theme);
+        match h.highlight_line(text, &self.ps) {
+            Ok(ranges) => ranges
+                .into_iter()
+                .map(|(st, s)| {
+                    let c = st.foreground;
+                    (Color::Rgb(c.r, c.g, c.b), s.to_string())
+                })
+                .collect(),
+            Err(_) => vec![(Color::Gray, text.to_string())],
+        }
+    }
+}
