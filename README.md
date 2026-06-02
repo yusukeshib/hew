@@ -76,9 +76,11 @@ refreshes. Watching only applies to file inputs — a stdin patch can't be re-re
 | `q` | Quit |
 
 Multi-file diffs show a **file list sidebar** (paths + `+adds`/`-dels`, current
-file highlighted). Keyboard navigation acts on the **focused** pane: focus the
-sidebar with `←` and `j`/`k`/`g`/`G` move between files; `→` (or `Enter`) returns
-to the diff. The focused pane's selection is brighter.
+file highlighted), and the diff pane shows **only the selected file**. Keyboard
+navigation acts on the **focused** pane: focus the sidebar with `←` and
+`j`/`k`/`g`/`G` move between files (the diff follows); `→` (or `Enter`) returns to
+the diff, where `j`/`k`/paging scroll within that one file. `[`/`]` switch files
+from either pane. The focused pane's selection is brighter.
 
 Unified stacks `-`/`+` lines; split shows old on the left and new on the right
 (like `git delta --side-by-side`), pairing changed lines across a divider.

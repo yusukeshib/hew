@@ -115,6 +115,7 @@ pub struct App {
     needs_clear: bool,
     show_sidebar: bool,
     focus: Focus,
+    current_file: usize, // the diff pane shows only this file
     file_stats: Vec<(usize, usize)>,
     highlighter: Highlighter,
     /// (file_idx, line text) -> highlighted runs. Viewport-only, grows lazily.
@@ -144,6 +145,7 @@ impl App {
             needs_clear: false,
             show_sidebar: true,
             focus: Focus::Diff,
+            current_file: 0,
             file_stats: stats,
             highlighter: Highlighter::new(),
             hl_cache: RefCell::new(HashMap::new()),
@@ -220,13 +222,13 @@ impl App {
     }
 
     fn first_selectable(&self) -> Option<usize> {
-        (0..self.active_len()).find(|&i| self.is_selectable_at(i))
+        let (s, e) = self.file_range();
+        (s..e).find(|&i| self.is_selectable_at(i))
     }
 
     fn last_selectable(&self) -> Option<usize> {
-        (0..self.active_len())
-            .rev()
-            .find(|&i| self.is_selectable_at(i))
+        let (s, e) = self.file_range();
+        (s..e).rev().find(|&i| self.is_selectable_at(i))
     }
 
     pub fn run(&mut self, terminal: &mut Terminal<impl Backend>) -> Result<()> {
@@ -303,15 +305,8 @@ impl App {
                 Err(e) => self.status = format!("comments reload failed: {e}"),
             }
         }
-        // Keep the selection on a valid, selectable row after the rebuild.
-        let max = self.active_len().saturating_sub(1);
-        if self.selected > max || !self.is_selectable_at(self.selected) {
-            self.selected = self
-                .nearest_selectable(self.selected.min(max), 1)
-                .or_else(|| self.first_selectable())
-                .unwrap_or(0);
-        }
-        self.ensure_visible();
+        // Files may have changed; re-point at a valid file and selectable row.
+        self.set_current_file(self.current_file);
         self.status = "reloaded".into();
     }
 
@@ -339,27 +334,42 @@ impl App {
         }
     }
 
-    /// Jump to the first selectable row of the next/prev file.
+    /// `[start, end)` row range of the current file in the active list. Files
+    /// are contiguous, so this is a single slice. Empty `(len, len)` if absent.
+    fn file_range(&self) -> (usize, usize) {
+        let len = self.active_len();
+        let (mut start, mut end) = (len, len);
+        for i in 0..len {
+            if self.row_file_idx(i) == Some(self.current_file) {
+                if start == len {
+                    start = i;
+                }
+                end = i + 1;
+            }
+        }
+        (start, end)
+    }
+
+    /// Switch the diff pane to the next/prev file.
     fn jump_file(&mut self, dir: isize) {
         let n = self.changeset.files.len();
         if n == 0 {
             return;
         }
-        let cur = self.row_file_idx(self.selected).unwrap_or(0) as isize;
-        let target = (cur + dir).clamp(0, n as isize - 1) as usize;
-        if target as isize == cur {
+        let target = (self.current_file as isize + dir).clamp(0, n as isize - 1) as usize;
+        if target == self.current_file {
             return;
         }
-        if let Some(i) = (0..self.active_len())
-            .find(|&i| self.is_selectable_at(i) && self.row_file_idx(i) == Some(target))
-        {
-            self.selected = i;
-            // Show the file from its header row at the top of the viewport.
-            self.scroll = (0..self.active_len())
-                .find(|&j| self.row_file_idx(j) == Some(target))
-                .unwrap_or(i);
-            self.ensure_visible();
-        }
+        self.set_current_file(target);
+    }
+
+    /// Point the diff pane at `file`, resetting the cursor to its top.
+    fn set_current_file(&mut self, file: usize) {
+        self.current_file = file.min(self.changeset.files.len().saturating_sub(1));
+        let (start, _) = self.file_range();
+        self.scroll = start;
+        self.selected = self.first_selectable().unwrap_or(start);
+        self.ensure_visible();
     }
 
     /// `(file_idx, side, line)` anchor for the row at `i`, if it carries one.
@@ -394,7 +404,11 @@ impl App {
             .or_else(|| self.first_selectable())
             .unwrap_or(0)
             .min(self.active_len().saturating_sub(1));
-        // Recenter so the cursor is roughly mid-viewport.
+        // Stay on the same file across the layout switch.
+        self.current_file = self
+            .row_file_idx(self.selected)
+            .unwrap_or(self.current_file);
+        // Recenter so the cursor is roughly mid-viewport (clamped to the file).
         self.scroll = self.selected.saturating_sub(self.height / 2);
         self.ensure_visible();
         self.status = match self.view {
@@ -510,10 +524,11 @@ impl App {
     }
 
     fn move_selection(&mut self, delta: isize) {
+        let (start, end) = self.file_range();
         let mut i = self.selected as isize;
         loop {
             i += delta;
-            if i < 0 || i as usize >= self.active_len() {
+            if i < start as isize || i as usize >= end {
                 return;
             }
             if self.is_selectable_at(i as usize) {
@@ -538,8 +553,9 @@ impl App {
     /// Scroll the viewport by `delta` rows, dragging the selection back into
     /// view if it would fall outside (less/vim Ctrl-E / Ctrl-Y behavior).
     fn scroll_view(&mut self, delta: isize) {
-        let max_top = self.active_len().saturating_sub(1) as isize;
-        self.scroll = (self.scroll as isize + delta).clamp(0, max_top) as usize;
+        let (start, end) = self.file_range();
+        let max_top = end.saturating_sub(1).max(start) as isize;
+        self.scroll = (self.scroll as isize + delta).clamp(start as isize, max_top) as usize;
         if self.selected < self.scroll {
             if let Some(i) = self.nearest_selectable(self.scroll, 1) {
                 self.selected = i;
@@ -552,10 +568,11 @@ impl App {
         }
     }
 
-    /// First selectable row at or beyond `from` scanning in `dir`.
+    /// First selectable row at/beyond `from` scanning in `dir`, within the file.
     fn nearest_selectable(&self, from: usize, dir: isize) -> Option<usize> {
+        let (start, end) = self.file_range();
         let mut i = from as isize;
-        while i >= 0 && (i as usize) < self.active_len() {
+        while i >= start as isize && (i as usize) < end {
             if self.is_selectable_at(i as usize) {
                 return Some(i as usize);
             }
@@ -565,11 +582,14 @@ impl App {
     }
 
     fn ensure_visible(&mut self) {
+        let (start, end) = self.file_range();
         if self.selected < self.scroll {
             self.scroll = self.selected;
         } else if self.selected >= self.scroll + self.height {
             self.scroll = self.selected + 1 - self.height;
         }
+        // Never scroll outside the current file's slice.
+        self.scroll = self.scroll.clamp(start, end.saturating_sub(1).max(start));
     }
 
     fn selected_anchor(&self) -> Option<(PathBuf, Side, u32)> {
@@ -579,9 +599,10 @@ impl App {
     }
 
     fn jump_comment(&mut self, dir: isize) {
-        // Collect rows that carry a thread anchor.
+        // Collect rows in the current file that carry a thread anchor.
+        let (start, end) = self.file_range();
         let mut targets: Vec<usize> = Vec::new();
-        for i in 0..self.active_len() {
+        for i in start..end {
             if let Some((file_idx, side, line)) = self.anchor_at(i) {
                 if let Some(file) = self.changeset.files.get(file_idx) {
                     let path = PathBuf::from(file.display_path());
@@ -693,9 +714,9 @@ impl App {
         let w = inner.width as usize;
         let h = inner.height as usize;
         let n = self.changeset.files.len();
-        let cur = self.row_file_idx(self.selected);
+        let cur = Some(self.current_file);
         // Scroll the list so the current file stays visible.
-        let cur_i = cur.unwrap_or(0);
+        let cur_i = self.current_file;
         let scroll = if cur_i >= h { cur_i + 1 - h } else { 0 };
 
         let mut lines: Vec<Line> = Vec::new();
@@ -740,9 +761,11 @@ impl App {
 
     fn render_unified(&self, f: &mut Frame, area: Rect) {
         let width = area.width as usize;
+        let (start, file_end) = self.file_range();
+        let top = self.scroll.max(start);
+        let end = (top + self.height).min(file_end);
         let mut lines: Vec<Line> = Vec::new();
-        let end = (self.scroll + self.height).min(self.rows.len());
-        for idx in self.scroll..end {
+        for idx in top..end {
             let row = &self.rows[idx];
             let selected = idx == self.selected;
             lines.push(self.row_to_line(row, selected, width));
@@ -754,9 +777,11 @@ impl App {
         let total = area.width as usize;
         let divider = " │ ";
         let side_w = total.saturating_sub(divider.len()) / 2;
+        let (start, file_end) = self.file_range();
+        let top = self.scroll.max(start);
+        let end = (top + self.height).min(file_end);
         let mut lines: Vec<Line> = Vec::new();
-        let end = (self.scroll + self.height).min(self.split_rows.len());
-        for idx in self.scroll..end {
+        for idx in top..end {
             let row = &self.split_rows[idx];
             let selected = idx == self.selected;
             lines.push(self.split_row_to_line(row, selected, side_w, divider));
