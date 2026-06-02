@@ -1,0 +1,35 @@
+{
+  "threads": [
+    {
+      "file": "packages/frontend/src/utility/get-note-menu.ts",
+      "side": "new",
+      "range": {
+        "start": 535,
+        "end": 535
+      },
+      "resolved": false,
+      "comments": [
+        {
+          "author": "kakkokari-gtyih",
+          "body": "条件がややこしくて一瞬L519-L526と重複に見えた\nelse if では無理そう？",
+          "created_at": 1779380026000
+        },
+        {
+          "author": "samunohito",
+          "body": "fix 59ba89e",
+          "created_at": 1779457284000
+        },
+        {
+          "author": "samunohito",
+          "body": "off-topic:\r\nなんかもうこのファイルが全体的にカオスなので、ごそっと整理したい気持ちも…\r\n\r\n```ts\r\nconst isMyNote = appearNote.userId === $i.id;\r\nconst isModerator = $i.isModerator || $i.isAdmin;\r\n```\r\n\r\nみたいなのを作って、同じ条件を置き換えるだけでも認知負荷が下がりそうな予感",
+          "created_at": 1779457553000
+        },
+        {
+          "author": "samunohito",
+          "body": "あと、unit-testを書いてもいいかもしれない",
+          "created_at": 1779458287000
+        }
+      ]
+    }
+  ]
+}

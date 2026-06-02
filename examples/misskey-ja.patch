@@ -1,0 +1,533 @@
+diff --git a/CHANGELOG.md b/CHANGELOG.md
+index adaed053d19..539c2a485c6 100644
+--- a/CHANGELOG.md
++++ b/CHANGELOG.md
+@@ -2,6 +2,7 @@
+ 
+ ### General
+ - Feat: ジョブキュー管理画面からキューの一時停止/再開ができるように
++- Feat: アンテナのタイムラインから個別のノートを削除できるように
+ 
+ ### Client
+ -
+diff --git a/locales/ja-JP.yml b/locales/ja-JP.yml
+index 26ef054b9f1..f2dded75d7b 100644
+--- a/locales/ja-JP.yml
++++ b/locales/ja-JP.yml
+@@ -753,6 +753,8 @@ optional: "任意"
+ createNewClip: "新しいクリップを作成"
+ unclip: "クリップ解除"
+ confirmToUnclipAlreadyClippedNote: "このノートはすでにクリップ「{name}」に含まれています。ノートをこのクリップから除外しますか？"
++removeFromAntenna: "このアンテナから削除"
++removeNoteFromAntennaConfirm: "「{name}」からこのノートを削除しますか？"
+ public: "パブリック"
+ private: "非公開"
+ i18nInfo: "Misskeyは有志によって様々な言語に翻訳されています。{link}で翻訳に協力できます。"
+diff --git a/packages/backend/src/core/FanoutTimelineService.ts b/packages/backend/src/core/FanoutTimelineService.ts
+index 24999bf4dae..ae387dc8e4f 100644
+--- a/packages/backend/src/core/FanoutTimelineService.ts
++++ b/packages/backend/src/core/FanoutTimelineService.ts
+@@ -112,4 +112,9 @@ export class FanoutTimelineService {
+ 	public purge(name: FanoutTimelineName) {
+ 		return this.redisForTimelines.del('list:' + name);
+ 	}
++
++	@bindThis
++	public remove(name: FanoutTimelineName, id: string) {
++		return this.redisForTimelines.lrem('list:' + name, 1, id);
++	}
+ }
+diff --git a/packages/backend/src/server/api/endpoint-list.ts b/packages/backend/src/server/api/endpoint-list.ts
+index aec331c9823..6a56c428a72 100644
+--- a/packages/backend/src/server/api/endpoint-list.ts
++++ b/packages/backend/src/server/api/endpoint-list.ts
+@@ -117,6 +117,7 @@ export * as 'antennas/create' from './endpoints/antennas/create.js';
+ export * as 'antennas/delete' from './endpoints/antennas/delete.js';
+ export * as 'antennas/list' from './endpoints/antennas/list.js';
+ export * as 'antennas/notes' from './endpoints/antennas/notes.js';
++export * as 'antennas/remove-note' from './endpoints/antennas/remove-note.js';
+ export * as 'antennas/show' from './endpoints/antennas/show.js';
+ export * as 'antennas/update' from './endpoints/antennas/update.js';
+ export * as 'ap/get' from './endpoints/ap/get.js';
+diff --git a/packages/backend/src/server/api/endpoints/antennas/remove-note.ts b/packages/backend/src/server/api/endpoints/antennas/remove-note.ts
+new file mode 100644
+index 00000000000..2730ed18d18
+--- /dev/null
++++ b/packages/backend/src/server/api/endpoints/antennas/remove-note.ts
+@@ -0,0 +1,61 @@
++/*
++ * SPDX-FileCopyrightText: syuilo and misskey-project
++ * SPDX-License-Identifier: AGPL-3.0-only
++ */
++
++import { Inject, Injectable } from '@nestjs/common';
++import { Endpoint } from '@/server/api/endpoint-base.js';
++import type { AntennasRepository } from '@/models/_.js';
++import { FanoutTimelineService } from '@/core/FanoutTimelineService.js';
++import { DI } from '@/di-symbols.js';
++import { ApiError } from '../../error.js';
++
++export const meta = {
++	tags: ['antennas', 'account', 'notes'],
++
++	requireCredential: true,
++
++	prohibitMoved: true,
++
++	kind: 'write:account',
++
++	errors: {
++		noSuchAntenna: {
++			message: 'No such antenna.',
++			code: 'NO_SUCH_ANTENNA',
++			id: '850926e0-fd3b-49b6-b69a-b28a5dbd82fe',
++		},
++	},
++} as const;
++
++export const paramDef = {
++	type: 'object',
++	properties: {
++		antennaId: { type: 'string', format: 'misskey:id' },
++		noteId: { type: 'string', format: 'misskey:id' },
++	},
++	required: ['antennaId', 'noteId'],
++} as const;
++
++@Injectable()
++export default class extends Endpoint<typeof meta, typeof paramDef> { // eslint-disable-line import/no-default-export
++	constructor(
++		@Inject(DI.antennasRepository)
++		private antennasRepository: AntennasRepository,
++
++		private fanoutTimelineService: FanoutTimelineService,
++	) {
++		super(meta, paramDef, async (ps, me) => {
++			const antenna = await this.antennasRepository.findOneBy({
++				id: ps.antennaId,
++				userId: me.id,
++			});
++
++			if (antenna == null) {
++				throw new ApiError(meta.errors.noSuchAntenna);
++			}
++
++			await this.fanoutTimelineService.remove(`antennaTimeline:${antenna.id}`, ps.noteId);
++		});
++	}
++}
+diff --git a/packages/backend/test/e2e/antennas.ts b/packages/backend/test/e2e/antennas.ts
+index ea7cd77d665..c332371432a 100644
+--- a/packages/backend/test/e2e/antennas.ts
++++ b/packages/backend/test/e2e/antennas.ts
+@@ -359,6 +359,81 @@ describe('アンテナ', () => {
+ 			assert.deepStrictEqual(response, expected);
+ 		});
+ 
++		test('から指定したノートだけ削除でき、ノート本体や他人のアンテナには影響しないこと。', async () => {
++			const keyword = 'キーワード';
++			const antenna = await successfulApiCall({
++				endpoint: 'antennas/create',
++				parameters: { ...defaultParam, keywords: [[keyword]] },
++				user: alice,
++			});
++			const otherAntenna = await successfulApiCall({
++				endpoint: 'antennas/create',
++				parameters: { ...defaultParam, keywords: [[keyword]] },
++				user: bob,
++			});
++			const remainingNote = await post(bob, { text: `test ${keyword} remaining` });
++			const removedNote = await post(bob, { text: `test ${keyword} removed` });
++
++			await successfulApiCall({
++				endpoint: 'antennas/remove-note',
++				parameters: { antennaId: antenna.id, noteId: removedNote.id },
++				user: alice,
++			});
++
++			const response = await successfulApiCall({
++				endpoint: 'antennas/notes',
++				parameters: { antennaId: antenna.id },
++				user: alice,
++			});
++			assert.deepStrictEqual(response, [remainingNote]);
++
++			const note = await successfulApiCall({
++				endpoint: 'notes/show',
++				parameters: { noteId: removedNote.id },
++				user: alice,
++			});
++			assert.deepStrictEqual(note, removedNote);
++
++			const otherResponse = await successfulApiCall({
++				endpoint: 'antennas/notes',
++				parameters: { antennaId: otherAntenna.id },
++				user: bob,
++			});
++			assert.deepStrictEqual(otherResponse, [removedNote, remainingNote]);
++		});
++
++		test('から存在しないノートを削除しても成功すること。', async () => {
++			const antenna = await successfulApiCall({
++				endpoint: 'antennas/create',
++				parameters: defaultParam,
++				user: alice,
++			});
++
++			await successfulApiCall({
++				endpoint: 'antennas/remove-note',
++				parameters: { antennaId: antenna.id, noteId: 'doesnotexist' },
++				user: alice,
++			});
++		});
++
++		test('から他人のアンテナを指定してノートを削除できないこと。', async () => {
++			const antenna = await successfulApiCall({
++				endpoint: 'antennas/create',
++				parameters: defaultParam,
++				user: alice,
++			});
++
++			await failedApiCall({
++				endpoint: 'antennas/remove-note',
++				parameters: { antennaId: antenna.id, noteId: alicePost.id },
++				user: bob,
++			}, {
++				status: 400,
++				code: 'NO_SUCH_ANTENNA',
++				id: '850926e0-fd3b-49b6-b69a-b28a5dbd82fe',
++			});
++		});
++
+ 		const keyword = 'キーワード';
+ 		test.each([
+ 			{
+diff --git a/packages/frontend/src/components/MkNote.vue b/packages/frontend/src/components/MkNote.vue
+index ba68971034d..1cb562fb622 100644
+--- a/packages/frontend/src/components/MkNote.vue
++++ b/packages/frontend/src/components/MkNote.vue
+@@ -265,6 +265,7 @@ const inTimeline = inject<boolean>('inTimeline', false);
+ const tl_withSensitive = inject<Ref<boolean>>('tl_withSensitive', ref(true));
+ const inChannel = inject(DI.inChannel, null);
+ const currentClip = inject<Ref<Misskey.entities.Clip> | null>('currentClip', null);
++const currentAntenna = inject<Ref<Misskey.entities.Antenna | null> | null>('currentAntenna', null);
+ 
+ let note = deepClone(props.note);
+ 
+@@ -606,7 +607,7 @@ function onContextmenu(ev: PointerEvent): void {
+ 		ev.preventDefault();
+ 		react();
+ 	} else {
+-		const { menu, cleanup } = getNoteMenu({ note: note, translating, translation, currentClip: currentClip?.value });
++		const { menu, cleanup } = getNoteMenu({ note: note, translating, translation, currentClip: currentClip?.value, currentAntenna: currentAntenna?.value ?? undefined });
+ 		os.contextMenu(menu, ev).then(focus).finally(cleanup);
+ 	}
+ }
+@@ -616,7 +617,7 @@ function showMenu(): void {
+ 		return;
+ 	}
+ 
+-	const { menu, cleanup } = getNoteMenu({ note: note, translating, translation, currentClip: currentClip?.value });
++	const { menu, cleanup } = getNoteMenu({ note: note, translating, translation, currentClip: currentClip?.value, currentAntenna: currentAntenna?.value ?? undefined });
+ 	os.popupMenu(menu, menuButton.value).then(focus).finally(cleanup);
+ }
+ 
+diff --git a/packages/frontend/src/components/MkStreamingNotesTimeline.vue b/packages/frontend/src/components/MkStreamingNotesTimeline.vue
+index 00fd778a5ea..0182a96416c 100644
+--- a/packages/frontend/src/components/MkStreamingNotesTimeline.vue
++++ b/packages/frontend/src/components/MkStreamingNotesTimeline.vue
+@@ -271,6 +271,12 @@ useGlobalEvent('noteDeleted', (noteId) => {
+ 	paginator.removeItem(noteId);
+ });
+ 
++useGlobalEvent('noteRemovedFromAntenna', (antennaId, noteId) => {
++	if (props.src === 'antenna' && props.antenna === antennaId) {
++		paginator.removeItem(noteId);
++	}
++});
++
+ function releaseQueue() {
+ 	paginator.releaseQueue();
+ 	scrollToTop(rootEl.value!);
+diff --git a/packages/frontend/src/events.ts b/packages/frontend/src/events.ts
+index 9dfaedd462c..a31298762d9 100644
+--- a/packages/frontend/src/events.ts
++++ b/packages/frontend/src/events.ts
+@@ -11,6 +11,7 @@ type Events = {
+ 	clientNotification: (notification: Misskey.entities.Notification) => void;
+ 	notePosted: (note: Misskey.entities.Note) => void;
+ 	noteDeleted: (noteId: Misskey.entities.Note['id']) => void;
++	noteRemovedFromAntenna: (antennaId: Misskey.entities.Antenna['id'], noteId: Misskey.entities.Note['id']) => void;
+ 	driveFileCreated: (file: Misskey.entities.DriveFile) => void;
+ 	driveFilesUpdated: (files: Misskey.entities.DriveFile[]) => void;
+ 	driveFilesDeleted: (files: Misskey.entities.DriveFile[]) => void;
+diff --git a/packages/frontend/src/pages/antenna-timeline.vue b/packages/frontend/src/pages/antenna-timeline.vue
+index 9030fa0e294..4b495f1bd80 100644
+--- a/packages/frontend/src/pages/antenna-timeline.vue
++++ b/packages/frontend/src/pages/antenna-timeline.vue
+@@ -19,7 +19,7 @@ SPDX-License-Identifier: AGPL-3.0-only
+ </template>
+ 
+ <script lang="ts" setup>
+-import { computed, watch, ref, useTemplateRef } from 'vue';
++import { computed, watch, ref, useTemplateRef, provide } from 'vue';
+ import * as Misskey from 'misskey-js';
+ import MkStreamingNotesTimeline from '@/components/MkStreamingNotesTimeline.vue';
+ import * as os from '@/os.js';
+@@ -37,6 +37,8 @@ const props = defineProps<{
+ const antenna = ref<Misskey.entities.Antenna | null>(null);
+ const tlEl = useTemplateRef('tlEl');
+ 
++provide('currentAntenna', antenna);
++
+ function settings() {
+ 	router.push('/my/antennas/:antennaId', {
+ 		params: {
+diff --git a/packages/frontend/src/utility/get-note-menu.ts b/packages/frontend/src/utility/get-note-menu.ts
+index 78176970f1e..a6168d05509 100644
+--- a/packages/frontend/src/utility/get-note-menu.ts
++++ b/packages/frontend/src/utility/get-note-menu.ts
+@@ -182,6 +182,7 @@ export function getNoteMenu(props: {
+ 	translation: Ref<Misskey.entities.NotesTranslateResponse | null>;
+ 	translating: Ref<boolean>;
+ 	currentClip?: Misskey.entities.Clip;
++	currentAntenna?: Misskey.entities.Antenna;
+ }) {
+ 	const appearNote = getAppearNote(props.note) ?? props.note;
+ 	const link = appearNote.url ?? appearNote.uri;
+@@ -262,6 +263,19 @@ export function getNoteMenu(props: {
+ 		os.apiWithDialog('clips/remove-note', { clipId: props.currentClip.id, noteId: appearNote.id });
+ 	}
+ 
++	async function removeFromAntenna(): Promise<void> {
++		if (!props.currentAntenna) return;
++
++		const { canceled } = await os.confirm({
++			type: 'warning',
++			text: i18n.tsx.removeNoteFromAntennaConfirm({ name: props.currentAntenna.name }),
++		});
++		if (canceled) return;
++
++		await os.apiWithDialog('antennas/remove-note', { antennaId: props.currentAntenna.id, noteId: appearNote.id });
++		globalEvents.emit('noteRemovedFromAntenna', props.currentAntenna.id, appearNote.id);
++	}
++
+ 	async function _promote(): Promise<void> {
+ 		const { canceled, result: days } = await os.inputNumber({
+ 			title: i18n.ts.numberOfDays,
+@@ -502,12 +516,28 @@ export function getNoteMenu(props: {
+ 					action: delEdit,
+ 				});
+ 			}
++			if (props.currentAntenna != null) {
++				menuItems.push({
++					icon: 'ti ti-trash',
++					text: i18n.ts.removeFromAntenna,
++					danger: true,
++					action: removeFromAntenna,
++				});
++			}
+ 			menuItems.push({
+ 				icon: 'ti ti-trash',
+ 				text: i18n.ts.delete,
+ 				danger: true,
+ 				action: del,
+ 			});
++		} else if (props.currentAntenna != null) {
++			menuItems.push({ type: 'divider' });
++			menuItems.push({
++				icon: 'ti ti-trash',
++				text: i18n.ts.removeFromAntenna,
++				danger: true,
++				action: removeFromAntenna,
++			});
+ 		}
+ 	} else {
+ 		menuItems.push({
+diff --git a/packages/i18n/src/autogen/locale.ts b/packages/i18n/src/autogen/locale.ts
+index e13458c22d3..fb4444ec023 100644
+--- a/packages/i18n/src/autogen/locale.ts
++++ b/packages/i18n/src/autogen/locale.ts
+@@ -3024,6 +3024,14 @@ export interface Locale extends ILocale {
+      * このノートはすでにクリップ「{name}」に含まれています。ノートをこのクリップから除外しますか？
+      */
+     "confirmToUnclipAlreadyClippedNote": ParameterizedString<"name">;
++    /**
++     * このアンテナから削除
++     */
++    "removeFromAntenna": string;
++    /**
++     * 「{name}」からこのノートを削除しますか？
++     */
++    "removeNoteFromAntennaConfirm": ParameterizedString<"name">;
+     /**
+      * パブリック
+      */
+diff --git a/packages/misskey-js/etc/misskey-js.api.md b/packages/misskey-js/etc/misskey-js.api.md
+index 0272dd3cc44..78155a7f192 100644
+--- a/packages/misskey-js/etc/misskey-js.api.md
++++ b/packages/misskey-js/etc/misskey-js.api.md
+@@ -498,6 +498,9 @@ type AntennasNotesRequest = operations['antennas___notes']['requestBody']['conte
+ // @public (undocumented)
+ type AntennasNotesResponse = operations['antennas___notes']['responses']['200']['content']['application/json'];
+ 
++// @public (undocumented)
++type AntennasRemoveNoteRequest = operations['antennas___remove-note']['requestBody']['content']['application/json'];
++
+ // @public (undocumented)
+ type AntennasShowRequest = operations['antennas___show']['requestBody']['content']['application/json'];
+ 
+@@ -1679,6 +1682,7 @@ declare namespace entities {
+         AntennasListResponse,
+         AntennasNotesRequest,
+         AntennasNotesResponse,
++        AntennasRemoveNoteRequest,
+         AntennasShowRequest,
+         AntennasShowResponse,
+         AntennasUpdateRequest,
+diff --git a/packages/misskey-js/src/autogen/apiClientJSDoc.ts b/packages/misskey-js/src/autogen/apiClientJSDoc.ts
+index 803ee9bd49f..add81aa6761 100644
+--- a/packages/misskey-js/src/autogen/apiClientJSDoc.ts
++++ b/packages/misskey-js/src/autogen/apiClientJSDoc.ts
+@@ -1192,6 +1192,17 @@ declare module '../api.js' {
+       credential?: string | null,
+     ): Promise<SwitchCaseResponseType<E, P>>;
+ 
++    /**
++     * No description provided.
++     * 
++     * **Credential required**: *Yes* / **Permission**: *write:account*
++     */
++    request<E extends 'antennas/remove-note', P extends Endpoints[E]['req']>(
++      endpoint: E,
++      params: P,
++      credential?: string | null,
++    ): Promise<SwitchCaseResponseType<E, P>>;
++
+     /**
+      * No description provided.
+      * 
+diff --git a/packages/misskey-js/src/autogen/endpoint.ts b/packages/misskey-js/src/autogen/endpoint.ts
+index 14f9eadf511..f0fcd301e80 100644
+--- a/packages/misskey-js/src/autogen/endpoint.ts
++++ b/packages/misskey-js/src/autogen/endpoint.ts
+@@ -149,6 +149,7 @@ import type {
+ 	AntennasListResponse,
+ 	AntennasNotesRequest,
+ 	AntennasNotesResponse,
++	AntennasRemoveNoteRequest,
+ 	AntennasShowRequest,
+ 	AntennasShowResponse,
+ 	AntennasUpdateRequest,
+@@ -773,6 +774,7 @@ export type Endpoints = {
+ 	'antennas/delete': { req: AntennasDeleteRequest; res: EmptyResponse };
+ 	'antennas/list': { req: EmptyRequest; res: AntennasListResponse };
+ 	'antennas/notes': { req: AntennasNotesRequest; res: AntennasNotesResponse };
++	'antennas/remove-note': { req: AntennasRemoveNoteRequest; res: EmptyResponse };
+ 	'antennas/show': { req: AntennasShowRequest; res: AntennasShowResponse };
+ 	'antennas/update': { req: AntennasUpdateRequest; res: AntennasUpdateResponse };
+ 	'ap/get': { req: ApGetRequest; res: ApGetResponse };
+diff --git a/packages/misskey-js/src/autogen/entities.ts b/packages/misskey-js/src/autogen/entities.ts
+index 3bd867a19d3..bdbbe59f044 100644
+--- a/packages/misskey-js/src/autogen/entities.ts
++++ b/packages/misskey-js/src/autogen/entities.ts
+@@ -152,6 +152,7 @@ export type AntennasDeleteRequest = operations['antennas___delete']['requestBody
+ export type AntennasListResponse = operations['antennas___list']['responses']['200']['content']['application/json'];
+ export type AntennasNotesRequest = operations['antennas___notes']['requestBody']['content']['application/json'];
+ export type AntennasNotesResponse = operations['antennas___notes']['responses']['200']['content']['application/json'];
++export type AntennasRemoveNoteRequest = operations['antennas___remove-note']['requestBody']['content']['application/json'];
+ export type AntennasShowRequest = operations['antennas___show']['requestBody']['content']['application/json'];
+ export type AntennasShowResponse = operations['antennas___show']['responses']['200']['content']['application/json'];
+ export type AntennasUpdateRequest = operations['antennas___update']['requestBody']['content']['application/json'];
+diff --git a/packages/misskey-js/src/autogen/types.ts b/packages/misskey-js/src/autogen/types.ts
+index 4ac5348fbf1..dbdc29233de 100644
+--- a/packages/misskey-js/src/autogen/types.ts
++++ b/packages/misskey-js/src/autogen/types.ts
+@@ -977,6 +977,15 @@ export type paths = {
+          */
+         post: operations['antennas___notes'];
+     };
++    '/antennas/remove-note': {
++        /**
++         * antennas/remove-note
++         * @description No description provided.
++         *
++         *     **Credential required**: *Yes* / **Permission**: *write:account*
++         */
++        post: operations['antennas___remove-note'];
++    };
+     '/antennas/show': {
+         /**
+          * antennas/show
+@@ -13603,6 +13612,71 @@ export interface operations {
+             };
+         };
+     };
++    'antennas___remove-note': {
++        requestBody: {
++            content: {
++                'application/json': {
++                    /** Format: misskey:id */
++                    antennaId: string;
++                    /** Format: misskey:id */
++                    noteId: string;
++                };
++            };
++        };
++        responses: {
++            /** @description OK (without any results) */
++            204: {
++                headers: {
++                    [name: string]: unknown;
++                };
++            };
++            /** @description Client error */
++            400: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    'application/json': components['schemas']['Error'];
++                };
++            };
++            /** @description Authentication error */
++            401: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    'application/json': components['schemas']['Error'];
++                };
++            };
++            /** @description Forbidden error */
++            403: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    'application/json': components['schemas']['Error'];
++                };
++            };
++            /** @description I'm Ai */
++            418: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    'application/json': components['schemas']['Error'];
++                };
++            };
++            /** @description Internal server error */
++            500: {
++                headers: {
++                    [name: string]: unknown;
++                };
++                content: {
++                    'application/json': components['schemas']['Error'];
++                };
++            };
++        };
++    };
+     antennas___show: {
+         requestBody: {
+             content: {
