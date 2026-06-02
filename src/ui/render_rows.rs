@@ -1,6 +1,130 @@
 //! Flatten a [`Changeset`] into lightweight rows for rendering + anchoring.
 
+use crate::comments::model::{CommentStore, Thread};
 use crate::diff::model::{Changeset, LineKind, Side};
+use std::collections::HashSet;
+use std::path::Path;
+
+/// One visual line of an inline-expanded comment thread.
+#[derive(Debug, Clone)]
+pub enum CommentLine {
+    /// Thread header: resolved state + message count.
+    Head { resolved: bool, replies: usize },
+    /// A message author line (`@name`).
+    Author(String),
+    /// A (pre-wrapped) body line.
+    Body(String),
+    /// Blank spacer between messages / after a thread.
+    Gap,
+}
+
+/// Greedy word-wrap to `width` columns, hard-splitting over-long words.
+fn wrap_text(s: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    let mut line = String::new();
+    let mut w = 0usize;
+    let push_word = |word: &str, out: &mut Vec<String>, line: &mut String, w: &mut usize| {
+        let ww = word.chars().count();
+        if *w == 0 {
+            if ww <= width {
+                line.push_str(word);
+                *w = ww;
+            } else {
+                let mut cw = 0;
+                for ch in word.chars() {
+                    if cw == width {
+                        out.push(std::mem::take(line));
+                        cw = 0;
+                    }
+                    line.push(ch);
+                    cw += 1;
+                }
+                *w = cw;
+            }
+        } else if *w + 1 + ww <= width {
+            line.push(' ');
+            line.push_str(word);
+            *w += 1 + ww;
+        } else {
+            out.push(std::mem::take(line));
+            *w = 0;
+            // re-handle this word at the start of a fresh line
+            if ww <= width {
+                line.push_str(word);
+                *w = ww;
+            } else {
+                let mut cw = 0;
+                for ch in word.chars() {
+                    if cw == width {
+                        out.push(std::mem::take(line));
+                        cw = 0;
+                    }
+                    line.push(ch);
+                    cw += 1;
+                }
+                *w = cw;
+            }
+        }
+    };
+    for word in s.split_whitespace() {
+        push_word(word, &mut out, &mut line, &mut w);
+    }
+    out.push(line);
+    out
+}
+
+/// Expand a thread into wrapped visual lines.
+pub fn thread_lines(t: &Thread, width: usize) -> Vec<CommentLine> {
+    let mut out = vec![CommentLine::Head {
+        resolved: t.resolved,
+        replies: t.comments.len(),
+    }];
+    for (i, c) in t.comments.iter().enumerate() {
+        out.push(CommentLine::Author(
+            c.author.clone().unwrap_or_else(|| "?".into()),
+        ));
+        for raw in c.body.split('\n') {
+            let s = sanitize_line(raw);
+            if s.is_empty() {
+                out.push(CommentLine::Body(String::new()));
+            } else {
+                for wl in wrap_text(&s, width) {
+                    out.push(CommentLine::Body(wl));
+                }
+            }
+        }
+        if i + 1 < t.comments.len() {
+            out.push(CommentLine::Gap);
+        }
+    }
+    out.push(CommentLine::Gap);
+    out
+}
+
+/// Inline-comment lines to inject after a code row, for every expanded thread
+/// whose anchor matches one of the row's `(side, line)` anchors.
+fn comment_rows_for(
+    comments: &CommentStore,
+    expanded: &HashSet<usize>,
+    path: &str,
+    anchors: &[(Side, u32)],
+    width: usize,
+) -> Vec<CommentLine> {
+    let mut out = Vec::new();
+    for (i, t) in comments.threads.iter().enumerate() {
+        if !expanded.contains(&i) || t.file.as_path() != Path::new(path) {
+            continue;
+        }
+        if anchors
+            .iter()
+            .any(|(s, l)| *s == t.side && t.range.contains(*l))
+        {
+            out.extend(thread_lines(t, width));
+        }
+    }
+    out
+}
 
 /// Make a line safe for a TUI cell grid. ratatui diffs cells between frames, so
 /// a stray `\r`, tab, or ANSI escape corrupts the terminal and never self-heals.
@@ -66,6 +190,8 @@ pub enum RowKind {
         old_line: Option<u32>,
         new_line: Option<u32>,
     },
+    /// An inline-expanded comment-thread line (non-selectable).
+    Comment(CommentLine),
 }
 
 #[derive(Debug, Clone)]
@@ -112,6 +238,8 @@ pub enum SplitRowKind {
         left: Option<SideCell>,
         right: Option<SideCell>,
     },
+    /// An inline-expanded comment-thread line (non-selectable).
+    Comment(CommentLine),
 }
 
 #[derive(Debug, Clone)]
@@ -155,9 +283,15 @@ fn hunk_header(hunk: &crate::diff::model::Hunk) -> String {
 /// Build the side-by-side (split) row list. Within a change block, consecutive
 /// deletions (left) are zipped with consecutive additions (right); context
 /// lines appear on both sides.
-pub fn build_split_rows(changeset: &Changeset) -> Vec<SplitRow> {
+pub fn build_split_rows(
+    changeset: &Changeset,
+    comments: &CommentStore,
+    expanded: &HashSet<usize>,
+    width: usize,
+) -> Vec<SplitRow> {
     let mut rows = Vec::new();
     for (fi, file) in changeset.files.iter().enumerate() {
+        let path = file.display_path();
         rows.push(SplitRow {
             file_idx: fi,
             kind: SplitRowKind::FileHeader,
@@ -192,7 +326,9 @@ pub fn build_split_rows(changeset: &Changeset) -> Vec<SplitRow> {
                     LineKind::Deletion => dels.push(cell),
                     LineKind::Addition => adds.push(cell),
                     LineKind::Context => {
-                        flush_pairs(fi, &mut dels, &mut adds, &mut rows);
+                        flush_pairs(
+                            fi, &mut dels, &mut adds, &mut rows, comments, expanded, path, width,
+                        );
                         rows.push(SplitRow {
                             file_idx: fi,
                             kind: SplitRowKind::Pair {
@@ -205,56 +341,81 @@ pub fn build_split_rows(changeset: &Changeset) -> Vec<SplitRow> {
                             },
                             text: String::new(),
                         });
+                        let mut anchors = Vec::new();
+                        if let Some(l) = line.old_line {
+                            anchors.push((Side::Old, l));
+                        }
+                        if let Some(l) = line.new_line {
+                            anchors.push((Side::New, l));
+                        }
+                        for cl in comment_rows_for(comments, expanded, path, &anchors, width) {
+                            rows.push(SplitRow {
+                                file_idx: fi,
+                                kind: SplitRowKind::Comment(cl),
+                                text: String::new(),
+                            });
+                        }
                     }
                 }
             }
-            flush_pairs(fi, &mut dels, &mut adds, &mut rows);
+            flush_pairs(
+                fi, &mut dels, &mut adds, &mut rows, comments, expanded, path, width,
+            );
         }
     }
     rows
 }
 
 /// Emit the accumulated deletion/addition runs as zipped pairs.
+#[allow(clippy::too_many_arguments)]
 fn flush_pairs(
     file_idx: usize,
     dels: &mut Vec<SideCell>,
     adds: &mut Vec<SideCell>,
     rows: &mut Vec<SplitRow>,
+    comments: &CommentStore,
+    expanded: &HashSet<usize>,
+    path: &str,
+    width: usize,
 ) {
     let n = dels.len().max(adds.len());
     let mut di = dels.drain(..);
     let mut ai = adds.drain(..);
     for _ in 0..n {
+        let left = di.next();
+        let right = ai.next();
+        let mut anchors = Vec::new();
+        if let Some(l) = left.as_ref().and_then(|c| c.line) {
+            anchors.push((Side::Old, l));
+        }
+        if let Some(l) = right.as_ref().and_then(|c| c.line) {
+            anchors.push((Side::New, l));
+        }
         rows.push(SplitRow {
             file_idx,
-            kind: SplitRowKind::Pair {
-                left: di.next(),
-                right: ai.next(),
-            },
+            kind: SplitRowKind::Pair { left, right },
             text: String::new(),
         });
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::sanitize_line;
-
-    #[test]
-    fn expands_tabs_and_strips_controls() {
-        assert_eq!(sanitize_line("\tx"), "    x");
-        assert_eq!(sanitize_line("a\tb"), "a   b"); // tab to next 4-col stop
-        assert_eq!(sanitize_line("end\r"), "end");
-        assert_eq!(sanitize_line("a\u{0}b"), "ab");
-        // ANSI CSI color sequence is removed, payload kept.
-        assert_eq!(sanitize_line("\u{1b}[31mred\u{1b}[0m"), "red");
+        for cl in comment_rows_for(comments, expanded, path, &anchors, width) {
+            rows.push(SplitRow {
+                file_idx,
+                kind: SplitRowKind::Comment(cl),
+                text: String::new(),
+            });
+        }
     }
 }
 
 /// Build the unified (stack) row list.
-pub fn build_rows(changeset: &Changeset) -> Vec<Row> {
+pub fn build_rows(
+    changeset: &Changeset,
+    comments: &CommentStore,
+    expanded: &HashSet<usize>,
+    width: usize,
+) -> Vec<Row> {
     let mut rows = Vec::new();
     for (fi, file) in changeset.files.iter().enumerate() {
+        let path = file.display_path();
         rows.push(Row {
             file_idx: fi,
             kind: RowKind::FileHeader,
@@ -289,8 +450,60 @@ pub fn build_rows(changeset: &Changeset) -> Vec<Row> {
                     },
                     text: format!("{prefix}{}", sanitize_line(&line.text)),
                 });
+                let (side, ln) = match line.kind {
+                    LineKind::Deletion => (Side::Old, line.old_line),
+                    _ => (Side::New, line.new_line),
+                };
+                if let Some(ln) = ln {
+                    for cl in comment_rows_for(comments, expanded, path, &[(side, ln)], width) {
+                        rows.push(Row {
+                            file_idx: fi,
+                            kind: RowKind::Comment(cl),
+                            text: String::new(),
+                        });
+                    }
+                }
             }
         }
     }
     rows
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::loader::{load_comments, load_patch};
+    use std::collections::HashSet;
+    use std::path::Path;
+
+    #[test]
+    fn expands_tabs_and_strips_controls() {
+        assert_eq!(sanitize_line("\tx"), "    x");
+        assert_eq!(sanitize_line("a\tb"), "a   b"); // tab to next 4-col stop
+        assert_eq!(sanitize_line("end\r"), "end");
+        assert_eq!(sanitize_line("a\u{0}b"), "ab");
+        // ANSI CSI color sequence is removed, payload kept.
+        assert_eq!(sanitize_line("\u{1b}[31mred\u{1b}[0m"), "red");
+    }
+
+    #[test]
+    fn injects_expanded_thread_rows() {
+        let cs = load_patch(Some(Path::new("examples/rust-long-en.patch"))).unwrap();
+        let comments =
+            load_comments(Path::new("examples/rust-long-en.comments.json")).unwrap();
+        let none = HashSet::new();
+        let all: HashSet<usize> = (0..comments.threads.len()).collect();
+        let base = build_rows(&cs, &comments, &none, 80);
+        let rows = build_rows(&cs, &comments, &all, 80);
+        // Expanding threads injects extra rows.
+        assert!(rows.len() > base.len());
+        // Those rows are comment rows: non-selectable and anchorless.
+        let comment_rows = rows
+            .iter()
+            .filter(|r| matches!(r.kind, RowKind::Comment(_)))
+            .count();
+        assert!(comment_rows > 0);
+        assert!(rows.iter().all(|r| !matches!(r.kind, RowKind::Comment(_))
+            || (!r.is_selectable() && r.anchor().is_none())));
+    }
 }

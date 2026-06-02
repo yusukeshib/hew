@@ -4,7 +4,7 @@ use crate::comments::model::CommentStore;
 use crate::diff::model::{Changeset, LineKind, Side};
 use crate::ui::highlight::Highlighter;
 use crate::ui::render_rows::{
-    build_rows, build_split_rows, Row, RowKind, SideCell, SplitRow, SplitRowKind,
+    build_rows, build_split_rows, CommentLine, Row, RowKind, SideCell, SplitRow, SplitRowKind,
 };
 use anyhow::Result;
 use crossterm::event::{
@@ -12,10 +12,10 @@ use crossterm::event::{
 };
 use ratatui::prelude::*;
 use ratatui::widgets::{
-    Block, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Wrap,
+    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 use std::cell::RefCell;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, SystemTime};
@@ -23,6 +23,7 @@ use std::time::{Duration, SystemTime};
 const ADD_BG: Color = Color::Rgb(20, 42, 24);
 const DEL_BG: Color = Color::Rgb(48, 24, 26);
 const SEL_BG: Color = Color::Rgb(60, 66, 80);
+const COMMENT_BG: Color = Color::Rgb(30, 34, 44);
 
 /// Highlighted runs for one line: `(fg color, text)`.
 type LineRuns = Rc<Vec<(Color, String)>>;
@@ -239,6 +240,8 @@ pub struct App {
     sidebar_width: u16,
     sidebar_scroll: usize, // top file row of the sidebar (independent of selection)
     sidebar_sel: usize,    // cursor row in the sidebar (a File or Thread row)
+    expanded: HashSet<usize>, // thread indices expanded inline in the diff
+    comment_wrap: usize,      // width used to wrap inline comment bodies
     resizing: bool,        // dragging the sidebar/diff divider
     focus: Focus,
     current_file: usize,          // the diff pane shows only this file
@@ -261,8 +264,9 @@ pub struct App {
 impl App {
     /// Construct with a pre-loaded comment store (e.g. from a sidecar JSON).
     pub fn with_comments(title: String, changeset: Changeset, comments: CommentStore) -> Self {
-        let rows = build_rows(&changeset);
-        let split_rows = build_split_rows(&changeset);
+        let expanded = HashSet::new();
+        let rows = build_rows(&changeset, &comments, &expanded, 0);
+        let split_rows = build_split_rows(&changeset, &comments, &expanded, 0);
         let stats = file_stats(&changeset);
         let (sidebar_rows, file_to_sbrow) = build_sidebar_rows(&changeset, &comments);
         let mut app = App {
@@ -275,7 +279,7 @@ impl App {
             selected: 0,
             scroll: 0,
             height: 1,
-            status: "q quit  j/k move  spc/b page  g/G top/bot  [/] file  n/N comment  tab split"
+            status: "q quit  j/k move  g/G top/bot  [/] file  n/N comment  o expand  tab split"
                 .into(),
             watch: None,
             needs_clear: false,
@@ -283,6 +287,8 @@ impl App {
             sidebar_width: SIDEBAR_WIDTH,
             sidebar_scroll: 0,
             sidebar_sel: file_to_sbrow.first().copied().unwrap_or(0),
+            expanded,
+            comment_wrap: 0,
             resizing: false,
             focus: Focus::Diff,
             current_file: 0,
@@ -615,7 +621,7 @@ impl App {
             }
             Some(SbRow::Thread(ti)) => {
                 let ti = *ti;
-                self.goto_thread(ti, false);
+                self.goto_thread(ti, false, false);
             }
             _ => {}
         }
@@ -633,7 +639,7 @@ impl App {
             Some(SbRow::Thread(ti)) => {
                 let ti = *ti;
                 self.sidebar_sel = idx;
-                self.goto_thread(ti, true);
+                self.goto_thread(ti, true, true);
             }
             _ => {}
         }
@@ -641,7 +647,7 @@ impl App {
 
     /// Jump the diff pane straight to comment thread `ti` and select its line.
     /// `focus_diff` moves keyboard focus to the diff (used for mouse clicks).
-    fn goto_thread(&mut self, ti: usize, focus_diff: bool) {
+    fn goto_thread(&mut self, ti: usize, focus_diff: bool, expand: bool) {
         let Some(t) = self.comments.threads.get(ti) else {
             return;
         };
@@ -655,6 +661,9 @@ impl App {
             return;
         };
         self.set_current_file(fi);
+        if expand && self.expanded.insert(ti) {
+            self.rebuild_rows();
+        }
         let target = (0..self.active_len()).find(|&i| {
             self.is_selectable_at(i)
                 && matches!(self.anchor_at(i), Some((f, s, l)) if f == fi && s == side && range.contains(l))
@@ -676,6 +685,62 @@ impl App {
         if focus_diff {
             self.focus = Focus::Diff;
         }
+    }
+
+    /// Rebuild the diff row lists from the changeset + inline-expanded threads,
+    /// keeping the cursor on the same (file, side, line) anchor.
+    fn rebuild_rows(&mut self) {
+        let anchor = self.anchor_at(self.selected);
+        let cur_file = self.current_file;
+        self.rows = build_rows(&self.changeset, &self.comments, &self.expanded, self.comment_wrap);
+        self.split_rows =
+            build_split_rows(&self.changeset, &self.comments, &self.expanded, self.comment_wrap);
+        let target = anchor.and_then(|a| {
+            (0..self.active_len())
+                .find(|&i| self.is_selectable_at(i) && self.anchor_at(i) == Some(a))
+        });
+        self.selected = target
+            .or_else(|| self.first_selectable())
+            .unwrap_or(0)
+            .min(self.active_len().saturating_sub(1));
+        self.current_file = self.row_file_idx(self.selected).unwrap_or(cur_file);
+        self.ensure_visible();
+    }
+
+    /// Toggle inline expansion of the comment thread(s) on the selected line.
+    fn toggle_comment(&mut self) {
+        let Some((fi, side, line)) = self.anchor_at(self.selected) else {
+            return;
+        };
+        let Some(file) = self.changeset.files.get(fi) else {
+            return;
+        };
+        let path = Path::new(file.display_path());
+        let here: Vec<usize> = self
+            .comments
+            .threads
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.file.as_path() == path && t.side == side && t.range.contains(line))
+            .map(|(i, _)| i)
+            .collect();
+        if here.is_empty() {
+            self.status = "no comments on this line".into();
+            return;
+        }
+        // Collapse if all are open; otherwise expand the rest.
+        if here.iter().all(|i| self.expanded.contains(i)) {
+            for i in &here {
+                self.expanded.remove(i);
+            }
+            self.status = "collapsed thread".into();
+        } else {
+            for i in here {
+                self.expanded.insert(i);
+            }
+            self.status = "expanded thread".into();
+        }
+        self.rebuild_rows();
     }
 
     /// Place the cursor at the clicked diff row. `anchor` starts a new
@@ -739,8 +804,6 @@ impl App {
             match crate::loader::load_patch(Some(&p)) {
                 Ok(cs) => {
                     self.changeset = cs;
-                    self.rows = build_rows(&self.changeset);
-                    self.split_rows = build_split_rows(&self.changeset);
                     self.file_stats = file_stats(&self.changeset);
                     self.hl_cache.borrow_mut().clear();
                 }
@@ -756,10 +819,13 @@ impl App {
                 Err(e) => self.status = format!("comments reload failed: {e}"),
             }
         }
-        // Rebuild the sidebar once both the diff and comments are current.
+        // Rebuild the sidebar + diff rows once both the diff and comments are
+        // current. Thread indices may have shifted, so drop inline expansions.
         let (sr, map) = build_sidebar_rows(&self.changeset, &self.comments);
         self.sidebar_rows = sr;
         self.file_to_sbrow = map;
+        self.expanded.clear();
+        self.rebuild_rows();
         // Files may have changed; re-point at a valid file and selectable row.
         self.set_current_file(self.current_file);
         self.status = "reloaded".into();
@@ -940,8 +1006,15 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.move_sidebar(-1),
             KeyCode::Char('g') | KeyCode::Home => self.sidebar_edge(false),
             KeyCode::Char('G') | KeyCode::End => self.sidebar_edge(true),
-            // Enter the diff with the current row selected.
-            KeyCode::Enter | KeyCode::Char('l') => self.focus = Focus::Diff,
+            // Enter: expand+focus a thread row, else just enter the diff.
+            KeyCode::Enter | KeyCode::Char('l') => {
+                if let Some(SbRow::Thread(ti)) = self.sidebar_rows.get(self.sidebar_sel) {
+                    let ti = *ti;
+                    self.goto_thread(ti, true, true);
+                } else {
+                    self.focus = Focus::Diff;
+                }
+            }
             _ => {}
         }
     }
@@ -981,6 +1054,9 @@ impl App {
             // Jump between comment threads.
             KeyCode::Char('n') => self.jump_comment(1),
             KeyCode::Char('N') => self.jump_comment(-1),
+
+            // Toggle the inline comment thread on the current line.
+            KeyCode::Enter | KeyCode::Char('o') => self.toggle_comment(),
 
             // Jump between files.
             KeyCode::Char(']') => self.jump_file(1),
@@ -1063,12 +1139,6 @@ impl App {
         self.scroll = self.scroll.clamp(start, end.saturating_sub(1).max(start));
     }
 
-    fn selected_anchor(&self) -> Option<(PathBuf, Side, u32)> {
-        let (file_idx, side, line) = self.anchor_at(self.selected)?;
-        let file = self.changeset.files.get(file_idx)?;
-        Some((PathBuf::from(file.display_path()), side, line))
-    }
-
     fn jump_comment(&mut self, dir: isize) {
         self.sel_anchor = None;
         // Collect rows in the current file that carry a thread anchor.
@@ -1145,11 +1215,22 @@ impl App {
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Length(self.sidebar_width), Constraint::Min(1)])
                 .split(body);
-            self.render_sidebar(f, cols[0]);
             (cols[1], cols[0])
         } else {
             (body, Rect::default())
         };
+        // Re-wrap inline comments to the current diff width before any code
+        // reads the row lists (selection mapping depends on it).
+        let cw = (diff_area.width as usize).saturating_sub(8);
+        if cw != self.comment_wrap {
+            self.comment_wrap = cw;
+            if !self.expanded.is_empty() {
+                self.rebuild_rows();
+            }
+        }
+        if sidebar {
+            self.render_sidebar(f, sidebar_area);
+        }
         self.sidebar_area = sidebar_area;
         self.sidebar_sb =
             if sidebar_area.width > 0 && self.sidebar_rows.len() > sidebar_area.height as usize {
@@ -1196,7 +1277,6 @@ impl App {
             chunks[2],
         );
 
-        self.render_comment_popup(f, area);
     }
 
     fn render_diff(&self, f: &mut Frame, area: Rect) {
@@ -1437,6 +1517,10 @@ impl App {
                 ));
                 Line::from(spans)
             }
+            SplitRowKind::Comment(cl) => {
+                let full = side_w * 2 + divider.chars().count();
+                self.comment_line_to_line(cl, full)
+            }
         }
     }
 
@@ -1551,6 +1635,7 @@ impl App {
                 }
                 Line::from(spans)
             }
+            RowKind::Comment(cl) => self.comment_line_to_line(cl, width),
         }
     }
 
@@ -1585,58 +1670,33 @@ impl App {
     }
 
     /// Show threads anchored at the current line in a popup.
-    fn render_comment_popup(&self, f: &mut Frame, area: Rect) {
-        let Some((file, side, line)) = self.selected_anchor() else {
-            return;
-        };
-        let threads: Vec<_> = self
-            .comments
-            .threads
-            .iter()
-            .filter(|t| t.file == file && t.side == side && t.range.contains(line))
-            .collect();
-        if threads.is_empty() {
-            return;
-        }
-        let mut text: Vec<Line> = Vec::new();
-        for t in threads {
-            let head = format!(
-                "{} {}:{}-{} {}",
-                if t.resolved { "[resolved]" } else { "[open]" },
-                t.file.display(),
-                t.range.start,
-                t.range.end,
-                ""
-            );
-            text.push(Line::from(Span::styled(
-                head,
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            for c in &t.comments {
-                let who = c.author.clone().unwrap_or_else(|| "?".into());
-                text.push(Line::from(format!("  @{who}: {}", c.body)));
+    /// Render one inline comment line, padded so the tint spans the full width.
+    fn comment_line_to_line(&self, cl: &CommentLine, width: usize) -> Line<'static> {
+        let (text, color, bold) = match cl {
+            CommentLine::Head { resolved, replies } => (
+                format!(
+                    "  ▏ {} · {} message{}",
+                    if *resolved { "resolved" } else { "open" },
+                    replies,
+                    if *replies == 1 { "" } else { "s" }
+                ),
+                if *resolved { Color::DarkGray } else { Color::Cyan },
+                true,
+            ),
+            CommentLine::Author(a) => {
+                (format!("  ▏ @{a}"), Color::Yellow, true)
             }
-            text.push(Line::from(""));
-        }
-
-        let w = (area.width as f32 * 0.6) as u16;
-        let h = (text.len() as u16 + 2)
-            .min(area.height.saturating_sub(2))
-            .max(3);
-        let popup = Rect {
-            x: area.width.saturating_sub(w).saturating_sub(1),
-            y: area.height.saturating_sub(h).saturating_sub(1),
-            width: w,
-            height: h,
+            CommentLine::Body(b) => (format!("  ▏   {b}"), Color::Gray, false),
+            CommentLine::Gap => ("  ▏".to_string(), Color::DarkGray, false),
         };
-        f.render_widget(Clear, popup);
-        f.render_widget(
-            Paragraph::new(text)
-                .block(Block::default().borders(Borders::ALL).title(" thread "))
-                .wrap(Wrap { trim: false }),
-            popup,
-        );
+        let mut style = Style::default().fg(color).bg(COMMENT_BG);
+        if bold {
+            style = style.add_modifier(Modifier::BOLD);
+        }
+        let pad = width.saturating_sub(text.chars().count());
+        Line::from(vec![
+            Span::styled(text, style),
+            Span::styled(" ".repeat(pad), Style::default().bg(COMMENT_BG)),
+        ])
     }
 }
