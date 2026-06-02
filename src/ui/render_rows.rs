@@ -40,6 +40,147 @@ impl Row {
     }
 }
 
+/// One side (left=old / right=new) of a split row.
+#[derive(Debug, Clone)]
+pub struct SideCell {
+    pub kind: LineKind,
+    pub line: Option<u32>,
+    pub text: String,
+}
+
+#[derive(Debug, Clone)]
+pub enum SplitRowKind {
+    FileHeader,
+    HunkHeader,
+    /// A side-by-side pair. Either side may be empty (padding).
+    Pair {
+        left: Option<SideCell>,
+        right: Option<SideCell>,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct SplitRow {
+    pub file_idx: usize,
+    pub kind: SplitRowKind,
+    pub text: String, // header text
+}
+
+impl SplitRow {
+    pub fn is_selectable(&self) -> bool {
+        matches!(self.kind, SplitRowKind::Pair { .. })
+    }
+
+    /// Comment anchor: prefer the new (right) side, fall back to old (left).
+    pub fn anchor(&self) -> Option<(Side, u32)> {
+        match &self.kind {
+            SplitRowKind::Pair { left, right } => right
+                .as_ref()
+                .and_then(|c| c.line.map(|l| (Side::New, l)))
+                .or_else(|| left.as_ref().and_then(|c| c.line.map(|l| (Side::Old, l)))),
+            _ => None,
+        }
+    }
+}
+
+fn hunk_header(hunk: &crate::diff::model::Hunk) -> String {
+    format!(
+        "@@ -{},{} +{},{} @@{}",
+        hunk.old_start,
+        hunk.old_count,
+        hunk.new_start,
+        hunk.new_count,
+        hunk.section
+            .as_ref()
+            .map(|s| format!(" {s}"))
+            .unwrap_or_default()
+    )
+}
+
+/// Build the side-by-side (split) row list. Within a change block, consecutive
+/// deletions (left) are zipped with consecutive additions (right); context
+/// lines appear on both sides.
+pub fn build_split_rows(changeset: &Changeset) -> Vec<SplitRow> {
+    let mut rows = Vec::new();
+    for (fi, file) in changeset.files.iter().enumerate() {
+        rows.push(SplitRow {
+            file_idx: fi,
+            kind: SplitRowKind::FileHeader,
+            text: file.display_path().to_string(),
+        });
+        if file.is_binary {
+            rows.push(SplitRow {
+                file_idx: fi,
+                kind: SplitRowKind::HunkHeader,
+                text: "Binary file".into(),
+            });
+            continue;
+        }
+        for hunk in &file.hunks {
+            rows.push(SplitRow {
+                file_idx: fi,
+                kind: SplitRowKind::HunkHeader,
+                text: hunk_header(hunk),
+            });
+            let mut dels: Vec<SideCell> = Vec::new();
+            let mut adds: Vec<SideCell> = Vec::new();
+            for line in &hunk.lines {
+                let cell = SideCell {
+                    kind: line.kind,
+                    line: match line.kind {
+                        LineKind::Deletion => line.old_line,
+                        _ => line.new_line,
+                    },
+                    text: line.text.clone(),
+                };
+                match line.kind {
+                    LineKind::Deletion => dels.push(cell),
+                    LineKind::Addition => adds.push(cell),
+                    LineKind::Context => {
+                        flush_pairs(fi, &mut dels, &mut adds, &mut rows);
+                        rows.push(SplitRow {
+                            file_idx: fi,
+                            kind: SplitRowKind::Pair {
+                                left: Some(SideCell {
+                                    kind: LineKind::Context,
+                                    line: line.old_line,
+                                    text: line.text.clone(),
+                                }),
+                                right: Some(cell),
+                            },
+                            text: String::new(),
+                        });
+                    }
+                }
+            }
+            flush_pairs(fi, &mut dels, &mut adds, &mut rows);
+        }
+    }
+    rows
+}
+
+/// Emit the accumulated deletion/addition runs as zipped pairs.
+fn flush_pairs(
+    file_idx: usize,
+    dels: &mut Vec<SideCell>,
+    adds: &mut Vec<SideCell>,
+    rows: &mut Vec<SplitRow>,
+) {
+    let n = dels.len().max(adds.len());
+    let mut di = dels.drain(..);
+    let mut ai = adds.drain(..);
+    for _ in 0..n {
+        rows.push(SplitRow {
+            file_idx,
+            kind: SplitRowKind::Pair {
+                left: di.next(),
+                right: ai.next(),
+            },
+            text: String::new(),
+        });
+    }
+}
+
 /// Build the unified (stack) row list.
 pub fn build_rows(changeset: &Changeset) -> Vec<Row> {
     let mut rows = Vec::new();
@@ -58,21 +199,10 @@ pub fn build_rows(changeset: &Changeset) -> Vec<Row> {
             continue;
         }
         for hunk in &file.hunks {
-            let header = format!(
-                "@@ -{},{} +{},{} @@{}",
-                hunk.old_start,
-                hunk.old_count,
-                hunk.new_start,
-                hunk.new_count,
-                hunk.section
-                    .as_ref()
-                    .map(|s| format!(" {s}"))
-                    .unwrap_or_default()
-            );
             rows.push(Row {
                 file_idx: fi,
                 kind: RowKind::HunkHeader,
-                text: header,
+                text: hunk_header(hunk),
             });
             for line in &hunk.lines {
                 let prefix = match line.kind {

@@ -2,7 +2,9 @@
 
 use crate::comments::model::CommentStore;
 use crate::diff::model::{Changeset, LineKind, Side};
-use crate::ui::render_rows::{build_rows, Row, RowKind};
+use crate::ui::render_rows::{
+    build_rows, build_split_rows, Row, RowKind, SideCell, SplitRow, SplitRowKind,
+};
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::prelude::*;
@@ -29,6 +31,23 @@ fn file_mtime(p: &Path) -> Option<SystemTime> {
     std::fs::metadata(p).and_then(|m| m.modified()).ok()
 }
 
+/// Truncate or right-pad `s` to exactly `w` characters.
+fn fit(s: &str, w: usize) -> String {
+    let mut out: String = s.chars().take(w).collect();
+    let len = out.chars().count();
+    if len < w {
+        out.push_str(&" ".repeat(w - len));
+    }
+    out
+}
+
+/// Diff layout: unified (stacked) or split (old | new, like `git delta`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum View {
+    Unified,
+    Split,
+}
+
 /// Read-only diff/comment viewer state. Comments are loaded from a sidecar and
 /// only displayed/navigated — hew never mutates them.
 pub struct App {
@@ -36,7 +55,9 @@ pub struct App {
     changeset: Changeset,
     rows: Vec<Row>,
     comments: CommentStore,
-    selected: usize, // index into rows
+    split_rows: Vec<SplitRow>,
+    view: View,
+    selected: usize, // index into the active row list
     scroll: usize,   // top row of viewport
     height: usize,   // last known viewport height
     status: String,
@@ -48,17 +69,19 @@ impl App {
     /// Construct with a pre-loaded comment store (e.g. from a sidecar JSON).
     pub fn with_comments(title: String, changeset: Changeset, comments: CommentStore) -> Self {
         let rows = build_rows(&changeset);
+        let split_rows = build_split_rows(&changeset);
         let mut app = App {
             title,
             changeset,
             rows,
+            split_rows,
+            view: View::Unified,
             comments,
             selected: 0,
             scroll: 0,
             height: 1,
-            status:
-                "q quit  j/k move  ^d/^u half  spc/b page  ^e/^y scroll  g/G top/bot  n/N comment"
-                    .into(),
+            status: "q quit  j/k move  ^d/^u half  spc/b page  g/G top/bot  n/N comment  tab split"
+                .into(),
             watch: None,
             quit: false,
         };
@@ -78,7 +101,13 @@ impl App {
     }
 
     fn first_selectable(&self) -> Option<usize> {
-        self.rows.iter().position(|r| r.is_selectable())
+        (0..self.active_len()).find(|&i| self.is_selectable_at(i))
+    }
+
+    fn last_selectable(&self) -> Option<usize> {
+        (0..self.active_len())
+            .rev()
+            .find(|&i| self.is_selectable_at(i))
     }
 
     pub fn run(&mut self, terminal: &mut Terminal<impl Backend>) -> Result<()> {
@@ -135,6 +164,7 @@ impl App {
                 Ok(cs) => {
                     self.changeset = cs;
                     self.rows = build_rows(&self.changeset);
+                    self.split_rows = build_split_rows(&self.changeset);
                 }
                 Err(e) => {
                     self.status = format!("reload failed: {e}");
@@ -149,14 +179,8 @@ impl App {
             }
         }
         // Keep the selection on a valid, selectable row after the rebuild.
-        let max = self.rows.len().saturating_sub(1);
-        if self.selected > max
-            || !self
-                .rows
-                .get(self.selected)
-                .map(|r| r.is_selectable())
-                .unwrap_or(false)
-        {
+        let max = self.active_len().saturating_sub(1);
+        if self.selected > max || !self.is_selectable_at(self.selected) {
             self.selected = self
                 .nearest_selectable(self.selected.min(max), 1)
                 .or_else(|| self.first_selectable())
@@ -164,6 +188,63 @@ impl App {
         }
         self.ensure_visible();
         self.status = "reloaded".into();
+    }
+
+    // ---- active-list abstraction (unified vs split) ----
+
+    fn active_len(&self) -> usize {
+        match self.view {
+            View::Unified => self.rows.len(),
+            View::Split => self.split_rows.len(),
+        }
+    }
+
+    fn is_selectable_at(&self, i: usize) -> bool {
+        match self.view {
+            View::Unified => self.rows.get(i).is_some_and(|r| r.is_selectable()),
+            View::Split => self.split_rows.get(i).is_some_and(|r| r.is_selectable()),
+        }
+    }
+
+    /// `(file_idx, side, line)` anchor for the row at `i`, if it carries one.
+    fn anchor_at(&self, i: usize) -> Option<(usize, Side, u32)> {
+        match self.view {
+            View::Unified => {
+                let r = self.rows.get(i)?;
+                let (s, l) = r.anchor()?;
+                Some((r.file_idx, s, l))
+            }
+            View::Split => {
+                let r = self.split_rows.get(i)?;
+                let (s, l) = r.anchor()?;
+                Some((r.file_idx, s, l))
+            }
+        }
+    }
+
+    /// Toggle between unified and split, keeping the cursor on the same line.
+    fn toggle_view(&mut self) {
+        let anchor = self.anchor_at(self.selected);
+        self.view = match self.view {
+            View::Unified => View::Split,
+            View::Split => View::Unified,
+        };
+        // Re-find the same (file, side, line) in the other layout.
+        let target = anchor.and_then(|a| {
+            (0..self.active_len())
+                .find(|&i| self.is_selectable_at(i) && self.anchor_at(i) == Some(a))
+        });
+        self.selected = target
+            .or_else(|| self.first_selectable())
+            .unwrap_or(0)
+            .min(self.active_len().saturating_sub(1));
+        // Recenter so the cursor is roughly mid-viewport.
+        self.scroll = self.selected.saturating_sub(self.height / 2);
+        self.ensure_visible();
+        self.status = match self.view {
+            View::Unified => "unified view".into(),
+            View::Split => "split view".into(),
+        };
     }
 
     fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) {
@@ -195,17 +276,16 @@ impl App {
                 self.ensure_visible();
             }
             KeyCode::Char('G') | KeyCode::End => {
-                self.selected = self
-                    .rows
-                    .iter()
-                    .rposition(|r| r.is_selectable())
-                    .unwrap_or(0);
+                self.selected = self.last_selectable().unwrap_or(0);
                 self.ensure_visible();
             }
 
             // Jump between comment threads.
             KeyCode::Char('n') => self.jump_comment(1),
             KeyCode::Char('N') => self.jump_comment(-1),
+
+            // Toggle unified <-> split (side-by-side) layout.
+            KeyCode::Tab | KeyCode::Char('s') => self.toggle_view(),
             _ => {}
         }
     }
@@ -214,10 +294,10 @@ impl App {
         let mut i = self.selected as isize;
         loop {
             i += delta;
-            if i < 0 || i as usize >= self.rows.len() {
+            if i < 0 || i as usize >= self.active_len() {
                 return;
             }
-            if self.rows[i as usize].is_selectable() {
+            if self.is_selectable_at(i as usize) {
                 self.selected = i as usize;
                 self.ensure_visible();
                 return;
@@ -239,7 +319,7 @@ impl App {
     /// Scroll the viewport by `delta` rows, dragging the selection back into
     /// view if it would fall outside (less/vim Ctrl-E / Ctrl-Y behavior).
     fn scroll_view(&mut self, delta: isize) {
-        let max_top = self.rows.len().saturating_sub(1) as isize;
+        let max_top = self.active_len().saturating_sub(1) as isize;
         self.scroll = (self.scroll as isize + delta).clamp(0, max_top) as usize;
         if self.selected < self.scroll {
             if let Some(i) = self.nearest_selectable(self.scroll, 1) {
@@ -256,8 +336,8 @@ impl App {
     /// First selectable row at or beyond `from` scanning in `dir`.
     fn nearest_selectable(&self, from: usize, dir: isize) -> Option<usize> {
         let mut i = from as isize;
-        while i >= 0 && (i as usize) < self.rows.len() {
-            if self.rows[i as usize].is_selectable() {
+        while i >= 0 && (i as usize) < self.active_len() {
+            if self.is_selectable_at(i as usize) {
                 return Some(i as usize);
             }
             i += dir;
@@ -274,27 +354,26 @@ impl App {
     }
 
     fn selected_anchor(&self) -> Option<(PathBuf, Side, u32)> {
-        let row = self.rows.get(self.selected)?;
-        let (side, line) = row.anchor()?;
-        let file = self.changeset.files.get(row.file_idx)?;
+        let (file_idx, side, line) = self.anchor_at(self.selected)?;
+        let file = self.changeset.files.get(file_idx)?;
         Some((PathBuf::from(file.display_path()), side, line))
     }
 
     fn jump_comment(&mut self, dir: isize) {
         // Collect rows that carry a thread anchor.
         let mut targets: Vec<usize> = Vec::new();
-        for (i, row) in self.rows.iter().enumerate() {
-            if let (Some((side, line)), Some(file)) =
-                (row.anchor(), self.changeset.files.get(row.file_idx))
-            {
-                let path = PathBuf::from(file.display_path());
-                if self
-                    .comments
-                    .threads
-                    .iter()
-                    .any(|t| t.file == path && t.side == side && t.range.contains(line))
-                {
-                    targets.push(i);
+        for i in 0..self.active_len() {
+            if let Some((file_idx, side, line)) = self.anchor_at(i) {
+                if let Some(file) = self.changeset.files.get(file_idx) {
+                    let path = PathBuf::from(file.display_path());
+                    if self
+                        .comments
+                        .threads
+                        .iter()
+                        .any(|t| t.file == path && t.side == side && t.range.contains(line))
+                    {
+                        targets.push(i);
+                    }
                 }
             }
         }
@@ -359,6 +438,13 @@ impl App {
     }
 
     fn render_diff(&self, f: &mut Frame, area: Rect) {
+        match self.view {
+            View::Unified => self.render_unified(f, area),
+            View::Split => self.render_split(f, area),
+        }
+    }
+
+    fn render_unified(&self, f: &mut Frame, area: Rect) {
         let mut lines: Vec<Line> = Vec::new();
         let end = (self.scroll + self.height).min(self.rows.len());
         for idx in self.scroll..end {
@@ -369,8 +455,99 @@ impl App {
         f.render_widget(Paragraph::new(lines), area);
     }
 
+    fn render_split(&self, f: &mut Frame, area: Rect) {
+        let total = area.width as usize;
+        let divider = " │ ";
+        let side_w = total.saturating_sub(divider.len()) / 2;
+        let mut lines: Vec<Line> = Vec::new();
+        let end = (self.scroll + self.height).min(self.split_rows.len());
+        for idx in self.scroll..end {
+            let row = &self.split_rows[idx];
+            let selected = idx == self.selected;
+            lines.push(self.split_row_to_line(row, selected, side_w, divider));
+        }
+        f.render_widget(Paragraph::new(lines), area);
+    }
+
+    fn split_row_to_line(
+        &self,
+        row: &SplitRow,
+        selected: bool,
+        side_w: usize,
+        divider: &str,
+    ) -> Line<'static> {
+        match &row.kind {
+            SplitRowKind::FileHeader => Line::from(Span::styled(
+                format!("▌ {}", row.text),
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Rgb(40, 44, 52))
+                    .add_modifier(Modifier::BOLD),
+            )),
+            SplitRowKind::HunkHeader => Line::from(Span::styled(
+                row.text.clone(),
+                Style::default().fg(Color::Magenta),
+            )),
+            SplitRowKind::Pair { left, right } => {
+                let mut spans =
+                    self.side_spans(left.as_ref(), Side::Old, row.file_idx, side_w, selected);
+                spans.push(Span::styled(
+                    divider.to_string(),
+                    Style::default().fg(Color::DarkGray),
+                ));
+                spans.extend(self.side_spans(
+                    right.as_ref(),
+                    Side::New,
+                    row.file_idx,
+                    side_w,
+                    selected,
+                ));
+                Line::from(spans)
+            }
+        }
+    }
+
+    /// Render one side (old/new) of a split pair into spans of width `width`.
+    fn side_spans(
+        &self,
+        cell: Option<&SideCell>,
+        side: Side,
+        file_idx: usize,
+        width: usize,
+        selected: bool,
+    ) -> Vec<Span<'static>> {
+        const PREFIX: usize = 7; // marker(2) + line number(4) + space(1)
+        match cell {
+            None => vec![Span::styled(
+                " ".repeat(width),
+                Style::default().bg(Color::Rgb(28, 30, 34)),
+            )],
+            Some(c) => {
+                let marker = self.marker(file_idx, side, c.line);
+                let num = c
+                    .line
+                    .map(|n| format!("{n:>4}"))
+                    .unwrap_or_else(|| "    ".into());
+                let body = fit(&c.text, width.saturating_sub(PREFIX));
+                let mut body_style = match c.kind {
+                    LineKind::Addition => Style::default().fg(Color::Green),
+                    LineKind::Deletion => Style::default().fg(Color::Red),
+                    LineKind::Context => Style::default().fg(Color::Gray),
+                };
+                if selected {
+                    body_style = body_style.bg(Color::Rgb(60, 66, 80));
+                }
+                vec![
+                    Span::styled(marker, Style::default().fg(Color::Cyan)),
+                    Span::styled(format!("{num} "), Style::default().fg(Color::DarkGray)),
+                    Span::styled(body, body_style),
+                ]
+            }
+        }
+    }
+
     fn row_to_line(&self, row: &Row, selected: bool) -> Line<'static> {
-        let marker = self.thread_marker(row);
+        let marker = self.thread_marker(row).to_string();
         let (content, base) = match &row.kind {
             RowKind::FileHeader => (
                 format!("▌ {}", row.text),
@@ -410,25 +587,34 @@ impl App {
         ])
     }
 
-    /// A gutter marker showing whether a thread (resolved/open) sits here.
-    fn thread_marker(&self, row: &Row) -> String {
-        if let (Some((side, line)), Some(file)) =
-            (row.anchor(), self.changeset.files.get(row.file_idx))
-        {
-            let path = PathBuf::from(file.display_path());
-            let here: Vec<_> = self
-                .comments
-                .threads
-                .iter()
-                .filter(|t| t.file == path && t.side == side && t.range.contains(line))
-                .collect();
-            if here.iter().any(|t| !t.resolved) {
-                return "● ".into();
-            } else if !here.is_empty() {
-                return "○ ".into();
-            }
+    /// Gutter marker for the row's own anchor (unified view).
+    fn thread_marker(&self, row: &Row) -> &'static str {
+        match row.anchor() {
+            Some((side, line)) => self.marker(row.file_idx, side, Some(line)),
+            None => "  ",
         }
-        "  ".into()
+    }
+
+    /// Gutter marker (● open / ○ resolved / blank) for a file+side+line.
+    fn marker(&self, file_idx: usize, side: Side, line: Option<u32>) -> &'static str {
+        let Some(line) = line else { return "  " };
+        let Some(file) = self.changeset.files.get(file_idx) else {
+            return "  ";
+        };
+        let path = PathBuf::from(file.display_path());
+        let here: Vec<_> = self
+            .comments
+            .threads
+            .iter()
+            .filter(|t| t.file == path && t.side == side && t.range.contains(line))
+            .collect();
+        if here.iter().any(|t| !t.resolved) {
+            "● "
+        } else if !here.is_empty() {
+            "○ "
+        } else {
+            "  "
+        }
     }
 
     /// Show threads anchored at the current line in a popup.

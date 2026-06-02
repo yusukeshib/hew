@@ -68,7 +68,12 @@ refreshes. Watching only applies to file inputs — a stdin patch can't be re-re
 | `Ctrl-E` / `Ctrl-Y` | Scroll viewport one line (cursor stays in view) |
 | `g` / `G` (or `Home`/`End`) | Jump to top / bottom |
 | `n` / `N` | Jump to next / previous comment |
+| `Tab` / `s` | Toggle unified ↔ split (side-by-side) layout |
 | `q` | Quit |
+
+Unified stacks `-`/`+` lines; split shows old on the left and new on the right
+(like `git delta --side-by-side`), pairing changed lines across a divider.
+Toggling keeps the cursor on the same line.
 
 hew is a read-only viewer: comments are loaded from a sidecar and displayed
 (gutter markers + popup), never edited.
@@ -116,9 +121,8 @@ See [examples/README.md](examples/README.md) for how to fetch more.
 integration, no patch apply/edit/merge, no structural (AST) diff. Today it is a
 single-pane unified viewer with threaded comments.
 
-Planned: split/stack layouts and a file sidebar, syntax highlighting (syntect →
-tree-sitter), and a loopback session server so an agent/CLI can drive a running
-TUI.
+Planned: a file sidebar, syntax highlighting (syntect → tree-sitter), and a
+loopback session server so an agent/CLI can drive a running TUI.
 
 Note: `hew` parses **plain unified diffs**, not git `format-patch` mailbox output
 (`gh pr diff --patch`). Use a `.diff`/`git diff` stream instead.
