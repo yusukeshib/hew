@@ -1,4 +1,4 @@
-//! Normalized diff representation shared by the parse and generate paths.
+//! Normalized diff representation produced by the unified-patch parser.
 
 use serde::{Deserialize, Serialize};
 

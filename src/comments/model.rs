@@ -15,7 +15,10 @@ pub struct LineRange {
 #[allow(dead_code)] // single() used in tests + session server
 impl LineRange {
     pub fn single(line: u32) -> Self {
-        LineRange { start: line, end: line }
+        LineRange {
+            start: line,
+            end: line,
+        }
     }
     pub fn contains(&self, line: u32) -> bool {
         line >= self.start && line <= self.end
@@ -211,7 +214,17 @@ mod tests {
             None,
             "range".into(),
         );
-        assert_eq!(store.threads_at(std::path::Path::new("a.rs"), Side::New, 6).len(), 1);
-        assert_eq!(store.threads_at(std::path::Path::new("a.rs"), Side::New, 9).len(), 0);
+        assert_eq!(
+            store
+                .threads_at(std::path::Path::new("a.rs"), Side::New, 6)
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .threads_at(std::path::Path::new("a.rs"), Side::New, 9)
+                .len(),
+            0
+        );
     }
 }

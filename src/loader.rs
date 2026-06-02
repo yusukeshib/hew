@@ -1,66 +1,15 @@
 //! Turn CLI inputs into a normalized [`Changeset`].
 
 use crate::comments::model::CommentStore;
-use crate::diff::{generate, model::Changeset, parse};
-use crate::vcs::git;
+use crate::diff::{model::Changeset, parse};
 use anyhow::{Context, Result};
 use std::io::Read;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
-const CONTEXT_LINES: usize = 3;
-
-/// What the user asked to review.
-#[derive(Debug, Clone)]
-pub enum Source {
-    /// `hew diff` with no args → working tree, or two files.
-    WorkingTree { repo: PathBuf },
-    TwoFiles { old: PathBuf, new: PathBuf },
-    /// `hew show [rev]`.
-    Show { repo: PathBuf, rev: String },
-    /// `hew patch <file|->`.
-    Patch { path: Option<PathBuf> },
-}
-
-impl Source {
-    /// A short human label for the title bar.
-    pub fn label(&self) -> String {
-        match self {
-            Source::WorkingTree { .. } => "diff (working tree)".into(),
-            Source::TwoFiles { old, new } => {
-                format!("{} → {}", old.display(), new.display())
-            }
-            Source::Show { rev, .. } => format!("show {rev}"),
-            Source::Patch { path } => match path {
-                Some(p) => format!("patch {}", p.display()),
-                None => "patch -".into(),
-            },
-        }
-    }
-}
-
-pub fn load(source: &Source) -> Result<Changeset> {
-    match source {
-        Source::WorkingTree { repo } => git::working_tree_changeset(repo),
-        Source::Show { repo, rev } => git::show_changeset(repo, rev),
-        Source::Patch { path } => {
-            let text = read_patch(path.as_deref())?;
-            Ok(parse::parse_unified(&text))
-        }
-        Source::TwoFiles { old, new } => {
-            let old_text = std::fs::read_to_string(old)
-                .with_context(|| format!("reading {}", old.display()))?;
-            let new_text = std::fs::read_to_string(new)
-                .with_context(|| format!("reading {}", new.display()))?;
-            let file = generate::diff_texts(
-                &old.to_string_lossy(),
-                &new.to_string_lossy(),
-                &old_text,
-                &new_text,
-                CONTEXT_LINES,
-            );
-            Ok(Changeset { files: vec![file] })
-        }
-    }
+/// Read a unified patch from `path` (or stdin when `None`/`-`) and parse it.
+pub fn load_patch(path: Option<&Path>) -> Result<Changeset> {
+    let text = read_patch(path)?;
+    Ok(parse::parse_unified(&text))
 }
 
 /// Load a sidecar comments JSON file into a [`CommentStore`].

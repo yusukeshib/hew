@@ -14,9 +14,13 @@ use std::time::Duration;
 enum Mode {
     Normal,
     /// Typing a new comment on the selected line/range.
-    Comment { range_start: usize },
+    Comment {
+        range_start: usize,
+    },
     /// Typing a reply to the thread at the selected line.
-    Reply { thread_idx: usize },
+    Reply {
+        thread_idx: usize,
+    },
 }
 
 pub struct App {
@@ -53,7 +57,9 @@ impl App {
             height: 1,
             mode: Mode::Normal,
             input: String::new(),
-            status: "q quit  j/k move  c comment  V range  r reply  R resolve  d delete  n/N next/prev".into(),
+            status:
+                "q quit  j/k move  c comment  V range  r reply  R resolve  d delete  n/N next/prev"
+                    .into(),
             range_anchor: None,
             quit: false,
         };
@@ -96,7 +102,11 @@ impl App {
                 self.range_anchor = None;
             }
             KeyCode::Char('G') => {
-                self.selected = self.rows.iter().rposition(|r| r.is_selectable()).unwrap_or(0);
+                self.selected = self
+                    .rows
+                    .iter()
+                    .rposition(|r| r.is_selectable())
+                    .unwrap_or(0);
                 self.range_anchor = None;
             }
             KeyCode::Char('V') => {
@@ -204,8 +214,12 @@ impl App {
                         .and_then(|r| r.anchor())
                         .map(|(_, l)| l)
                         .unwrap_or(line);
-                    let range = LineRange { start: other.min(line), end: other.max(line) };
-                    self.comments.add_thread(file, side, range, Some("you".into()), body);
+                    let range = LineRange {
+                        start: other.min(line),
+                        end: other.max(line),
+                    };
+                    self.comments
+                        .add_thread(file, side, range, Some("you".into()), body);
                     self.status = "comment added".into();
                     self.range_anchor = None;
                 }
@@ -279,9 +293,18 @@ impl App {
             return;
         }
         let next = if dir > 0 {
-            targets.iter().find(|&&i| i > self.selected).copied().or_else(|| targets.first().copied())
+            targets
+                .iter()
+                .find(|&&i| i > self.selected)
+                .copied()
+                .or_else(|| targets.first().copied())
         } else {
-            targets.iter().rev().find(|&&i| i < self.selected).copied().or_else(|| targets.last().copied())
+            targets
+                .iter()
+                .rev()
+                .find(|&&i| i < self.selected)
+                .copied()
+                .or_else(|| targets.last().copied())
         };
         if let Some(i) = next {
             self.selected = i;
@@ -293,12 +316,21 @@ impl App {
         let area = f.area();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([Constraint::Length(1), Constraint::Min(1), Constraint::Length(1)])
+            .constraints([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(1),
+            ])
             .split(area);
 
         // Title bar.
         let n = self.comments.count();
-        let title = format!(" hew — {}  ({} comment{}) ", self.title, n, if n == 1 { "" } else { "s" });
+        let title = format!(
+            " hew — {}  ({} comment{}) ",
+            self.title,
+            n,
+            if n == 1 { "" } else { "s" }
+        );
         f.render_widget(
             Paragraph::new(title).style(Style::default().fg(Color::Black).bg(Color::Cyan)),
             chunks[0],
@@ -357,13 +389,17 @@ impl App {
         let (content, base) = match &row.kind {
             RowKind::FileHeader => (
                 format!("▌ {}", row.text),
-                Style::default().fg(Color::White).bg(Color::Rgb(40, 44, 52)).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(Color::White)
+                    .bg(Color::Rgb(40, 44, 52))
+                    .add_modifier(Modifier::BOLD),
             ),
-            RowKind::HunkHeader => (
-                row.text.clone(),
-                Style::default().fg(Color::Magenta),
-            ),
-            RowKind::Line { kind, old_line, new_line } => {
+            RowKind::HunkHeader => (row.text.clone(), Style::default().fg(Color::Magenta)),
+            RowKind::Line {
+                kind,
+                old_line,
+                new_line,
+            } => {
                 let num = format!(
                     "{:>5} {:>5} ",
                     old_line.map(|n| n.to_string()).unwrap_or_default(),
@@ -379,11 +415,16 @@ impl App {
         };
         let mut style = base;
         if selected {
-            style = style.bg(Color::Rgb(60, 66, 80)).add_modifier(Modifier::BOLD);
+            style = style
+                .bg(Color::Rgb(60, 66, 80))
+                .add_modifier(Modifier::BOLD);
         } else if in_range {
             style = style.bg(Color::Rgb(50, 50, 70));
         }
-        Line::from(vec![Span::styled(marker, Style::default().fg(Color::Cyan)), Span::styled(content, style)])
+        Line::from(vec![
+            Span::styled(marker, Style::default().fg(Color::Cyan)),
+            Span::styled(content, style),
+        ])
     }
 
     /// A gutter marker showing whether a thread (resolved/open) sits here.
@@ -412,7 +453,9 @@ impl App {
         if !matches!(self.mode, Mode::Normal) {
             return;
         }
-        let Some((file, side, line)) = self.selected_anchor() else { return };
+        let Some((file, side, line)) = self.selected_anchor() else {
+            return;
+        };
         let threads: Vec<_> = self
             .comments
             .threads
@@ -432,7 +475,12 @@ impl App {
                 t.range.end,
                 ""
             );
-            text.push(Line::from(Span::styled(head, Style::default().fg(Color::Cyan).add_modifier(Modifier::BOLD))));
+            text.push(Line::from(Span::styled(
+                head,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            )));
             for c in &t.comments {
                 let who = c.author.clone().unwrap_or_else(|| "?".into());
                 text.push(Line::from(format!("  @{who}: {}", c.body)));
@@ -441,7 +489,9 @@ impl App {
         }
 
         let w = (area.width as f32 * 0.6) as u16;
-        let h = (text.len() as u16 + 2).min(area.height.saturating_sub(2)).max(3);
+        let h = (text.len() as u16 + 2)
+            .min(area.height.saturating_sub(2))
+            .max(3);
         let popup = Rect {
             x: area.width.saturating_sub(w).saturating_sub(1),
             y: area.height.saturating_sub(h).saturating_sub(1),

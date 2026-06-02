@@ -19,14 +19,22 @@ pub fn parse_unified(input: &str) -> Changeset {
 
 fn strip_prefix(path: &str) -> String {
     let p = path.trim();
-    p.strip_prefix("a/").or_else(|| p.strip_prefix("b/")).unwrap_or(p).to_string()
+    p.strip_prefix("a/")
+        .or_else(|| p.strip_prefix("b/"))
+        .unwrap_or(p)
+        .to_string()
 }
 
 fn convert(p: &patch::Patch) -> DiffFile {
     let old_path = strip_prefix(&p.old.path);
     let new_path = strip_prefix(&p.new.path);
     let hunks = p.hunks.iter().map(convert_hunk).collect();
-    DiffFile { old_path, new_path, hunks, is_binary: false }
+    DiffFile {
+        old_path,
+        new_path,
+        hunks,
+        is_binary: false,
+    }
 }
 
 fn convert_hunk(h: &patch::Hunk) -> Hunk {
@@ -55,12 +63,21 @@ fn convert_hunk(h: &patch::Hunk) -> Hunk {
                 (LineKind::Addition, *t, None, Some(n))
             }
         };
-        lines.push(DiffLine { kind, old_line, new_line, text: text.to_string() });
+        lines.push(DiffLine {
+            kind,
+            old_line,
+            new_line,
+            text: text.to_string(),
+        });
     }
 
     let section = {
         let hint = h.range_hint.trim();
-        if hint.is_empty() { None } else { Some(hint.to_string()) }
+        if hint.is_empty() {
+            None
+        } else {
+            Some(hint.to_string())
+        }
     };
 
     Hunk {
