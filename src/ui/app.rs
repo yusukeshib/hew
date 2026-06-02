@@ -1068,7 +1068,9 @@ impl App {
             )),
             SplitRowKind::HunkHeader => Line::from(Span::styled(
                 row.text.clone(),
-                Style::default().fg(Color::Magenta),
+                Style::default()
+                    .fg(Color::Rgb(106, 115, 130))
+                    .add_modifier(Modifier::ITALIC),
             )),
             SplitRowKind::Pair { left, right } => {
                 let mut spans =
@@ -1145,7 +1147,9 @@ impl App {
             }
             RowKind::HunkHeader => Line::from(Span::styled(
                 row.text.clone(),
-                Style::default().fg(Color::Magenta),
+                Style::default()
+                    .fg(Color::Rgb(106, 115, 130))
+                    .add_modifier(Modifier::ITALIC),
             )),
             RowKind::Line {
                 kind,
