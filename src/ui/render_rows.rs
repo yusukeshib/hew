@@ -107,19 +107,23 @@ pub fn thread_lines(t: &Thread, width: usize) -> Vec<CommentLine> {
 fn comment_rows_for(
     comments: &CommentStore,
     expanded: &HashSet<usize>,
+    emitted: &mut HashSet<usize>,
     path: &str,
     anchors: &[(Side, u32)],
     width: usize,
 ) -> Vec<CommentLine> {
     let mut out = Vec::new();
     for (i, t) in comments.threads.iter().enumerate() {
-        if !expanded.contains(&i) || t.file.as_path() != Path::new(path) {
+        if !expanded.contains(&i) || emitted.contains(&i) || t.file.as_path() != Path::new(path) {
             continue;
         }
+        // Emit once per thread, at the first line of its range present in the
+        // diff (anchor ranges can span several lines).
         if anchors
             .iter()
             .any(|(s, l)| *s == t.side && t.range.contains(*l))
         {
+            emitted.insert(i);
             out.extend(thread_lines(t, width));
         }
     }
@@ -290,6 +294,7 @@ pub fn build_split_rows(
     width: usize,
 ) -> Vec<SplitRow> {
     let mut rows = Vec::new();
+    let mut emitted = HashSet::new();
     for (fi, file) in changeset.files.iter().enumerate() {
         let path = file.display_path();
         rows.push(SplitRow {
@@ -327,7 +332,8 @@ pub fn build_split_rows(
                     LineKind::Addition => adds.push(cell),
                     LineKind::Context => {
                         flush_pairs(
-                            fi, &mut dels, &mut adds, &mut rows, comments, expanded, path, width,
+                            fi, &mut dels, &mut adds, &mut rows, comments, expanded, &mut emitted,
+                            path, width,
                         );
                         rows.push(SplitRow {
                             file_idx: fi,
@@ -348,7 +354,9 @@ pub fn build_split_rows(
                         if let Some(l) = line.new_line {
                             anchors.push((Side::New, l));
                         }
-                        for cl in comment_rows_for(comments, expanded, path, &anchors, width) {
+                        for cl in
+                            comment_rows_for(comments, expanded, &mut emitted, path, &anchors, width)
+                        {
                             rows.push(SplitRow {
                                 file_idx: fi,
                                 kind: SplitRowKind::Comment(cl),
@@ -359,7 +367,7 @@ pub fn build_split_rows(
                 }
             }
             flush_pairs(
-                fi, &mut dels, &mut adds, &mut rows, comments, expanded, path, width,
+                fi, &mut dels, &mut adds, &mut rows, comments, expanded, &mut emitted, path, width,
             );
         }
     }
@@ -375,6 +383,7 @@ fn flush_pairs(
     rows: &mut Vec<SplitRow>,
     comments: &CommentStore,
     expanded: &HashSet<usize>,
+    emitted: &mut HashSet<usize>,
     path: &str,
     width: usize,
 ) {
@@ -396,7 +405,7 @@ fn flush_pairs(
             kind: SplitRowKind::Pair { left, right },
             text: String::new(),
         });
-        for cl in comment_rows_for(comments, expanded, path, &anchors, width) {
+        for cl in comment_rows_for(comments, expanded, emitted, path, &anchors, width) {
             rows.push(SplitRow {
                 file_idx,
                 kind: SplitRowKind::Comment(cl),
@@ -414,6 +423,7 @@ pub fn build_rows(
     width: usize,
 ) -> Vec<Row> {
     let mut rows = Vec::new();
+    let mut emitted = HashSet::new();
     for (fi, file) in changeset.files.iter().enumerate() {
         let path = file.display_path();
         rows.push(Row {
@@ -455,7 +465,9 @@ pub fn build_rows(
                     _ => (Side::New, line.new_line),
                 };
                 if let Some(ln) = ln {
-                    for cl in comment_rows_for(comments, expanded, path, &[(side, ln)], width) {
+                    for cl in
+                        comment_rows_for(comments, expanded, &mut emitted, path, &[(side, ln)], width)
+                    {
                         rows.push(Row {
                             file_idx: fi,
                             kind: RowKind::Comment(cl),
@@ -503,6 +515,13 @@ mod tests {
             .filter(|r| matches!(r.kind, RowKind::Comment(_)))
             .count();
         assert!(comment_rows > 0);
+        // Each thread renders exactly one header, regardless of multi-line
+        // anchor ranges (no per-line duplication).
+        let heads = rows
+            .iter()
+            .filter(|r| matches!(r.kind, RowKind::Comment(CommentLine::Head { .. })))
+            .count();
+        assert_eq!(heads, comments.threads.len());
         assert!(rows.iter().all(|r| !matches!(r.kind, RowKind::Comment(_))
             || (!r.is_selectable() && r.anchor().is_none())));
     }
