@@ -69,6 +69,7 @@ refreshes. Watching only applies to file inputs — a stdin patch can't be re-re
 | `g` / `G` (or `Home`/`End`) | Jump to top / bottom |
 | `n` / `N` | Jump to next / previous comment |
 | `Tab` / `s` | Toggle unified ↔ split (side-by-side) layout |
+| `Ctrl-L` | Force a full repaint |
 | `q` | Quit |
 
 Unified stacks `-`/`+` lines; split shows old on the left and new on the right

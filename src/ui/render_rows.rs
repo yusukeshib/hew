@@ -2,6 +2,61 @@
 
 use crate::diff::model::{Changeset, LineKind, Side};
 
+/// Make a line safe for a TUI cell grid. ratatui diffs cells between frames, so
+/// a stray `\r`, tab, or ANSI escape corrupts the terminal and never self-heals.
+/// We expand tabs (4-col stops), drop CR/LF, strip ANSI CSI/OSC sequences, and
+/// drop any remaining control characters.
+pub fn sanitize_line(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut col = 0usize;
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        match c {
+            '\t' => {
+                let n = 4 - (col % 4);
+                out.extend(std::iter::repeat_n(' ', n));
+                col += n;
+            }
+            '\r' | '\n' => {}
+            '\u{1b}' => match chars.peek() {
+                // CSI: ESC [ ... <final 0x40..=0x7e>
+                Some('[') => {
+                    chars.next();
+                    while let Some(&p) = chars.peek() {
+                        chars.next();
+                        if ('@'..='~').contains(&p) {
+                            break;
+                        }
+                    }
+                }
+                // OSC: ESC ] ... (BEL | ESC \)
+                Some(']') => {
+                    chars.next();
+                    while let Some(&p) = chars.peek() {
+                        chars.next();
+                        if p == '\u{7}' {
+                            break;
+                        }
+                        if p == '\u{1b}' {
+                            if chars.peek() == Some(&'\\') {
+                                chars.next();
+                            }
+                            break;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            c if c.is_control() => {}
+            c => {
+                out.push(c);
+                col += 1;
+            }
+        }
+    }
+    out
+}
+
 #[derive(Debug, Clone)]
 pub enum RowKind {
     FileHeader,
@@ -131,7 +186,7 @@ pub fn build_split_rows(changeset: &Changeset) -> Vec<SplitRow> {
                         LineKind::Deletion => line.old_line,
                         _ => line.new_line,
                     },
-                    text: line.text.clone(),
+                    text: sanitize_line(&line.text),
                 };
                 match line.kind {
                     LineKind::Deletion => dels.push(cell),
@@ -144,7 +199,7 @@ pub fn build_split_rows(changeset: &Changeset) -> Vec<SplitRow> {
                                 left: Some(SideCell {
                                     kind: LineKind::Context,
                                     line: line.old_line,
-                                    text: line.text.clone(),
+                                    text: sanitize_line(&line.text),
                                 }),
                                 right: Some(cell),
                             },
@@ -178,6 +233,21 @@ fn flush_pairs(
             },
             text: String::new(),
         });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_line;
+
+    #[test]
+    fn expands_tabs_and_strips_controls() {
+        assert_eq!(sanitize_line("\tx"), "    x");
+        assert_eq!(sanitize_line("a\tb"), "a   b"); // tab to next 4-col stop
+        assert_eq!(sanitize_line("end\r"), "end");
+        assert_eq!(sanitize_line("a\u{0}b"), "ab");
+        // ANSI CSI color sequence is removed, payload kept.
+        assert_eq!(sanitize_line("\u{1b}[31mred\u{1b}[0m"), "red");
     }
 }
 
@@ -217,7 +287,7 @@ pub fn build_rows(changeset: &Changeset) -> Vec<Row> {
                         old_line: line.old_line,
                         new_line: line.new_line,
                     },
-                    text: format!("{prefix}{}", line.text),
+                    text: format!("{prefix}{}", sanitize_line(&line.text)),
                 });
             }
         }

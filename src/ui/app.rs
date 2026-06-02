@@ -65,6 +65,7 @@ pub struct App {
     height: usize,   // last known viewport height
     status: String,
     watch: Option<Watch>,
+    needs_clear: bool,
     highlighter: Highlighter,
     /// (file_idx, line text) -> highlighted runs. Viewport-only, grows lazily.
     hl_cache: RefCell<HashMap<HlKey, LineRuns>>,
@@ -89,6 +90,7 @@ impl App {
             status: "q quit  j/k move  ^d/^u half  spc/b page  g/G top/bot  n/N comment  tab split"
                 .into(),
             watch: None,
+            needs_clear: false,
             highlighter: Highlighter::new(),
             hl_cache: RefCell::new(HashMap::new()),
             quit: false,
@@ -175,6 +177,10 @@ impl App {
 
     pub fn run(&mut self, terminal: &mut Terminal<impl Backend>) -> Result<()> {
         while !self.quit {
+            if self.needs_clear {
+                terminal.clear()?;
+                self.needs_clear = false;
+            }
             terminal.draw(|f| self.draw(f))?;
             if event::poll(Duration::from_millis(200))? {
                 if let Event::Key(key) = event::read()? {
@@ -350,6 +356,9 @@ impl App {
 
             // Toggle unified <-> split (side-by-side) layout.
             KeyCode::Tab | KeyCode::Char('s') => self.toggle_view(),
+
+            // Force a full repaint (escape hatch if the terminal gets dirtied).
+            KeyCode::Char('l') if ctrl => self.needs_clear = true,
             _ => {}
         }
     }
