@@ -1528,19 +1528,18 @@ impl App {
     fn side_spans(
         &self,
         cell: Option<&SideCell>,
-        side: Side,
+        _side: Side,
         file_idx: usize,
         width: usize,
         selected: bool,
     ) -> Vec<Span<'static>> {
-        const PREFIX: usize = 7; // marker(2) + line number(4) + space(1)
+        const PREFIX: usize = 5; // line number(4) + space(1)
         match cell {
             None => vec![Span::styled(
                 " ".repeat(width),
                 Style::default().bg(Color::Rgb(28, 30, 34)),
             )],
             Some(c) => {
-                let marker = self.marker(file_idx, side, c.line);
                 let num = c
                     .line
                     .map(|n| format!("{n:>4}"))
@@ -1554,10 +1553,8 @@ impl App {
                         LineKind::Context => None,
                     }
                 };
-                let mut spans = vec![
-                    Span::styled(marker, Style::default().fg(Color::Cyan)),
-                    Span::styled(format!("{num} "), Style::default().fg(Color::DarkGray)),
-                ];
+                let mut spans =
+                    vec![Span::styled(format!("{num} "), Style::default().fg(Color::DarkGray))];
                 spans.extend(self.styled_fit(file_idx, &c.text, width.saturating_sub(PREFIX), bg));
                 spans
             }
@@ -1589,7 +1586,6 @@ impl App {
                 old_line,
                 new_line,
             } => {
-                let marker = self.thread_marker(row);
                 let num = format!(
                     "{:>5} {:>5} ",
                     old_line.map(|n| n.to_string()).unwrap_or_default(),
@@ -1614,9 +1610,8 @@ impl App {
                     Some(b) => st.bg(b),
                     None => st,
                 };
-                let mut used = marker.chars().count() + num.chars().count() + 1;
+                let mut used = num.chars().count() + 1;
                 let mut spans = vec![
-                    Span::styled(marker, with_bg(Style::default().fg(Color::Cyan))),
                     Span::styled(num, with_bg(Style::default().fg(Color::DarkGray))),
                     Span::styled(sign.to_string(), with_bg(Style::default().fg(sign_color))),
                 ];
@@ -1636,38 +1631,6 @@ impl App {
                 Line::from(spans)
             }
             RowKind::Comment(cl) => self.comment_line_to_line(cl, width),
-        }
-    }
-
-    /// Gutter marker for the row's own anchor (unified view).
-    fn thread_marker(&self, row: &Row) -> &'static str {
-        match row.anchor() {
-            Some((side, line)) => self.marker(row.file_idx, side, Some(line)),
-            None => "  ",
-        }
-    }
-
-    /// Gutter marker (● open / ○ resolved / blank) for a file+side+line.
-    /// Marks only a thread's first (anchor) line, so a multi-line range shows
-    /// a single dot rather than one per line.
-    fn marker(&self, file_idx: usize, side: Side, line: Option<u32>) -> &'static str {
-        let Some(line) = line else { return "  " };
-        let Some(file) = self.changeset.files.get(file_idx) else {
-            return "  ";
-        };
-        let path = PathBuf::from(file.display_path());
-        let here: Vec<_> = self
-            .comments
-            .threads
-            .iter()
-            .filter(|t| t.file == path && t.side == side && t.range.start == line)
-            .collect();
-        if here.iter().any(|t| !t.resolved) {
-            "● "
-        } else if !here.is_empty() {
-            "○ "
-        } else {
-            "  "
         }
     }
 
