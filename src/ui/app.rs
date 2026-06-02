@@ -160,6 +160,24 @@ fn hit(rect: Rect, col: u16, row: u16) -> bool {
     col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
 }
 
+/// Map a click/drag at terminal `row` on a vertical scrollbar track to a top
+/// line index, placing the thumb's top under the cursor. Mirrors ratatui's
+/// thumb geometry so the thumb actually follows the pointer.
+fn sb_thumb_pos(track_y: u16, track_h: usize, total: usize, viewport: usize, row: u16) -> usize {
+    let max_top = total.saturating_sub(viewport);
+    if max_top == 0 || track_h == 0 {
+        return 0;
+    }
+    // Thumb length matches the render model below (content_length = max_top + 1,
+    // viewport_content_length = viewport): thumb = viewport * track / total.
+    let thumb = ((viewport as f32) * (track_h as f32) / (total as f32))
+        .round()
+        .max(1.0) as usize;
+    let span = track_h.saturating_sub(thumb).max(1);
+    let off = (row.saturating_sub(track_y) as usize).min(span);
+    ((off as f32 / span as f32) * max_top as f32).round() as usize
+}
+
 /// Truncate `s` from the left (keeping the tail) to fit `w` columns.
 fn elide_left(s: &str, w: usize) -> String {
     let n = s.chars().count();
@@ -475,27 +493,20 @@ impl App {
     fn drag_diff_sb(&mut self, row: u16) {
         let (start, end) = self.file_range();
         let total = end - start;
-        if total <= self.height {
-            return;
-        }
-        let track = (self.diff_sb.height as usize).saturating_sub(1).max(1);
-        let off = row.saturating_sub(self.diff_sb.y) as usize;
-        let max_top = total - self.height;
-        let pos = ((off as f32 / track as f32) * max_top as f32).round() as usize;
-        self.scroll = start + pos.min(max_top);
+        let pos = sb_thumb_pos(
+            self.diff_sb.y,
+            self.diff_sb.height as usize,
+            total,
+            self.height,
+            row,
+        );
+        self.scroll = start + pos;
     }
 
     fn drag_sidebar_sb(&mut self, row: u16) {
-        let n = self.sidebar_rows.len();
         let h = self.sidebar_sb.height as usize;
-        if n <= h {
-            return;
-        }
-        let track = h.saturating_sub(1).max(1);
-        let off = row.saturating_sub(self.sidebar_sb.y) as usize;
-        let max = n - h;
-        let pos = ((off as f32 / track as f32) * max as f32).round() as usize;
-        self.sidebar_scroll = pos.min(max);
+        self.sidebar_scroll =
+            sb_thumb_pos(self.sidebar_sb.y, h, self.sidebar_rows.len(), h, row);
     }
 
     /// Scroll the file list independently of the selection.
@@ -1076,7 +1087,8 @@ impl App {
         // Reserve a column for the scrollbar when the list overflows.
         let need_sb = n > h;
         let w = (inner.width as usize).saturating_sub(if need_sb { 1 } else { 0 });
-        let scroll = self.sidebar_scroll.min(n.saturating_sub(h));
+        let max = n.saturating_sub(h);
+        let scroll = self.sidebar_scroll.min(max);
 
         let mut lines: Vec<Line> = Vec::new();
         for idx in scroll..n.min(scroll + h) {
@@ -1095,7 +1107,7 @@ impl App {
                     let is_cur = fi == self.current_file;
                     let (adds, dels) = self.file_stats.get(fi).copied().unwrap_or((0, 0));
                     let counts = format!(" +{adds} -{dels}");
-                    let prefix = if is_cur { "▸ " } else { "  " };
+                    let prefix = "  ";
                     let avail = w.saturating_sub(prefix.chars().count() + counts.chars().count());
                     let base = self
                         .changeset
@@ -1131,7 +1143,9 @@ impl App {
         }
         f.render_widget(Paragraph::new(lines), inner);
         if need_sb {
-            let mut sb = ScrollbarState::new(n).position(scroll);
+            let mut sb = ScrollbarState::new(max + 1)
+                .position(scroll)
+                .viewport_content_length(h);
             f.render_stateful_widget(
                 Scrollbar::new(ScrollbarOrientation::VerticalRight)
                     .begin_symbol(None)
@@ -1149,8 +1163,11 @@ impl App {
         if total <= self.height {
             return;
         }
-        let pos = self.scroll.saturating_sub(start);
-        let mut sb = ScrollbarState::new(total).position(pos);
+        let max_top = total - self.height;
+        let pos = self.scroll.saturating_sub(start).min(max_top);
+        let mut sb = ScrollbarState::new(max_top + 1)
+            .position(pos)
+            .viewport_content_length(self.height);
         f.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
