@@ -518,12 +518,13 @@ impl App {
     }
 
     fn render_unified(&self, f: &mut Frame, area: Rect) {
+        let width = area.width as usize;
         let mut lines: Vec<Line> = Vec::new();
         let end = (self.scroll + self.height).min(self.rows.len());
         for idx in self.scroll..end {
             let row = &self.rows[idx];
             let selected = idx == self.selected;
-            lines.push(self.row_to_line(row, selected));
+            lines.push(self.row_to_line(row, selected, width));
         }
         f.render_widget(Paragraph::new(lines), area);
     }
@@ -620,15 +621,20 @@ impl App {
         }
     }
 
-    fn row_to_line(&self, row: &Row, selected: bool) -> Line<'static> {
+    fn row_to_line(&self, row: &Row, selected: bool, width: usize) -> Line<'static> {
         match &row.kind {
-            RowKind::FileHeader => Line::from(Span::styled(
-                format!("▌ {}", row.text),
-                Style::default()
+            RowKind::FileHeader => {
+                let st = Style::default()
                     .fg(Color::White)
                     .bg(Color::Rgb(40, 44, 52))
-                    .add_modifier(Modifier::BOLD),
-            )),
+                    .add_modifier(Modifier::BOLD);
+                let text = format!("▌ {}", row.text);
+                let pad = width.saturating_sub(text.chars().count());
+                Line::from(vec![
+                    Span::styled(text, st),
+                    Span::styled(" ".repeat(pad), st),
+                ])
+            }
             RowKind::HunkHeader => Line::from(Span::styled(
                 row.text.clone(),
                 Style::default().fg(Color::Magenta),
@@ -659,25 +665,28 @@ impl App {
                     LineKind::Deletion => Color::Red,
                     LineKind::Context => Color::DarkGray,
                 };
+                let with_bg = |st: Style| match bg {
+                    Some(b) => st.bg(b),
+                    None => st,
+                };
+                let mut used = marker.chars().count() + num.chars().count() + 1;
                 let mut spans = vec![
-                    Span::styled(marker, Style::default().fg(Color::Cyan)),
-                    Span::styled(num, Style::default().fg(Color::DarkGray)),
-                    Span::styled(sign.to_string(), {
-                        let mut st = Style::default().fg(sign_color);
-                        if let Some(b) = bg {
-                            st = st.bg(b);
-                        }
-                        st
-                    }),
+                    Span::styled(marker, with_bg(Style::default().fg(Color::Cyan))),
+                    Span::styled(num, with_bg(Style::default().fg(Color::DarkGray))),
+                    Span::styled(sign.to_string(), with_bg(Style::default().fg(sign_color))),
                 ];
                 // Highlighted code, with the diff background tint behind it.
                 let hl = self.highlight(row.file_idx, code);
                 for (c, s) in hl.iter() {
-                    let mut st = Style::default().fg(*c);
-                    if let Some(b) = bg {
-                        st = st.bg(b);
-                    }
-                    spans.push(Span::styled(s.clone(), st));
+                    used += s.chars().count();
+                    spans.push(Span::styled(s.clone(), with_bg(Style::default().fg(*c))));
+                }
+                // Fill the rest so the tint / selection spans the whole line.
+                if bg.is_some() && used < width {
+                    spans.push(Span::styled(
+                        " ".repeat(width - used),
+                        with_bg(Style::default()),
+                    ));
                 }
                 Line::from(spans)
             }
