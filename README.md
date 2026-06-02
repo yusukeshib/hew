@@ -2,9 +2,10 @@
 
 A fast, review-first terminal patch viewer, in Rust.
 
-`hew` reads a **unified diff** and opens it in an interactive review UI where you
-can attach GitHub-PR-style threaded comments. Source selection (working tree,
-revs, two files) is delegated to git — you just pipe a diff in.
+`hew` reads a **unified diff** and opens it in an interactive review UI,
+displaying GitHub-PR-style threaded comments loaded from a sidecar JSON file.
+Source selection (working tree, revs, two files) is delegated to git — you just
+pipe a diff in.
 
 > *hew* = to cut/shape a block with an axe. Same "chunk/block" lineage as a diff
 > `hunk`. Three letters, fast to type. Inspired by [hunk](https://github.com/modem-dev/hunk),
@@ -50,18 +51,16 @@ hew change.patch --comments review.json
 
 | Key | Action |
 |---|---|
-| `j` / `k` (or ↓/↑) | Move selection |
-| `g` / `G` | Jump to top / bottom |
-| `V` | Start a range selection |
-| `c` | Comment on the selected line/range |
-| `r` | Reply to the thread |
-| `R` | Toggle resolve |
-| `d` | Delete thread |
+| `j` / `k` (or ↓/↑) | Move one line |
+| `Ctrl-D` / `Ctrl-U` | Half page down / up |
+| `Space` / `b` (or `Ctrl-F`/`Ctrl-B`, `PageDown`/`PageUp`) | Page down / up |
+| `Ctrl-E` / `Ctrl-Y` | Scroll viewport one line (cursor stays in view) |
+| `g` / `G` (or `Home`/`End`) | Jump to top / bottom |
 | `n` / `N` | Jump to next / previous comment |
-| `Esc` | Cancel input |
 | `q` | Quit |
 
-Comments live in memory only — nothing is written back to the patch or to disk.
+hew is a read-only viewer: comments are loaded from a sidecar and displayed
+(gutter markers + popup), never edited.
 
 ## Comment sidecar format
 

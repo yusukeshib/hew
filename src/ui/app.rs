@@ -1,6 +1,6 @@
 //! TUI application state and render loop.
 
-use crate::comments::model::{CommentStore, LineRange};
+use crate::comments::model::CommentStore;
 use crate::diff::model::{Changeset, LineKind, Side};
 use crate::ui::render_rows::{build_rows, Row, RowKind};
 use anyhow::Result;
@@ -10,19 +10,8 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Editing modes for the bottom prompt.
-enum Mode {
-    Normal,
-    /// Typing a new comment on the selected line/range.
-    Comment {
-        range_start: usize,
-    },
-    /// Typing a reply to the thread at the selected line.
-    Reply {
-        thread_idx: usize,
-    },
-}
-
+/// Read-only diff/comment viewer state. Comments are loaded from a sidecar and
+/// only displayed/navigated — hew never mutates them.
 pub struct App {
     title: String,
     changeset: Changeset,
@@ -31,10 +20,7 @@ pub struct App {
     selected: usize, // index into rows
     scroll: usize,   // top row of viewport
     height: usize,   // last known viewport height
-    mode: Mode,
-    input: String,
     status: String,
-    range_anchor: Option<usize>, // for multi-line selection start
     quit: bool,
 }
 
@@ -55,12 +41,9 @@ impl App {
             selected: 0,
             scroll: 0,
             height: 1,
-            mode: Mode::Normal,
-            input: String::new(),
             status:
-                "q quit  j/k move  c comment  V range  r reply  R resolve  d delete  n/N next/prev"
+                "q quit  j/k move  ^d/^u half  spc/b page  ^e/^y scroll  g/G top/bot  n/N comment"
                     .into(),
-            range_anchor: None,
             quit: false,
         };
         app.selected = app.first_selectable().unwrap_or(0);
@@ -86,57 +69,45 @@ impl App {
     }
 
     fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) {
-        match &self.mode {
-            Mode::Normal => self.on_key_normal(code, mods),
-            Mode::Comment { .. } | Mode::Reply { .. } => self.on_key_input(code),
-        }
-    }
-
-    fn on_key_normal(&mut self, code: KeyCode, _mods: KeyModifiers) {
+        let ctrl = mods.contains(KeyModifiers::CONTROL);
+        let page = self.height.max(1);
+        let half = (self.height / 2).max(1);
         match code {
             KeyCode::Char('q') => self.quit = true,
-            KeyCode::Char('j') | KeyCode::Down => self.move_selection(1),
-            KeyCode::Char('k') | KeyCode::Up => self.move_selection(-1),
-            KeyCode::Char('g') => {
+
+            // Line movement.
+            KeyCode::Char('j') | KeyCode::Down => self.move_by(1, 1),
+            KeyCode::Char('k') | KeyCode::Up => self.move_by(-1, 1),
+
+            // Half-page: Ctrl-D / Ctrl-U (vim/less).
+            KeyCode::Char('d') if ctrl => self.move_by(1, half),
+            KeyCode::Char('u') if ctrl => self.move_by(-1, half),
+
+            // Full page: Space / Ctrl-F / PageDown forward, b / Ctrl-B / PageUp back.
+            KeyCode::Char(' ') | KeyCode::Char('f') | KeyCode::PageDown => self.move_by(1, page),
+            KeyCode::Char('b') | KeyCode::PageUp => self.move_by(-1, page),
+
+            // One-line viewport scroll, cursor stays in view: Ctrl-E / Ctrl-Y (less/vim).
+            KeyCode::Char('e') if ctrl => self.scroll_view(1),
+            KeyCode::Char('y') if ctrl => self.scroll_view(-1),
+
+            // Top / bottom.
+            KeyCode::Char('g') | KeyCode::Home => {
                 self.selected = self.first_selectable().unwrap_or(0);
-                self.range_anchor = None;
+                self.ensure_visible();
             }
-            KeyCode::Char('G') => {
+            KeyCode::Char('G') | KeyCode::End => {
                 self.selected = self
                     .rows
                     .iter()
                     .rposition(|r| r.is_selectable())
                     .unwrap_or(0);
-                self.range_anchor = None;
+                self.ensure_visible();
             }
-            KeyCode::Char('V') => {
-                // Toggle range-selection anchor.
-                self.range_anchor = match self.range_anchor {
-                    Some(_) => None,
-                    None => Some(self.selected),
-                };
-            }
-            KeyCode::Char('c') => self.start_comment(),
-            KeyCode::Char('r') => self.start_reply(),
-            KeyCode::Char('R') => self.toggle_resolve(),
-            KeyCode::Char('d') => self.delete_thread(),
+
+            // Jump between comment threads.
             KeyCode::Char('n') => self.jump_comment(1),
             KeyCode::Char('N') => self.jump_comment(-1),
-            _ => {}
-        }
-    }
-
-    fn on_key_input(&mut self, code: KeyCode) {
-        match code {
-            KeyCode::Esc => {
-                self.mode = Mode::Normal;
-                self.input.clear();
-            }
-            KeyCode::Enter => self.submit_input(),
-            KeyCode::Backspace => {
-                self.input.pop();
-            }
-            KeyCode::Char(c) => self.input.push(c),
             _ => {}
         }
     }
@@ -156,6 +127,46 @@ impl App {
         }
     }
 
+    /// Move the selection `count` selectable rows in `dir` (+1 down / -1 up).
+    fn move_by(&mut self, dir: isize, count: usize) {
+        for _ in 0..count {
+            let before = self.selected;
+            self.move_selection(dir);
+            if self.selected == before {
+                break; // hit top/bottom
+            }
+        }
+    }
+
+    /// Scroll the viewport by `delta` rows, dragging the selection back into
+    /// view if it would fall outside (less/vim Ctrl-E / Ctrl-Y behavior).
+    fn scroll_view(&mut self, delta: isize) {
+        let max_top = self.rows.len().saturating_sub(1) as isize;
+        self.scroll = (self.scroll as isize + delta).clamp(0, max_top) as usize;
+        if self.selected < self.scroll {
+            if let Some(i) = self.nearest_selectable(self.scroll, 1) {
+                self.selected = i;
+            }
+        } else if self.selected >= self.scroll + self.height {
+            let last = self.scroll + self.height.saturating_sub(1);
+            if let Some(i) = self.nearest_selectable(last, -1) {
+                self.selected = i;
+            }
+        }
+    }
+
+    /// First selectable row at or beyond `from` scanning in `dir`.
+    fn nearest_selectable(&self, from: usize, dir: isize) -> Option<usize> {
+        let mut i = from as isize;
+        while i >= 0 && (i as usize) < self.rows.len() {
+            if self.rows[i as usize].is_selectable() {
+                return Some(i as usize);
+            }
+            i += dir;
+        }
+        None
+    }
+
     fn ensure_visible(&mut self) {
         if self.selected < self.scroll {
             self.scroll = self.selected;
@@ -169,105 +180,6 @@ impl App {
         let (side, line) = row.anchor()?;
         let file = self.changeset.files.get(row.file_idx)?;
         Some((PathBuf::from(file.display_path()), side, line))
-    }
-
-    fn start_comment(&mut self) {
-        if self.selected_anchor().is_none() {
-            self.status = "cannot comment here".into();
-            return;
-        }
-        let start = self.range_anchor.unwrap_or(self.selected);
-        self.mode = Mode::Comment { range_start: start };
-        self.input.clear();
-    }
-
-    fn start_reply(&mut self) {
-        if let Some((file, side, line)) = self.selected_anchor() {
-            if let Some(idx) = self
-                .comments
-                .threads
-                .iter()
-                .position(|t| t.file == file && t.side == side && t.range.contains(line))
-            {
-                self.mode = Mode::Reply { thread_idx: idx };
-                self.input.clear();
-                return;
-            }
-        }
-        self.status = "no thread here to reply to".into();
-    }
-
-    fn submit_input(&mut self) {
-        let body = self.input.trim().to_string();
-        if body.is_empty() {
-            self.mode = Mode::Normal;
-            return;
-        }
-        match &self.mode {
-            Mode::Comment { range_start } => {
-                let start_row = *range_start;
-                if let Some((file, side, line)) = self.selected_anchor() {
-                    // Compute the line range across the selection.
-                    let other = self
-                        .rows
-                        .get(start_row)
-                        .and_then(|r| r.anchor())
-                        .map(|(_, l)| l)
-                        .unwrap_or(line);
-                    let range = LineRange {
-                        start: other.min(line),
-                        end: other.max(line),
-                    };
-                    self.comments
-                        .add_thread(file, side, range, Some("you".into()), body);
-                    self.status = "comment added".into();
-                    self.range_anchor = None;
-                }
-            }
-            Mode::Reply { thread_idx } => {
-                if let Some(t) = self.comments.threads.get(*thread_idx) {
-                    let id = t.id;
-                    self.comments.reply(id, Some("you".into()), body);
-                    self.status = "reply added".into();
-                }
-            }
-            Mode::Normal => {}
-        }
-        self.mode = Mode::Normal;
-        self.input.clear();
-    }
-
-    fn toggle_resolve(&mut self) {
-        if let Some((file, side, line)) = self.selected_anchor() {
-            if let Some(t) = self
-                .comments
-                .threads
-                .iter_mut()
-                .find(|t| t.file == file && t.side == side && t.range.contains(line))
-            {
-                t.resolved = !t.resolved;
-                self.status = if t.resolved { "resolved" } else { "unresolved" }.into();
-                return;
-            }
-        }
-        self.status = "no thread here".into();
-    }
-
-    fn delete_thread(&mut self) {
-        if let Some((file, side, line)) = self.selected_anchor() {
-            if let Some(id) = self
-                .comments
-                .threads
-                .iter()
-                .find(|t| t.file == file && t.side == side && t.range.contains(line))
-                .map(|t| t.id)
-            {
-                self.comments.remove_thread(id);
-                self.status = "thread deleted".into();
-                return;
-            }
-        }
-        self.status = "no thread here".into();
     }
 
     fn jump_comment(&mut self, dir: isize) {
@@ -339,29 +251,11 @@ impl App {
         self.height = chunks[1].height as usize;
         self.render_diff(f, chunks[1]);
 
-        // Status / prompt.
-        match &self.mode {
-            Mode::Comment { .. } => {
-                f.render_widget(
-                    Paragraph::new(format!("comment> {}", self.input))
-                        .style(Style::default().fg(Color::Yellow)),
-                    chunks[2],
-                );
-            }
-            Mode::Reply { .. } => {
-                f.render_widget(
-                    Paragraph::new(format!("reply> {}", self.input))
-                        .style(Style::default().fg(Color::Yellow)),
-                    chunks[2],
-                );
-            }
-            Mode::Normal => {
-                f.render_widget(
-                    Paragraph::new(self.status.clone()).style(Style::default().fg(Color::DarkGray)),
-                    chunks[2],
-                );
-            }
-        }
+        // Status line.
+        f.render_widget(
+            Paragraph::new(self.status.clone()).style(Style::default().fg(Color::DarkGray)),
+            chunks[2],
+        );
 
         self.render_comment_popup(f, area);
     }
@@ -372,19 +266,12 @@ impl App {
         for idx in self.scroll..end {
             let row = &self.rows[idx];
             let selected = idx == self.selected;
-            let in_range = match self.range_anchor {
-                Some(a) => {
-                    let (lo, hi) = (a.min(self.selected), a.max(self.selected));
-                    idx >= lo && idx <= hi
-                }
-                None => false,
-            };
-            lines.push(self.row_to_line(row, selected, in_range));
+            lines.push(self.row_to_line(row, selected));
         }
         f.render_widget(Paragraph::new(lines), area);
     }
 
-    fn row_to_line(&self, row: &Row, selected: bool, in_range: bool) -> Line<'static> {
+    fn row_to_line(&self, row: &Row, selected: bool) -> Line<'static> {
         let marker = self.thread_marker(row);
         let (content, base) = match &row.kind {
             RowKind::FileHeader => (
@@ -418,8 +305,6 @@ impl App {
             style = style
                 .bg(Color::Rgb(60, 66, 80))
                 .add_modifier(Modifier::BOLD);
-        } else if in_range {
-            style = style.bg(Color::Rgb(50, 50, 70));
         }
         Line::from(vec![
             Span::styled(marker, Style::default().fg(Color::Cyan)),
@@ -450,9 +335,6 @@ impl App {
 
     /// Show threads anchored at the current line in a popup.
     fn render_comment_popup(&self, f: &mut Frame, area: Rect) {
-        if !matches!(self.mode, Mode::Normal) {
-            return;
-        }
         let Some((file, side, line)) = self.selected_anchor() else {
             return;
         };
