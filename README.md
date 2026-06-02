@@ -120,11 +120,12 @@ See [examples/README.md](examples/README.md) for how to fetch more.
 
 `hew` is intentionally a **read-only viewer**: no persistence, no GitHub/network
 integration, no patch apply/edit/merge, no structural (AST) diff. It offers
-unified and split layouts, syntax highlighting (syntect, pure-Rust fancy-regex),
-sidecar comment threads, and `--watch` reload.
+unified and split layouts, syntax highlighting (syntect + two-face's bat syntax
+set for broad language coverage, Monokai Extended Bright theme, pure-Rust
+fancy-regex), sidecar comment threads, and `--watch` reload.
 
-Planned: a file sidebar, a tree-sitter highlighting backend, and a loopback
-session server so an agent/CLI can drive a running TUI.
+Planned: a file sidebar, a tree-sitter highlighting backend, theme selection,
+and a loopback session server so an agent/CLI can drive a running TUI.
 
 Note: `hew` parses **plain unified diffs**, not git `format-patch` mailbox output
 (`gh pr diff --patch`). Use a `.diff`/`git diff` stream instead.

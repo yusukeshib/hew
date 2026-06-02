@@ -8,8 +8,9 @@
 
 use ratatui::style::Color;
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{Theme, ThemeSet};
+use syntect::highlighting::Theme;
 use syntect::parsing::{SyntaxReference, SyntaxSet};
+use two_face::theme::EmbeddedThemeName;
 
 pub struct Highlighter {
     ps: SyntaxSet,
@@ -18,14 +19,13 @@ pub struct Highlighter {
 
 impl Highlighter {
     pub fn new() -> Self {
-        let ps = SyntaxSet::load_defaults_nonewlines();
-        let ts = ThemeSet::load_defaults();
-        let theme = ts
-            .themes
-            .get("base16-ocean.dark")
-            .or_else(|| ts.themes.values().next())
-            .cloned()
-            .expect("syntect ships default themes");
+        // two-face ships bat's extended syntax set (TS/TSX, TOML, Dockerfile, …)
+        // and high-contrast themes. Monokai Extended Bright reads well on dark
+        // terminals; `_no_newlines` matches our line-by-line highlighting.
+        let ps = two_face::syntax::extra_no_newlines();
+        let theme = two_face::theme::extra()
+            .get(EmbeddedThemeName::MonokaiExtendedBright)
+            .clone();
         Highlighter { ps, theme }
     }
 
