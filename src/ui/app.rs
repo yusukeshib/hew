@@ -51,6 +51,53 @@ enum View {
     Split,
 }
 
+/// Which pane keyboard navigation acts on.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Focus {
+    Sidebar,
+    Diff,
+}
+
+const SIDEBAR_WIDTH: u16 = 30;
+/// Selection background when the pane is focused / unfocused.
+const FOCUS_BG: Color = SEL_BG;
+const UNFOCUS_BG: Color = Color::Rgb(40, 42, 48);
+
+/// Per-file (additions, deletions) counts for the sidebar.
+fn file_stats(changeset: &Changeset) -> Vec<(usize, usize)> {
+    changeset
+        .files
+        .iter()
+        .map(|f| {
+            let mut adds = 0;
+            let mut dels = 0;
+            for h in &f.hunks {
+                for l in &h.lines {
+                    match l.kind {
+                        LineKind::Addition => adds += 1,
+                        LineKind::Deletion => dels += 1,
+                        LineKind::Context => {}
+                    }
+                }
+            }
+            (adds, dels)
+        })
+        .collect()
+}
+
+/// Truncate `s` from the left (keeping the tail) to fit `w` columns.
+fn elide_left(s: &str, w: usize) -> String {
+    let n = s.chars().count();
+    if n <= w {
+        return s.to_string();
+    }
+    if w <= 1 {
+        return "…".chars().take(w).collect();
+    }
+    let tail: String = s.chars().skip(n - (w - 1)).collect();
+    format!("…{tail}")
+}
+
 /// Read-only diff/comment viewer state. Comments are loaded from a sidecar and
 /// only displayed/navigated — hew never mutates them.
 pub struct App {
@@ -66,6 +113,9 @@ pub struct App {
     status: String,
     watch: Option<Watch>,
     needs_clear: bool,
+    show_sidebar: bool,
+    focus: Focus,
+    file_stats: Vec<(usize, usize)>,
     highlighter: Highlighter,
     /// (file_idx, line text) -> highlighted runs. Viewport-only, grows lazily.
     hl_cache: RefCell<HashMap<HlKey, LineRuns>>,
@@ -77,6 +127,7 @@ impl App {
     pub fn with_comments(title: String, changeset: Changeset, comments: CommentStore) -> Self {
         let rows = build_rows(&changeset);
         let split_rows = build_split_rows(&changeset);
+        let stats = file_stats(&changeset);
         let mut app = App {
             title,
             changeset,
@@ -87,10 +138,13 @@ impl App {
             selected: 0,
             scroll: 0,
             height: 1,
-            status: "q quit  j/k move  ^d/^u half  spc/b page  g/G top/bot  n/N comment  tab split"
+            status: "q quit  j/k move  spc/b page  g/G top/bot  [/] file  n/N comment  tab split"
                 .into(),
             watch: None,
             needs_clear: false,
+            show_sidebar: true,
+            focus: Focus::Diff,
+            file_stats: stats,
             highlighter: Highlighter::new(),
             hl_cache: RefCell::new(HashMap::new()),
             quit: false,
@@ -234,6 +288,7 @@ impl App {
                     self.changeset = cs;
                     self.rows = build_rows(&self.changeset);
                     self.split_rows = build_split_rows(&self.changeset);
+                    self.file_stats = file_stats(&self.changeset);
                     self.hl_cache.borrow_mut().clear();
                 }
                 Err(e) => {
@@ -273,6 +328,37 @@ impl App {
         match self.view {
             View::Unified => self.rows.get(i).is_some_and(|r| r.is_selectable()),
             View::Split => self.split_rows.get(i).is_some_and(|r| r.is_selectable()),
+        }
+    }
+
+    /// The file index a row belongs to (header rows included).
+    fn row_file_idx(&self, i: usize) -> Option<usize> {
+        match self.view {
+            View::Unified => self.rows.get(i).map(|r| r.file_idx),
+            View::Split => self.split_rows.get(i).map(|r| r.file_idx),
+        }
+    }
+
+    /// Jump to the first selectable row of the next/prev file.
+    fn jump_file(&mut self, dir: isize) {
+        let n = self.changeset.files.len();
+        if n == 0 {
+            return;
+        }
+        let cur = self.row_file_idx(self.selected).unwrap_or(0) as isize;
+        let target = (cur + dir).clamp(0, n as isize - 1) as usize;
+        if target as isize == cur {
+            return;
+        }
+        if let Some(i) = (0..self.active_len())
+            .find(|&i| self.is_selectable_at(i) && self.row_file_idx(i) == Some(target))
+        {
+            self.selected = i;
+            // Show the file from its header row at the top of the viewport.
+            self.scroll = (0..self.active_len())
+                .find(|&j| self.row_file_idx(j) == Some(target))
+                .unwrap_or(i);
+            self.ensure_visible();
         }
     }
 
@@ -317,14 +403,76 @@ impl App {
         };
     }
 
+    /// Is the file sidebar an actual pane the user can focus?
+    fn sidebar_available(&self) -> bool {
+        self.show_sidebar && self.changeset.files.len() > 1
+    }
+
+    /// Focus clamped to reality (never Sidebar when there's no sidebar).
+    fn effective_focus(&self) -> Focus {
+        if self.sidebar_available() {
+            self.focus
+        } else {
+            Focus::Diff
+        }
+    }
+
+    /// Selection background for the diff pane (dim when it isn't focused).
+    fn diff_cursor_bg(&self) -> Color {
+        if self.effective_focus() == Focus::Diff {
+            FOCUS_BG
+        } else {
+            UNFOCUS_BG
+        }
+    }
+
     fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
+        // Global keys, independent of the focused pane.
+        match code {
+            KeyCode::Char('q') => return self.quit = true,
+            KeyCode::Left => {
+                if self.sidebar_available() {
+                    self.focus = Focus::Sidebar;
+                }
+                return;
+            }
+            KeyCode::Right => return self.focus = Focus::Diff,
+            KeyCode::Tab | KeyCode::Char('s') => return self.toggle_view(),
+            KeyCode::Char('b') if ctrl => {
+                self.show_sidebar = !self.show_sidebar;
+                if !self.show_sidebar {
+                    self.focus = Focus::Diff;
+                }
+                return;
+            }
+            KeyCode::Char('l') if ctrl => return self.needs_clear = true,
+            _ => {}
+        }
+        match self.effective_focus() {
+            Focus::Sidebar => self.on_key_sidebar(code),
+            Focus::Diff => self.on_key_diff(code, ctrl),
+        }
+    }
+
+    /// Navigation when the file sidebar is focused: move by file.
+    fn on_key_sidebar(&mut self, code: KeyCode) {
+        match code {
+            KeyCode::Char('j') | KeyCode::Down => self.jump_file(1),
+            KeyCode::Char('k') | KeyCode::Up => self.jump_file(-1),
+            KeyCode::Char('g') | KeyCode::Home => self.jump_file(isize::MIN / 2),
+            KeyCode::Char('G') | KeyCode::End => self.jump_file(isize::MAX / 2),
+            // Enter the diff with the current file selected.
+            KeyCode::Enter | KeyCode::Char('l') => self.focus = Focus::Diff,
+            _ => {}
+        }
+    }
+
+    /// Navigation when the diff pane is focused.
+    fn on_key_diff(&mut self, code: KeyCode, ctrl: bool) {
         let page = self.height.max(1);
         let half = (self.height / 2).max(1);
         match code {
-            KeyCode::Char('q') => self.quit = true,
-
-            // Line movement.
             KeyCode::Char('j') | KeyCode::Down => self.move_by(1, 1),
             KeyCode::Char('k') | KeyCode::Up => self.move_by(-1, 1),
 
@@ -332,7 +480,7 @@ impl App {
             KeyCode::Char('d') if ctrl => self.move_by(1, half),
             KeyCode::Char('u') if ctrl => self.move_by(-1, half),
 
-            // Full page: Space / Ctrl-F / PageDown forward, b / Ctrl-B / PageUp back.
+            // Full page: Space / Ctrl-F / PageDown forward, b / PageUp back.
             KeyCode::Char(' ') | KeyCode::Char('f') | KeyCode::PageDown => self.move_by(1, page),
             KeyCode::Char('b') | KeyCode::PageUp => self.move_by(-1, page),
 
@@ -354,11 +502,9 @@ impl App {
             KeyCode::Char('n') => self.jump_comment(1),
             KeyCode::Char('N') => self.jump_comment(-1),
 
-            // Toggle unified <-> split (side-by-side) layout.
-            KeyCode::Tab | KeyCode::Char('s') => self.toggle_view(),
-
-            // Force a full repaint (escape hatch if the terminal gets dirtied).
-            KeyCode::Char('l') if ctrl => self.needs_clear = true,
+            // Jump between files.
+            KeyCode::Char(']') => self.jump_file(1),
+            KeyCode::Char('[') => self.jump_file(-1),
             _ => {}
         }
     }
@@ -498,8 +644,21 @@ impl App {
             chunks[0],
         );
 
-        self.height = chunks[1].height as usize;
-        self.render_diff(f, chunks[1]);
+        // Body: optional file sidebar on the left, diff on the right.
+        let body = chunks[1];
+        let sidebar = self.show_sidebar && self.changeset.files.len() > 1 && body.width >= 60;
+        let diff_area = if sidebar {
+            let cols = Layout::default()
+                .direction(Direction::Horizontal)
+                .constraints([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(1)])
+                .split(body);
+            self.render_sidebar(f, cols[0]);
+            cols[1]
+        } else {
+            body
+        };
+        self.height = diff_area.height as usize;
+        self.render_diff(f, diff_area);
 
         // Status line.
         f.render_widget(
@@ -515,6 +674,68 @@ impl App {
             View::Unified => self.render_unified(f, area),
             View::Split => self.render_split(f, area),
         }
+    }
+
+    /// Left-hand file list: path + (+adds / -dels), current file highlighted.
+    fn render_sidebar(&self, f: &mut Frame, area: Rect) {
+        let focused = self.effective_focus() == Focus::Sidebar;
+        let border = if focused {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        };
+        let block = Block::default()
+            .borders(Borders::RIGHT)
+            .border_style(Style::default().fg(border));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let w = inner.width as usize;
+        let h = inner.height as usize;
+        let n = self.changeset.files.len();
+        let cur = self.row_file_idx(self.selected);
+        // Scroll the list so the current file stays visible.
+        let cur_i = cur.unwrap_or(0);
+        let scroll = if cur_i >= h { cur_i + 1 - h } else { 0 };
+
+        let mut lines: Vec<Line> = Vec::new();
+        for idx in scroll..n.min(scroll + h) {
+            let is_cur = Some(idx) == cur;
+            let (adds, dels) = self.file_stats.get(idx).copied().unwrap_or((0, 0));
+            let counts = format!(" +{adds} -{dels}");
+            let prefix = if is_cur { "▸ " } else { "  " };
+            let avail = w.saturating_sub(prefix.chars().count() + counts.chars().count());
+            let path = self
+                .changeset
+                .files
+                .get(idx)
+                .map(|fi| fi.display_path())
+                .unwrap_or_default();
+            let name = format!("{:<width$}", elide_left(path, avail), width = avail);
+            let bg = if is_cur {
+                Some(if focused { FOCUS_BG } else { UNFOCUS_BG })
+            } else {
+                None
+            };
+            let wbg = |st: Style| match bg {
+                Some(b) => st.bg(b),
+                None => st,
+            };
+            let name_style = if is_cur {
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(Color::Gray)
+            };
+            lines.push(Line::from(vec![
+                Span::styled(prefix, wbg(Style::default().fg(Color::Cyan))),
+                Span::styled(name, wbg(name_style)),
+                Span::styled(format!(" +{adds}"), wbg(Style::default().fg(Color::Green))),
+                Span::styled(format!(" -{dels}"), wbg(Style::default().fg(Color::Red))),
+            ]));
+        }
+        f.render_widget(Paragraph::new(lines), inner);
     }
 
     fn render_unified(&self, f: &mut Frame, area: Rect) {
@@ -603,7 +824,7 @@ impl App {
                     .map(|n| format!("{n:>4}"))
                     .unwrap_or_else(|| "    ".into());
                 let bg = if selected {
-                    Some(SEL_BG)
+                    Some(self.diff_cursor_bg())
                 } else {
                     match c.kind {
                         LineKind::Addition => Some(ADD_BG),
@@ -652,7 +873,7 @@ impl App {
                 );
                 let (sign, code) = row.text.split_at(1);
                 let bg = if selected {
-                    Some(SEL_BG)
+                    Some(self.diff_cursor_bg())
                 } else {
                     match kind {
                         LineKind::Addition => Some(ADD_BG),

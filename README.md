@@ -67,10 +67,18 @@ refreshes. Watching only applies to file inputs — a stdin patch can't be re-re
 | `Space` / `b` (or `Ctrl-F`/`Ctrl-B`, `PageDown`/`PageUp`) | Page down / up |
 | `Ctrl-E` / `Ctrl-Y` | Scroll viewport one line (cursor stays in view) |
 | `g` / `G` (or `Home`/`End`) | Jump to top / bottom |
+| `[` / `]` | Jump to previous / next file |
 | `n` / `N` | Jump to next / previous comment |
+| `←` / `→` | Focus the file list / the diff pane |
+| `Ctrl-B` | Toggle the file list sidebar |
 | `Tab` / `s` | Toggle unified ↔ split (side-by-side) layout |
 | `Ctrl-L` | Force a full repaint |
 | `q` | Quit |
+
+Multi-file diffs show a **file list sidebar** (paths + `+adds`/`-dels`, current
+file highlighted). Keyboard navigation acts on the **focused** pane: focus the
+sidebar with `←` and `j`/`k`/`g`/`G` move between files; `→` (or `Enter`) returns
+to the diff. The focused pane's selection is brighter.
 
 Unified stacks `-`/`+` lines; split shows old on the left and new on the right
 (like `git delta --side-by-side`), pairing changed lines across a divider.
@@ -124,8 +132,8 @@ unified and split layouts, syntax highlighting (syntect + two-face's bat syntax
 set for broad language coverage, Monokai Extended Bright theme, pure-Rust
 fancy-regex), sidecar comment threads, and `--watch` reload.
 
-Planned: a file sidebar, a tree-sitter highlighting backend, theme selection,
-and a loopback session server so an agent/CLI can drive a running TUI.
+Planned: a tree-sitter highlighting backend, theme selection, and a loopback
+session server so an agent/CLI can drive a running TUI.
 
 Note: `hew` parses **plain unified diffs**, not git `format-patch` mailbox output
 (`gh pr diff --patch`). Use a `.diff`/`git diff` stream instead.
