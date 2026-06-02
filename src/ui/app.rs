@@ -62,6 +62,45 @@ enum Focus {
     Diff,
 }
 
+/// A row in the file list: a directory header or a file entry (by file index).
+enum SbRow {
+    Dir(String),
+    File(usize),
+}
+
+fn dir_of(path: &str) -> &str {
+    match path.rfind('/') {
+        Some(i) => &path[..i],
+        None => "",
+    }
+}
+
+fn base_of(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
+}
+
+/// Group files by directory (keeping file order), inserting a header row when
+/// the directory changes. Returns the rows plus a `file_idx -> row` map.
+fn build_sidebar_rows(changeset: &Changeset) -> (Vec<SbRow>, Vec<usize>) {
+    let mut rows = Vec::new();
+    let mut map = vec![0usize; changeset.files.len()];
+    let mut last_dir: Option<String> = None;
+    for (i, f) in changeset.files.iter().enumerate() {
+        let dir = dir_of(f.display_path());
+        if last_dir.as_deref() != Some(dir) {
+            rows.push(SbRow::Dir(if dir.is_empty() {
+                ".".into()
+            } else {
+                dir.into()
+            }));
+            last_dir = Some(dir.to_string());
+        }
+        map[i] = rows.len();
+        rows.push(SbRow::File(i));
+    }
+    (rows, map)
+}
+
 const SIDEBAR_WIDTH: u16 = 30;
 const MIN_SIDEBAR: u16 = 14;
 const MIN_DIFF: u16 = 20;
@@ -155,11 +194,16 @@ pub struct App {
     resizing: bool,        // dragging the sidebar/diff divider
     focus: Focus,
     current_file: usize,          // the diff pane shows only this file
+    sidebar_rows: Vec<SbRow>,     // file list grouped by directory
+    file_to_sbrow: Vec<usize>,    // file_idx -> index into sidebar_rows
     sel_anchor: Option<usize>,    // drag-selection anchor (cursor = `selected`)
     pending_copy: Option<String>, // text to push to the clipboard next frame
     file_stats: Vec<(usize, usize)>,
-    diff_area: Rect,    // last-drawn diff pane rect (for mouse hit-testing)
-    sidebar_area: Rect, // last-drawn sidebar rect (zero-sized when hidden)
+    diff_area: Rect,        // last-drawn diff pane rect (for mouse hit-testing)
+    sidebar_area: Rect,     // last-drawn sidebar rect (zero-sized when hidden)
+    diff_sb: Rect,          // diff scrollbar track (zero-sized when none)
+    sidebar_sb: Rect,       // sidebar scrollbar track (zero-sized when none)
+    sb_drag: Option<Focus>, // which scrollbar is being dragged
     highlighter: Highlighter,
     /// (file_idx, line text) -> highlighted runs. Viewport-only, grows lazily.
     hl_cache: RefCell<HashMap<HlKey, LineRuns>>,
@@ -172,6 +216,7 @@ impl App {
         let rows = build_rows(&changeset);
         let split_rows = build_split_rows(&changeset);
         let stats = file_stats(&changeset);
+        let (sidebar_rows, file_to_sbrow) = build_sidebar_rows(&changeset);
         let mut app = App {
             title,
             changeset,
@@ -192,11 +237,16 @@ impl App {
             resizing: false,
             focus: Focus::Diff,
             current_file: 0,
+            sidebar_rows,
+            file_to_sbrow,
             sel_anchor: None,
             pending_copy: None,
             file_stats: stats,
             diff_area: Rect::default(),
             sidebar_area: Rect::default(),
+            diff_sb: Rect::default(),
+            sidebar_sb: Rect::default(),
+            sb_drag: None,
             highlighter: Highlighter::new(),
             hl_cache: RefCell::new(HashMap::new()),
             quit: false,
@@ -329,7 +379,25 @@ impl App {
         let on_divider = self.divider_col() == Some(col);
         let over_sidebar = self.sidebar_area.width > 0 && hit(self.sidebar_area, col, row);
         match me.kind {
-            MouseEventKind::Up(_) => self.resizing = false,
+            MouseEventKind::Up(_) => {
+                self.resizing = false;
+                self.sb_drag = None;
+            }
+            // Scrollbar thumb drag (start + continue).
+            MouseEventKind::Down(MouseButton::Left) if hit(self.diff_sb, col, row) => {
+                self.sb_drag = Some(Focus::Diff);
+                self.drag_diff_sb(row);
+            }
+            MouseEventKind::Down(MouseButton::Left) if hit(self.sidebar_sb, col, row) => {
+                self.sb_drag = Some(Focus::Sidebar);
+                self.drag_sidebar_sb(row);
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.sb_drag == Some(Focus::Diff) => {
+                self.drag_diff_sb(row)
+            }
+            MouseEventKind::Drag(MouseButton::Left) if self.sb_drag == Some(Focus::Sidebar) => {
+                self.drag_sidebar_sb(row)
+            }
             MouseEventKind::Drag(MouseButton::Left) if self.resizing => self.resize_to(col),
             MouseEventKind::Down(MouseButton::Left) if on_divider => self.resizing = true,
             // Wheel scrolls the pane under the pointer. Over the sidebar it
@@ -403,34 +471,68 @@ impl App {
         self.pending_copy = Some(lines.join("\n"));
     }
 
+    /// Map a scrollbar drag at terminal `row` to a scroll position.
+    fn drag_diff_sb(&mut self, row: u16) {
+        let (start, end) = self.file_range();
+        let total = end - start;
+        if total <= self.height {
+            return;
+        }
+        let track = (self.diff_sb.height as usize).saturating_sub(1).max(1);
+        let off = row.saturating_sub(self.diff_sb.y) as usize;
+        let max_top = total - self.height;
+        let pos = ((off as f32 / track as f32) * max_top as f32).round() as usize;
+        self.scroll = start + pos.min(max_top);
+    }
+
+    fn drag_sidebar_sb(&mut self, row: u16) {
+        let n = self.sidebar_rows.len();
+        let h = self.sidebar_sb.height as usize;
+        if n <= h {
+            return;
+        }
+        let track = h.saturating_sub(1).max(1);
+        let off = row.saturating_sub(self.sidebar_sb.y) as usize;
+        let max = n - h;
+        let pos = ((off as f32 / track as f32) * max as f32).round() as usize;
+        self.sidebar_scroll = pos.min(max);
+    }
+
     /// Scroll the file list independently of the selection.
     fn scroll_sidebar(&mut self, delta: isize) {
         let h = self.sidebar_area.height as usize;
-        let n = self.changeset.files.len();
-        let max = n.saturating_sub(h);
+        let max = self.sidebar_rows.len().saturating_sub(h);
         self.sidebar_scroll =
             (self.sidebar_scroll as isize + delta).clamp(0, max as isize) as usize;
     }
 
-    /// Scroll the list so the current file is visible (on selection change).
+    /// Scroll the list so the current file's row is visible (on selection change).
     fn reveal_current_file(&mut self) {
         let h = self.sidebar_area.height as usize;
         if h == 0 {
             return;
         }
-        if self.current_file < self.sidebar_scroll {
-            self.sidebar_scroll = self.current_file;
-        } else if self.current_file >= self.sidebar_scroll + h {
-            self.sidebar_scroll = self.current_file + 1 - h;
+        let r = self
+            .file_to_sbrow
+            .get(self.current_file)
+            .copied()
+            .unwrap_or(0);
+        // Include the directory header just above, when present.
+        let target = r.saturating_sub(1);
+        if target < self.sidebar_scroll {
+            self.sidebar_scroll = target;
+        } else if r >= self.sidebar_scroll + h {
+            self.sidebar_scroll = r + 1 - h;
         }
     }
 
     fn click_sidebar(&mut self, row: u16) {
         let off = row.saturating_sub(self.sidebar_area.y) as usize;
         let idx = self.sidebar_scroll + off;
-        if idx < self.changeset.files.len() {
+        if let Some(SbRow::File(fi)) = self.sidebar_rows.get(idx) {
+            let fi = *fi;
             self.focus = Focus::Sidebar;
-            self.set_current_file(idx);
+            self.set_current_file(fi);
         }
     }
 
@@ -498,6 +600,9 @@ impl App {
                     self.rows = build_rows(&self.changeset);
                     self.split_rows = build_split_rows(&self.changeset);
                     self.file_stats = file_stats(&self.changeset);
+                    let (sr, map) = build_sidebar_rows(&self.changeset);
+                    self.sidebar_rows = sr;
+                    self.file_to_sbrow = map;
                     self.hl_cache.borrow_mut().clear();
                 }
                 Err(e) => {
@@ -897,6 +1002,17 @@ impl App {
             (body, Rect::default())
         };
         self.sidebar_area = sidebar_area;
+        self.sidebar_sb =
+            if sidebar_area.width > 0 && self.sidebar_rows.len() > sidebar_area.height as usize {
+                Rect {
+                    x: sidebar_area.x + sidebar_area.width.saturating_sub(2),
+                    y: sidebar_area.y,
+                    width: 1,
+                    height: sidebar_area.height,
+                }
+            } else {
+                Rect::default()
+            };
         self.height = diff_area.height as usize;
         // Reserve the rightmost column for a scrollbar when the file overflows.
         let (fr_start, fr_end) = self.file_range();
@@ -910,6 +1026,16 @@ impl App {
             diff_area
         };
         self.diff_area = content;
+        self.diff_sb = if overflow {
+            Rect {
+                x: diff_area.x + diff_area.width.saturating_sub(1),
+                y: diff_area.y,
+                width: 1,
+                height: diff_area.height,
+            }
+        } else {
+            Rect::default()
+        };
         self.render_diff(f, content);
         if overflow {
             self.render_diff_scrollbar(f, diff_area);
@@ -946,8 +1072,7 @@ impl App {
         f.render_widget(block, area);
 
         let h = inner.height as usize;
-        let n = self.changeset.files.len();
-        let cur = Some(self.current_file);
+        let n = self.sidebar_rows.len();
         // Reserve a column for the scrollbar when the list overflows.
         let need_sb = n > h;
         let w = (inner.width as usize).saturating_sub(if need_sb { 1 } else { 0 });
@@ -955,40 +1080,54 @@ impl App {
 
         let mut lines: Vec<Line> = Vec::new();
         for idx in scroll..n.min(scroll + h) {
-            let is_cur = Some(idx) == cur;
-            let (adds, dels) = self.file_stats.get(idx).copied().unwrap_or((0, 0));
-            let counts = format!(" +{adds} -{dels}");
-            let prefix = if is_cur { "▸ " } else { "  " };
-            let avail = w.saturating_sub(prefix.chars().count() + counts.chars().count());
-            let path = self
-                .changeset
-                .files
-                .get(idx)
-                .map(|fi| fi.display_path())
-                .unwrap_or_default();
-            let name = format!("{:<width$}", elide_left(path, avail), width = avail);
-            let bg = if is_cur {
-                Some(if focused { FOCUS_BG } else { UNFOCUS_BG })
-            } else {
-                None
-            };
-            let wbg = |st: Style| match bg {
-                Some(b) => st.bg(b),
-                None => st,
-            };
-            let name_style = if is_cur {
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD)
-            } else {
-                Style::default().fg(Color::Gray)
-            };
-            lines.push(Line::from(vec![
-                Span::styled(prefix, wbg(Style::default().fg(Color::Cyan))),
-                Span::styled(name, wbg(name_style)),
-                Span::styled(format!(" +{adds}"), wbg(Style::default().fg(Color::Green))),
-                Span::styled(format!(" -{dels}"), wbg(Style::default().fg(Color::Red))),
-            ]));
+            match &self.sidebar_rows[idx] {
+                SbRow::Dir(dir) => {
+                    let text = format!("{}/", elide_left(dir, w.saturating_sub(1)));
+                    lines.push(Line::from(Span::styled(
+                        text,
+                        Style::default()
+                            .fg(Color::Rgb(106, 115, 130))
+                            .add_modifier(Modifier::BOLD),
+                    )));
+                }
+                SbRow::File(fi) => {
+                    let fi = *fi;
+                    let is_cur = fi == self.current_file;
+                    let (adds, dels) = self.file_stats.get(fi).copied().unwrap_or((0, 0));
+                    let counts = format!(" +{adds} -{dels}");
+                    let prefix = if is_cur { "▸ " } else { "  " };
+                    let avail = w.saturating_sub(prefix.chars().count() + counts.chars().count());
+                    let base = self
+                        .changeset
+                        .files
+                        .get(fi)
+                        .map(|f| base_of(f.display_path()))
+                        .unwrap_or_default();
+                    let name = format!("{:<width$}", elide_left(base, avail), width = avail);
+                    let bg = if is_cur {
+                        Some(if focused { FOCUS_BG } else { UNFOCUS_BG })
+                    } else {
+                        None
+                    };
+                    let wbg = |st: Style| match bg {
+                        Some(b) => st.bg(b),
+                        None => st,
+                    };
+                    let name_style = if is_cur {
+                        Style::default()
+                            .fg(Color::White)
+                            .add_modifier(Modifier::BOLD)
+                    } else {
+                        Style::default().fg(Color::Gray)
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(prefix, wbg(Style::default().fg(Color::Cyan))),
+                        Span::styled(name, wbg(name_style)),
+                        Span::styled(format!(" +{adds}"), wbg(Style::default().fg(Color::Green))),
+                        Span::styled(format!(" -{dels}"), wbg(Style::default().fg(Color::Red))),
+                    ]));
+                }
+            }
         }
         f.render_widget(Paragraph::new(lines), inner);
         if need_sb {

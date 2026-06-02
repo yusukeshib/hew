@@ -84,7 +84,8 @@ the selected file unchanged. **Drag the sidebar/diff divider** to resize the
 sidebar. Both panes show a **scrollbar** when content overflows. `y` copies the
 selection to the clipboard via OSC 52 (works in terminals that support it).
 
-Multi-file diffs show a **file list sidebar** (paths + `+adds`/`-dels`, current
+Multi-file diffs show a **file list sidebar**, grouped by directory (a dim
+header per directory, files listed by basename with `+adds`/`-dels`, current
 file highlighted), and the diff pane shows **only the selected file**. Keyboard
 navigation acts on the **focused** pane: focus the sidebar with `←` and
 `j`/`k`/`g`/`G` move between files (the diff follows); `→` (or `Enter`) returns to
