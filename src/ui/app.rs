@@ -62,10 +62,12 @@ enum Focus {
     Diff,
 }
 
-/// A row in the file list: a directory header or a file entry (by file index).
+/// A row in the file list: a directory header, a file entry (by file index),
+/// or a comment thread (by index into the comment store) nested under its file.
 enum SbRow {
     Dir(String),
     File(usize),
+    Thread(usize),
 }
 
 fn dir_of(path: &str) -> &str {
@@ -79,9 +81,26 @@ fn base_of(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
+/// Truncate `s` from the right (keeping the head) to fit `w` columns.
+fn elide_right(s: &str, w: usize) -> String {
+    let n = s.chars().count();
+    if n <= w {
+        return s.to_string();
+    }
+    if w == 0 {
+        return String::new();
+    }
+    let mut out: String = s.chars().take(w - 1).collect();
+    out.push('…');
+    out
+}
+
 /// Group files by directory (keeping file order), inserting a header row when
 /// the directory changes. Returns the rows plus a `file_idx -> row` map.
-fn build_sidebar_rows(changeset: &Changeset) -> (Vec<SbRow>, Vec<usize>) {
+fn build_sidebar_rows(
+    changeset: &Changeset,
+    comments: &CommentStore,
+) -> (Vec<SbRow>, Vec<usize>) {
     let mut rows = Vec::new();
     let mut map = vec![0usize; changeset.files.len()];
     let mut last_dir: Option<String> = None;
@@ -97,6 +116,16 @@ fn build_sidebar_rows(changeset: &Changeset) -> (Vec<SbRow>, Vec<usize>) {
         }
         map[i] = rows.len();
         rows.push(SbRow::File(i));
+        // Comment threads anchored to this file, nested one level deeper.
+        let path = PathBuf::from(f.display_path());
+        for (ti, _) in comments
+            .threads
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.file == path)
+        {
+            rows.push(SbRow::Thread(ti));
+        }
     }
     (rows, map)
 }
@@ -234,7 +263,7 @@ impl App {
         let rows = build_rows(&changeset);
         let split_rows = build_split_rows(&changeset);
         let stats = file_stats(&changeset);
-        let (sidebar_rows, file_to_sbrow) = build_sidebar_rows(&changeset);
+        let (sidebar_rows, file_to_sbrow) = build_sidebar_rows(&changeset, &comments);
         let mut app = App {
             title,
             changeset,
@@ -540,11 +569,45 @@ impl App {
     fn click_sidebar(&mut self, row: u16) {
         let off = row.saturating_sub(self.sidebar_area.y) as usize;
         let idx = self.sidebar_scroll + off;
-        if let Some(SbRow::File(fi)) = self.sidebar_rows.get(idx) {
-            let fi = *fi;
-            self.focus = Focus::Sidebar;
-            self.set_current_file(fi);
+        match self.sidebar_rows.get(idx) {
+            Some(SbRow::File(fi)) => {
+                let fi = *fi;
+                self.focus = Focus::Sidebar;
+                self.set_current_file(fi);
+            }
+            Some(SbRow::Thread(ti)) => {
+                let ti = *ti;
+                self.goto_thread(ti);
+            }
+            _ => {}
         }
+    }
+
+    /// Jump the diff pane straight to comment thread `ti` and select its line.
+    fn goto_thread(&mut self, ti: usize) {
+        let Some(t) = self.comments.threads.get(ti) else {
+            return;
+        };
+        let (file, side, range) = (t.file.clone(), t.side, t.range);
+        let Some(fi) = self
+            .changeset
+            .files
+            .iter()
+            .position(|f| Path::new(f.display_path()) == file)
+        else {
+            return;
+        };
+        self.set_current_file(fi);
+        let target = (0..self.active_len()).find(|&i| {
+            self.is_selectable_at(i)
+                && matches!(self.anchor_at(i), Some((f, s, l)) if f == fi && s == side && range.contains(l))
+        });
+        if let Some(i) = target {
+            self.selected = i;
+            self.scroll = i.saturating_sub(self.height / 2);
+            self.ensure_visible();
+        }
+        self.focus = Focus::Diff;
     }
 
     /// Place the cursor at the clicked diff row. `anchor` starts a new
@@ -611,9 +674,6 @@ impl App {
                     self.rows = build_rows(&self.changeset);
                     self.split_rows = build_split_rows(&self.changeset);
                     self.file_stats = file_stats(&self.changeset);
-                    let (sr, map) = build_sidebar_rows(&self.changeset);
-                    self.sidebar_rows = sr;
-                    self.file_to_sbrow = map;
                     self.hl_cache.borrow_mut().clear();
                 }
                 Err(e) => {
@@ -628,6 +688,10 @@ impl App {
                 Err(e) => self.status = format!("comments reload failed: {e}"),
             }
         }
+        // Rebuild the sidebar once both the diff and comments are current.
+        let (sr, map) = build_sidebar_rows(&self.changeset, &self.comments);
+        self.sidebar_rows = sr;
+        self.file_to_sbrow = map;
         // Files may have changed; re-point at a valid file and selectable row.
         self.set_current_file(self.current_file);
         self.status = "reloaded".into();
@@ -1090,6 +1154,8 @@ impl App {
         let max = n.saturating_sub(h);
         let scroll = self.sidebar_scroll.min(max);
 
+        // The thread the diff cursor currently sits on (for sidebar highlight).
+        let cur_anchor = self.anchor_at(self.selected);
         let mut lines: Vec<Line> = Vec::new();
         for idx in scroll..n.min(scroll + h) {
             match &self.sidebar_rows[idx] {
@@ -1137,6 +1203,49 @@ impl App {
                         Span::styled(name, wbg(name_style)),
                         Span::styled(format!(" +{adds}"), wbg(Style::default().fg(Color::Green))),
                         Span::styled(format!(" -{dels}"), wbg(Style::default().fg(Color::Red))),
+                    ]));
+                }
+                SbRow::Thread(ti) => {
+                    let Some(t) = self.comments.threads.get(*ti) else {
+                        continue;
+                    };
+                    let glyph = if t.resolved { "○ " } else { "● " };
+                    let snippet = t
+                        .comments
+                        .first()
+                        .map(|c| c.body.as_str())
+                        .unwrap_or("")
+                        .lines()
+                        .next()
+                        .unwrap_or("")
+                        .trim();
+                    let indent = "    ";
+                    let avail =
+                        w.saturating_sub(indent.chars().count() + glyph.chars().count());
+                    let text = format!("{:<width$}", elide_right(snippet, avail), width = avail);
+                    // Highlight when the diff cursor sits on a line this thread anchors.
+                    let active = cur_anchor
+                        .map(|(f, s, l)| {
+                            self.changeset
+                                .files
+                                .get(f)
+                                .map(|cf| Path::new(cf.display_path()) == t.file)
+                                .unwrap_or(false)
+                                && s == t.side
+                                && t.range.contains(l)
+                        })
+                        .unwrap_or(false);
+                    let bg = active.then_some(if focused { FOCUS_BG } else { UNFOCUS_BG });
+                    let wbg = |st: Style| match bg {
+                        Some(b) => st.bg(b),
+                        None => st,
+                    };
+                    let glyph_color = if t.resolved { Color::DarkGray } else { Color::Yellow };
+                    let text_color = if t.resolved { Color::DarkGray } else { Color::Gray };
+                    lines.push(Line::from(vec![
+                        Span::styled(indent, wbg(Style::default())),
+                        Span::styled(glyph, wbg(Style::default().fg(glyph_color))),
+                        Span::styled(text, wbg(Style::default().fg(text_color))),
                     ]));
                 }
             }
