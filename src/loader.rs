@@ -40,16 +40,8 @@ impl Source {
 
 pub fn load(source: &Source) -> Result<Changeset> {
     match source {
-        Source::WorkingTree { repo } => {
-            let root = git::repo_root(repo).unwrap_or_else(|_| repo.clone());
-            let text = git::working_tree_diff(&root)?;
-            Ok(parse::parse_unified(&text))
-        }
-        Source::Show { repo, rev } => {
-            let root = git::repo_root(repo).unwrap_or_else(|_| repo.clone());
-            let text = git::show(&root, rev)?;
-            Ok(parse::parse_unified(&text))
-        }
+        Source::WorkingTree { repo } => git::working_tree_changeset(repo),
+        Source::Show { repo, rev } => git::show_changeset(repo, rev),
         Source::Patch { path } => {
             let text = read_patch(path.as_deref())?;
             Ok(parse::parse_unified(&text))

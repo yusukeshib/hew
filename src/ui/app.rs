@@ -35,6 +35,7 @@ pub struct App {
 }
 
 impl App {
+    #[allow(dead_code)] // convenience constructor; ui::run uses with_comments
     pub fn new(title: String, changeset: Changeset) -> Self {
         Self::with_comments(title, changeset, CommentStore::new())
     }

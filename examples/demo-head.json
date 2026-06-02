@@ -1,0 +1,22 @@
+{
+  "threads": [
+    {
+      "file": "src/main.rs",
+      "side": "new",
+      "range": { "start": 40, "end": 44 },
+      "comments": [
+        { "author": "agent", "body": "This is the --comments wiring in main()." }
+      ]
+    },
+    {
+      "file": "src/cli.rs",
+      "side": "new",
+      "range": { "start": 8, "end": 8 },
+      "resolved": true,
+      "comments": [
+        { "author": "agent", "body": "Global --comments flag added here." },
+        { "author": "you", "body": "Yep, intentional." }
+      ]
+    }
+  ]
+}
