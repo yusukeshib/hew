@@ -7,7 +7,9 @@ use crate::ui::render_rows::{
     build_rows, build_split_rows, Row, RowKind, SideCell, SplitRow, SplitRowKind,
 };
 use anyhow::Result;
-use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{
+    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Wrap};
 use std::cell::RefCell;
@@ -85,6 +87,36 @@ fn file_stats(changeset: &Changeset) -> Vec<(usize, usize)> {
         .collect()
 }
 
+/// Minimal standard base64 (no deps) for OSC 52 clipboard writes.
+fn base64(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
+    for chunk in data.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(T[(n >> 18 & 63) as usize] as char);
+        out.push(T[(n >> 12 & 63) as usize] as char);
+        out.push(if chunk.len() > 1 {
+            T[(n >> 6 & 63) as usize] as char
+        } else {
+            '='
+        });
+        out.push(if chunk.len() > 2 {
+            T[(n & 63) as usize] as char
+        } else {
+            '='
+        });
+    }
+    out
+}
+
+/// Is `(col, row)` inside `rect`?
+fn hit(rect: Rect, col: u16, row: u16) -> bool {
+    col >= rect.x && col < rect.x + rect.width && row >= rect.y && row < rect.y + rect.height
+}
+
 /// Truncate `s` from the left (keeping the tail) to fit `w` columns.
 fn elide_left(s: &str, w: usize) -> String {
     let n = s.chars().count();
@@ -115,8 +147,12 @@ pub struct App {
     needs_clear: bool,
     show_sidebar: bool,
     focus: Focus,
-    current_file: usize, // the diff pane shows only this file
+    current_file: usize,          // the diff pane shows only this file
+    sel_anchor: Option<usize>,    // drag-selection anchor (cursor = `selected`)
+    pending_copy: Option<String>, // text to push to the clipboard next frame
     file_stats: Vec<(usize, usize)>,
+    diff_area: Rect,    // last-drawn diff pane rect (for mouse hit-testing)
+    sidebar_area: Rect, // last-drawn sidebar rect (zero-sized when hidden)
     highlighter: Highlighter,
     /// (file_idx, line text) -> highlighted runs. Viewport-only, grows lazily.
     hl_cache: RefCell<HashMap<HlKey, LineRuns>>,
@@ -146,7 +182,11 @@ impl App {
             show_sidebar: true,
             focus: Focus::Diff,
             current_file: 0,
+            sel_anchor: None,
+            pending_copy: None,
             file_stats: stats,
+            diff_area: Rect::default(),
+            sidebar_area: Rect::default(),
             highlighter: Highlighter::new(),
             hl_cache: RefCell::new(HashMap::new()),
             quit: false,
@@ -239,15 +279,136 @@ impl App {
             }
             terminal.draw(|f| self.draw(f))?;
             if event::poll(Duration::from_millis(200))? {
-                if let Event::Key(key) = event::read()? {
-                    if key.kind == KeyEventKind::Press {
+                match event::read()? {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
                         self.on_key(key.code, key.modifiers);
                     }
+                    Event::Mouse(me) => self.on_mouse(me),
+                    _ => {}
                 }
+            }
+            if let Some(text) = self.pending_copy.take() {
+                // OSC 52: write the selection to the terminal clipboard.
+                use std::io::Write;
+                let seq = format!("\x1b]52;c;{}\x07", base64(text.as_bytes()));
+                let mut out = std::io::stdout();
+                let _ = out.write_all(seq.as_bytes());
+                let _ = out.flush();
             }
             self.poll_reload();
         }
         Ok(())
+    }
+
+    /// Mouse: wheel scrolls the pane under the pointer; left-click selects.
+    fn on_mouse(&mut self, me: MouseEvent) {
+        let (col, row) = (me.column, me.row);
+        let over_sidebar = self.sidebar_area.width > 0 && hit(self.sidebar_area, col, row);
+        match me.kind {
+            MouseEventKind::ScrollDown => {
+                if over_sidebar {
+                    self.focus = Focus::Sidebar;
+                    self.jump_file(1);
+                } else {
+                    self.focus = Focus::Diff;
+                    self.scroll_view(3);
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                if over_sidebar {
+                    self.focus = Focus::Sidebar;
+                    self.jump_file(-1);
+                } else {
+                    self.focus = Focus::Diff;
+                    self.scroll_view(-3);
+                }
+            }
+            MouseEventKind::Down(MouseButton::Left) => {
+                if over_sidebar {
+                    self.click_sidebar(row);
+                } else if hit(self.diff_area, col, row) {
+                    self.click_diff(row, true);
+                }
+            }
+            // Drag in the diff extends the line selection.
+            MouseEventKind::Drag(MouseButton::Left) if hit(self.diff_area, col, row) => {
+                self.click_diff(row, false);
+            }
+            _ => {}
+        }
+    }
+
+    /// Whether row `idx` falls within the current selection (cursor or drag).
+    fn in_selection(&self, idx: usize) -> bool {
+        let anchor = self.sel_anchor.unwrap_or(self.selected);
+        let (lo, hi) = (anchor.min(self.selected), anchor.max(self.selected));
+        idx >= lo && idx <= hi
+    }
+
+    /// The code text of row `idx` (sign stripped / new side), if it's a line.
+    fn line_text(&self, idx: usize) -> Option<String> {
+        match self.view {
+            View::Unified => match self.rows.get(idx)?.kind {
+                RowKind::Line { .. } => {
+                    let t = &self.rows[idx].text;
+                    Some(t.get(1..).unwrap_or("").to_string())
+                }
+                _ => None,
+            },
+            View::Split => match &self.split_rows.get(idx)?.kind {
+                SplitRowKind::Pair { left, right } => {
+                    right.as_ref().or(left.as_ref()).map(|c| c.text.clone())
+                }
+                _ => None,
+            },
+        }
+    }
+
+    /// Copy the selected lines to the system clipboard (via OSC 52 next frame).
+    fn copy_selection(&mut self) {
+        let anchor = self.sel_anchor.unwrap_or(self.selected);
+        let (lo, hi) = (anchor.min(self.selected), anchor.max(self.selected));
+        let lines: Vec<String> = (lo..=hi).filter_map(|i| self.line_text(i)).collect();
+        if lines.is_empty() {
+            return;
+        }
+        self.status = format!("copied {} line(s)", lines.len());
+        self.pending_copy = Some(lines.join("\n"));
+    }
+
+    fn click_sidebar(&mut self, row: u16) {
+        let h = self.sidebar_area.height as usize;
+        let cur = self.current_file;
+        let scroll = if cur >= h { cur + 1 - h } else { 0 };
+        let off = row.saturating_sub(self.sidebar_area.y) as usize;
+        let idx = scroll + off;
+        if idx < self.changeset.files.len() {
+            self.focus = Focus::Sidebar;
+            self.set_current_file(idx);
+        }
+    }
+
+    /// Place the cursor at the clicked diff row. `anchor` starts a new
+    /// selection there; otherwise the existing anchor is kept (drag extend).
+    fn click_diff(&mut self, row: u16, anchor: bool) {
+        self.focus = Focus::Diff;
+        let (start, end) = self.file_range();
+        let top = self.scroll.max(start);
+        let idx = (top + row.saturating_sub(self.diff_area.y) as usize)
+            .clamp(start, end.saturating_sub(1).max(start));
+        let target = if self.is_selectable_at(idx) {
+            Some(idx)
+        } else {
+            self.nearest_selectable(idx, 1)
+                .or_else(|| self.nearest_selectable(idx, -1))
+        };
+        if let Some(i) = target {
+            self.selected = i;
+            if anchor {
+                self.sel_anchor = Some(i);
+            }
+            self.ensure_visible();
+        }
     }
 
     /// On `--watch`: if any watched file's mtime changed, reload it.
@@ -365,6 +526,7 @@ impl App {
 
     /// Point the diff pane at `file`, resetting the cursor to its top.
     fn set_current_file(&mut self, file: usize) {
+        self.sel_anchor = None;
         self.current_file = file.min(self.changeset.files.len().saturating_sub(1));
         let (start, _) = self.file_range();
         self.scroll = start;
@@ -390,6 +552,7 @@ impl App {
 
     /// Toggle between unified and split, keeping the cursor on the same line.
     fn toggle_view(&mut self) {
+        self.sel_anchor = None;
         let anchor = self.anchor_at(self.selected);
         self.view = match self.view {
             View::Unified => View::Split,
@@ -504,10 +667,12 @@ impl App {
 
             // Top / bottom.
             KeyCode::Char('g') | KeyCode::Home => {
+                self.sel_anchor = None;
                 self.selected = self.first_selectable().unwrap_or(0);
                 self.ensure_visible();
             }
             KeyCode::Char('G') | KeyCode::End => {
+                self.sel_anchor = None;
                 self.selected = self.last_selectable().unwrap_or(0);
                 self.ensure_visible();
             }
@@ -519,11 +684,16 @@ impl App {
             // Jump between files.
             KeyCode::Char(']') => self.jump_file(1),
             KeyCode::Char('[') => self.jump_file(-1),
+
+            // Copy the selected line(s); Esc clears a drag selection.
+            KeyCode::Char('y') => self.copy_selection(),
+            KeyCode::Esc => self.sel_anchor = None,
             _ => {}
         }
     }
 
     fn move_selection(&mut self, delta: isize) {
+        self.sel_anchor = None;
         let (start, end) = self.file_range();
         let mut i = self.selected as isize;
         loop {
@@ -599,6 +769,7 @@ impl App {
     }
 
     fn jump_comment(&mut self, dir: isize) {
+        self.sel_anchor = None;
         // Collect rows in the current file that carry a thread anchor.
         let (start, end) = self.file_range();
         let mut targets: Vec<usize> = Vec::new();
@@ -668,16 +839,18 @@ impl App {
         // Body: optional file sidebar on the left, diff on the right.
         let body = chunks[1];
         let sidebar = self.show_sidebar && self.changeset.files.len() > 1 && body.width >= 60;
-        let diff_area = if sidebar {
+        let (diff_area, sidebar_area) = if sidebar {
             let cols = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(1)])
                 .split(body);
             self.render_sidebar(f, cols[0]);
-            cols[1]
+            (cols[1], cols[0])
         } else {
-            body
+            (body, Rect::default())
         };
+        self.diff_area = diff_area;
+        self.sidebar_area = sidebar_area;
         self.height = diff_area.height as usize;
         self.render_diff(f, diff_area);
 
@@ -767,7 +940,7 @@ impl App {
         let mut lines: Vec<Line> = Vec::new();
         for idx in top..end {
             let row = &self.rows[idx];
-            let selected = idx == self.selected;
+            let selected = self.in_selection(idx);
             lines.push(self.row_to_line(row, selected, width));
         }
         f.render_widget(Paragraph::new(lines), area);
@@ -783,7 +956,7 @@ impl App {
         let mut lines: Vec<Line> = Vec::new();
         for idx in top..end {
             let row = &self.split_rows[idx];
-            let selected = idx == self.selected;
+            let selected = self.in_selection(idx);
             lines.push(self.split_row_to_line(row, selected, side_w, divider));
         }
         f.render_widget(Paragraph::new(lines), area);

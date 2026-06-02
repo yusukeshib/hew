@@ -72,8 +72,15 @@ refreshes. Watching only applies to file inputs — a stdin patch can't be re-re
 | `←` / `→` | Focus the file list / the diff pane |
 | `Ctrl-B` | Toggle the file list sidebar |
 | `Tab` / `s` | Toggle unified ↔ split (side-by-side) layout |
+| `y` | Copy the selected line(s) to the clipboard |
+| `Esc` | Clear the line selection |
 | `Ctrl-L` | Force a full repaint |
 | `q` | Quit |
+
+**Mouse**: click a file in the sidebar to open it, click a diff line to place the
+cursor, **drag to select a range** of lines, and use the **wheel** to scroll the
+pane under the pointer (sidebar = change file, diff = scroll). `y` copies the
+selection to the clipboard via OSC 52 (works in terminals that support it).
 
 Multi-file diffs show a **file list sidebar** (paths + `+adds`/`-dels`, current
 file highlighted), and the diff pane shows **only the selected file**. Keyboard
