@@ -36,12 +36,17 @@ pub struct App {
 
 impl App {
     pub fn new(title: String, changeset: Changeset) -> Self {
+        Self::with_comments(title, changeset, CommentStore::new())
+    }
+
+    /// Construct with a pre-loaded comment store (e.g. from a sidecar JSON).
+    pub fn with_comments(title: String, changeset: Changeset, comments: CommentStore) -> Self {
         let rows = build_rows(&changeset);
         let mut app = App {
             title,
             changeset,
             rows,
-            comments: CommentStore::new(),
+            comments,
             selected: 0,
             scroll: 0,
             height: 1,

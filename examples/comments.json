@@ -1,0 +1,22 @@
+{
+  "threads": [
+    {
+      "file": "src/main.rs",
+      "side": "new",
+      "range": { "start": 18, "end": 22 },
+      "comments": [
+        { "author": "agent", "body": "This match arm is unreachable — Review is handled above." }
+      ]
+    },
+    {
+      "file": "src/loader.rs",
+      "side": "new",
+      "range": { "start": 60, "end": 60 },
+      "resolved": true,
+      "comments": [
+        { "author": "agent", "body": "Consider streaming large patches instead of read_to_string." },
+        { "author": "you", "body": "Fine for now; sidecar patches are small." }
+      ]
+    }
+  ]
+}

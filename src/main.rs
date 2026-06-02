@@ -39,7 +39,12 @@ fn main() -> Result<()> {
         Command::Review { .. } => unreachable!(),
     };
 
+    let comments = match &args.comments {
+        Some(path) => loader::load_comments(path)?,
+        None => comments::CommentStore::default(),
+    };
+
     let title = source.label();
     let changeset = loader::load(&source)?;
-    ui::run(title, changeset)
+    ui::run(title, changeset, comments)
 }

@@ -9,10 +9,11 @@ use crossterm::terminal::{
 use ratatui::prelude::*;
 use std::io::stdout;
 
+use crate::comments::model::CommentStore;
 use crate::diff::model::Changeset;
 
 /// Set up the terminal, run the app, and restore the terminal afterwards.
-pub fn run(title: String, changeset: Changeset) -> Result<()> {
+pub fn run(title: String, changeset: Changeset, comments: CommentStore) -> Result<()> {
     if changeset.is_empty() {
         println!("hew: no changes to review");
         return Ok(());
@@ -24,7 +25,7 @@ pub fn run(title: String, changeset: Changeset) -> Result<()> {
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = app::App::new(title, changeset);
+    let mut app = app::App::with_comments(title, changeset, comments);
     let result = app.run(&mut terminal);
 
     disable_raw_mode()?;

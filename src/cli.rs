@@ -6,6 +6,10 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(name = "hew", version, about = "review-first terminal diff viewer")]
 pub struct Cli {
+    /// Load review comments from a sidecar JSON file before opening.
+    #[arg(long, value_name = "FILE", global = true)]
+    pub comments: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Command,
 }

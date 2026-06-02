@@ -25,10 +25,13 @@ impl LineRange {
 /// A single message in a thread (root or reply).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Comment {
+    #[serde(default = "Uuid::new_v4")]
     pub id: Uuid,
+    #[serde(default)]
     pub author: Option<String>,
     pub body: String,
-    #[serde(with = "ts")]
+    // Sidecar JSON may omit this; default to "now".
+    #[serde(with = "ts", default = "SystemTime::now")]
     pub created_at: SystemTime,
 }
 
@@ -46,10 +49,12 @@ impl Comment {
 /// A review thread anchored to a line range. `comments[0]` is the root.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Thread {
+    #[serde(default = "Uuid::new_v4")]
     pub id: Uuid,
     pub file: PathBuf,
     pub side: Side,
     pub range: LineRange,
+    #[serde(default)]
     pub resolved: bool,
     pub comments: Vec<Comment>,
 }
