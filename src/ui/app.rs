@@ -1152,7 +1152,7 @@ impl App {
                         .comments
                         .threads
                         .iter()
-                        .any(|t| t.file == path && t.side == side && t.range.contains(line))
+                        .any(|t| t.file == path && t.side == side && t.range.start == line)
                     {
                         targets.push(i);
                     }
@@ -1648,6 +1648,8 @@ impl App {
     }
 
     /// Gutter marker (● open / ○ resolved / blank) for a file+side+line.
+    /// Marks only a thread's first (anchor) line, so a multi-line range shows
+    /// a single dot rather than one per line.
     fn marker(&self, file_idx: usize, side: Side, line: Option<u32>) -> &'static str {
         let Some(line) = line else { return "  " };
         let Some(file) = self.changeset.files.get(file_idx) else {
@@ -1658,7 +1660,7 @@ impl App {
             .comments
             .threads
             .iter()
-            .filter(|t| t.file == path && t.side == side && t.range.contains(line))
+            .filter(|t| t.file == path && t.side == side && t.range.start == line)
             .collect();
         if here.iter().any(|t| !t.resolved) {
             "● "
@@ -1669,7 +1671,6 @@ impl App {
         }
     }
 
-    /// Show threads anchored at the current line in a popup.
     /// Render one inline comment line, padded so the tint spans the full width.
     fn comment_line_to_line(&self, cl: &CommentLine, width: usize) -> Line<'static> {
         let (text, color, bold) = match cl {
