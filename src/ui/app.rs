@@ -648,6 +648,11 @@ impl App {
         let (sr, map) = build_sidebar_rows(&self.changeset, &self.comments, &self.collapsed);
         self.sidebar_rows = sr;
         self.file_to_sbrow = map;
+        // The row count shrank/grew; keep the scroll within bounds so clicks and
+        // rendering agree.
+        let h = self.sidebar_area.height as usize;
+        let max = self.sidebar_rows.len().saturating_sub(h);
+        self.sidebar_scroll = self.sidebar_scroll.min(max);
     }
 
     /// Expand every ancestor directory of `fi` so its row is visible.
@@ -808,7 +813,11 @@ impl App {
 
     fn click_sidebar(&mut self, row: u16) {
         let off = row.saturating_sub(self.sidebar_area.y) as usize;
-        let idx = self.sidebar_scroll + off;
+        // Mirror render's clamp so clicks map to the row actually drawn.
+        let h = self.sidebar_area.height as usize;
+        let max = self.sidebar_rows.len().saturating_sub(h);
+        let scroll = self.sidebar_scroll.min(max);
+        let idx = scroll + off;
         match self.sidebar_rows.get(idx) {
             Some(SbRow::Dir { path, .. }) => {
                 let path = path.clone();
