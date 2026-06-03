@@ -51,13 +51,6 @@ pub struct CommentStore {
     pub threads: Vec<Thread>,
 }
 
-impl CommentStore {
-    /// Number of threads loaded.
-    pub fn count(&self) -> usize {
-        self.threads.len()
-    }
-}
-
 /// Serialize `SystemTime` as a unix-millis integer.
 mod ts {
     use serde::{Deserialize, Deserializer, Serializer};

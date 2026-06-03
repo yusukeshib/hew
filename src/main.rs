@@ -11,11 +11,6 @@ use cli::Cli;
 fn main() -> Result<()> {
     let args = Cli::parse();
 
-    let title = match &args.file {
-        Some(p) if p.as_os_str() != "-" => format!("patch {}", p.display()),
-        _ => "patch -".into(),
-    };
-
     let changeset = loader::load_patch(args.file.as_deref())?;
 
     if args.json {
@@ -45,5 +40,5 @@ fn main() -> Result<()> {
         None
     };
 
-    ui::run(title, changeset, comments, watch)
+    ui::run(changeset, comments, watch)
 }

@@ -18,12 +18,7 @@ use crate::diff::model::Changeset;
 
 /// Set up the terminal, run the app, and restore the terminal afterwards.
 /// When `watch` is `Some`, the listed files are reloaded on change.
-pub fn run(
-    title: String,
-    changeset: Changeset,
-    comments: CommentStore,
-    watch: Option<WatchPaths>,
-) -> Result<()> {
+pub fn run(changeset: Changeset, comments: CommentStore, watch: Option<WatchPaths>) -> Result<()> {
     // With nothing to watch, an empty changeset has nothing to show.
     if changeset.is_empty() && watch.is_none() {
         println!("hew: no changes to review");
@@ -36,7 +31,7 @@ pub fn run(
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
 
-    let mut app = app::App::with_comments(title, changeset, comments);
+    let mut app = app::App::with_comments(changeset, comments);
     if let Some(w) = watch {
         app = app.watching(w);
     }

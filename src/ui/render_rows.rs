@@ -332,8 +332,15 @@ pub fn build_split_rows(
                     LineKind::Addition => adds.push(cell),
                     LineKind::Context => {
                         flush_pairs(
-                            fi, &mut dels, &mut adds, &mut rows, comments, expanded, &mut emitted,
-                            path, width,
+                            fi,
+                            &mut dels,
+                            &mut adds,
+                            &mut rows,
+                            comments,
+                            expanded,
+                            &mut emitted,
+                            path,
+                            width,
                         );
                         rows.push(SplitRow {
                             file_idx: fi,
@@ -354,9 +361,14 @@ pub fn build_split_rows(
                         if let Some(l) = line.new_line {
                             anchors.push((Side::New, l));
                         }
-                        for cl in
-                            comment_rows_for(comments, expanded, &mut emitted, path, &anchors, width)
-                        {
+                        for cl in comment_rows_for(
+                            comments,
+                            expanded,
+                            &mut emitted,
+                            path,
+                            &anchors,
+                            width,
+                        ) {
                             rows.push(SplitRow {
                                 file_idx: fi,
                                 kind: SplitRowKind::Comment(cl),
@@ -367,7 +379,15 @@ pub fn build_split_rows(
                 }
             }
             flush_pairs(
-                fi, &mut dels, &mut adds, &mut rows, comments, expanded, &mut emitted, path, width,
+                fi,
+                &mut dels,
+                &mut adds,
+                &mut rows,
+                comments,
+                expanded,
+                &mut emitted,
+                path,
+                width,
             );
         }
     }
@@ -465,9 +485,14 @@ pub fn build_rows(
                     _ => (Side::New, line.new_line),
                 };
                 if let Some(ln) = ln {
-                    for cl in
-                        comment_rows_for(comments, expanded, &mut emitted, path, &[(side, ln)], width)
-                    {
+                    for cl in comment_rows_for(
+                        comments,
+                        expanded,
+                        &mut emitted,
+                        path,
+                        &[(side, ln)],
+                        width,
+                    ) {
                         rows.push(Row {
                             file_idx: fi,
                             kind: RowKind::Comment(cl),
@@ -501,8 +526,7 @@ mod tests {
     #[test]
     fn injects_expanded_thread_rows() {
         let cs = load_patch(Some(Path::new("examples/rust-long-en.patch"))).unwrap();
-        let comments =
-            load_comments(Path::new("examples/rust-long-en.comments.json")).unwrap();
+        let comments = load_comments(Path::new("examples/rust-long-en.comments.json")).unwrap();
         let none = HashSet::new();
         let all: HashSet<usize> = (0..comments.threads.len()).collect();
         let base = build_rows(&cs, &comments, &none, 80);

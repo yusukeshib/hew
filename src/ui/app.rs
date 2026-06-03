@@ -1,7 +1,7 @@
 //! TUI application state and render loop.
 
 use crate::comments::model::CommentStore;
-use crate::diff::model::{Changeset, LineKind, Side};
+use crate::diff::model::{Changeset, DiffFile, LineKind, Side};
 use crate::ui::highlight::Highlighter;
 use crate::ui::render_rows::{
     build_rows, build_split_rows, CommentLine, Row, RowKind, SideCell, SplitRow, SplitRowKind,
@@ -63,12 +63,38 @@ enum Focus {
     Diff,
 }
 
-/// A row in the file list: a directory header, a file entry (by file index),
-/// or a comment thread (by index into the comment store) nested under its file.
+/// A row in the file tree: a directory node (collapsible), a file entry (by
+/// file index), or a comment thread (by index) nested under its file. `depth`
+/// is the visual nesting level used for indentation.
 enum SbRow {
-    Dir(String),
-    File(usize),
-    Thread(usize),
+    Dir {
+        path: String,
+        name: String,
+        depth: usize,
+    },
+    File {
+        idx: usize,
+        depth: usize,
+    },
+    Thread {
+        idx: usize,
+        depth: usize,
+    },
+}
+
+/// One-letter change status for a file, with its accent color.
+fn file_status(f: &DiffFile) -> (char, Color) {
+    let added = f.old_path == "/dev/null" || f.old_path.is_empty();
+    let deleted = f.new_path == "/dev/null" || f.new_path.is_empty();
+    if added {
+        ('A', Color::Green)
+    } else if deleted {
+        ('D', Color::Red)
+    } else if f.old_path != f.new_path {
+        ('R', Color::Cyan)
+    } else {
+        ('M', Color::Yellow)
+    }
 }
 
 fn dir_of(path: &str) -> &str {
@@ -96,27 +122,54 @@ fn elide_right(s: &str, w: usize) -> String {
     out
 }
 
-/// Group files by directory (keeping file order), inserting a header row when
-/// the directory changes. Returns the rows plus a `file_idx -> row` map.
+/// Build the collapsible file tree (keeping file order). Directory segments
+/// become `Dir` nodes; files nest under them with comment threads one level
+/// deeper. Subtrees under a collapsed directory are omitted. Returns the rows
+/// plus a `file_idx -> row` map (`usize::MAX` for files hidden by a collapse).
 fn build_sidebar_rows(
     changeset: &Changeset,
     comments: &CommentStore,
+    collapsed: &HashSet<String>,
 ) -> (Vec<SbRow>, Vec<usize>) {
     let mut rows = Vec::new();
-    let mut map = vec![0usize; changeset.files.len()];
-    let mut last_dir: Option<String> = None;
+    let mut map = vec![usize::MAX; changeset.files.len()];
+    let mut prev: Vec<String> = Vec::new();
     for (i, f) in changeset.files.iter().enumerate() {
         let dir = dir_of(f.display_path());
-        if last_dir.as_deref() != Some(dir) {
-            rows.push(SbRow::Dir(if dir.is_empty() {
-                ".".into()
-            } else {
-                dir.into()
-            }));
-            last_dir = Some(dir.to_string());
+        let segs: Vec<String> = if dir.is_empty() {
+            Vec::new()
+        } else {
+            dir.split('/').map(|s| s.to_string()).collect()
+        };
+        // Longest directory prefix shared with the previous file (already open).
+        let mut common = 0;
+        while common < segs.len() && common < prev.len() && segs[common] == prev[common] {
+            common += 1;
+        }
+        // Emit any newly-entered directory segments, unless an ancestor is
+        // collapsed (then the whole subtree is hidden).
+        for d in common..segs.len() {
+            let ancestor_collapsed = (0..d).any(|a| collapsed.contains(&segs[..=a].join("/")));
+            if ancestor_collapsed {
+                continue;
+            }
+            rows.push(SbRow::Dir {
+                path: segs[..=d].join("/"),
+                name: segs[d].clone(),
+                depth: d,
+            });
+        }
+        prev = segs.clone();
+        // Hide the file (and its threads) when any ancestor dir is collapsed.
+        let hidden = (0..segs.len()).any(|d| collapsed.contains(&segs[..=d].join("/")));
+        if hidden {
+            continue;
         }
         map[i] = rows.len();
-        rows.push(SbRow::File(i));
+        rows.push(SbRow::File {
+            idx: i,
+            depth: segs.len(),
+        });
         // Comment threads anchored to this file, nested one level deeper.
         let path = PathBuf::from(f.display_path());
         for (ti, _) in comments
@@ -125,18 +178,24 @@ fn build_sidebar_rows(
             .enumerate()
             .filter(|(_, t)| t.file == path)
         {
-            rows.push(SbRow::Thread(ti));
+            rows.push(SbRow::Thread {
+                idx: ti,
+                depth: segs.len() + 1,
+            });
         }
     }
     (rows, map)
 }
 
-const SIDEBAR_WIDTH: u16 = 30;
+const SIDEBAR_WIDTH: u16 = 38;
 const MIN_SIDEBAR: u16 = 14;
 const MIN_DIFF: u16 = 20;
 /// Selection background when the pane is focused / unfocused.
 const FOCUS_BG: Color = SEL_BG;
 const UNFOCUS_BG: Color = Color::Rgb(40, 42, 48);
+/// Very dark, subtle chrome (borders, scrollbars, dividers).
+const SUBTLE: Color = Color::Rgb(38, 40, 46);
+const SUBTLE_FOCUS: Color = Color::Rgb(58, 62, 70);
 
 /// Per-file (additions, deletions) counts for the sidebar.
 fn file_stats(changeset: &Changeset) -> Vec<(usize, usize)> {
@@ -224,7 +283,6 @@ fn elide_left(s: &str, w: usize) -> String {
 /// Read-only diff/comment viewer state. Comments are loaded from a sidecar and
 /// only displayed/navigated — hew never mutates them.
 pub struct App {
-    title: String,
     changeset: Changeset,
     rows: Vec<Row>,
     comments: CommentStore,
@@ -241,7 +299,8 @@ pub struct App {
     sidebar_scroll: usize, // top file row of the sidebar (independent of selection)
     sidebar_sel: usize,    // cursor row in the sidebar (a File or Thread row)
     expanded: HashSet<usize>, // thread indices expanded inline in the diff
-    comment_wrap: usize,      // width used to wrap inline comment bodies
+    collapsed: HashSet<String>, // directory paths collapsed in the sidebar tree
+    comment_wrap: usize,   // width used to wrap inline comment bodies
     resizing: bool,        // dragging the sidebar/diff divider
     focus: Focus,
     current_file: usize,          // the diff pane shows only this file
@@ -263,14 +322,14 @@ pub struct App {
 
 impl App {
     /// Construct with a pre-loaded comment store (e.g. from a sidecar JSON).
-    pub fn with_comments(title: String, changeset: Changeset, comments: CommentStore) -> Self {
+    pub fn with_comments(changeset: Changeset, comments: CommentStore) -> Self {
         let expanded = HashSet::new();
         let rows = build_rows(&changeset, &comments, &expanded, 0);
         let split_rows = build_split_rows(&changeset, &comments, &expanded, 0);
         let stats = file_stats(&changeset);
-        let (sidebar_rows, file_to_sbrow) = build_sidebar_rows(&changeset, &comments);
+        let collapsed = HashSet::new();
+        let (sidebar_rows, file_to_sbrow) = build_sidebar_rows(&changeset, &comments, &collapsed);
         let mut app = App {
-            title,
             changeset,
             rows,
             split_rows,
@@ -286,8 +345,13 @@ impl App {
             show_sidebar: true,
             sidebar_width: SIDEBAR_WIDTH,
             sidebar_scroll: 0,
-            sidebar_sel: file_to_sbrow.first().copied().unwrap_or(0),
+            sidebar_sel: file_to_sbrow
+                .iter()
+                .copied()
+                .find(|&r| r != usize::MAX)
+                .unwrap_or(0),
             expanded,
+            collapsed,
             comment_wrap: 0,
             resizing: false,
             focus: Focus::Diff,
@@ -542,8 +606,7 @@ impl App {
 
     fn drag_sidebar_sb(&mut self, row: u16) {
         let h = self.sidebar_sb.height as usize;
-        self.sidebar_scroll =
-            sb_thumb_pos(self.sidebar_sb.y, h, self.sidebar_rows.len(), h, row);
+        self.sidebar_scroll = sb_thumb_pos(self.sidebar_sb.y, h, self.sidebar_rows.len(), h, row);
     }
 
     /// Scroll the file list independently of the selection.
@@ -560,7 +623,9 @@ impl App {
         if h == 0 {
             return;
         }
-        let r = self.sidebar_sel.min(self.sidebar_rows.len().saturating_sub(1));
+        let r = self
+            .sidebar_sel
+            .min(self.sidebar_rows.len().saturating_sub(1));
         // Include the row just above (dir header / parent file) when present.
         let target = r.saturating_sub(1);
         if target < self.sidebar_scroll {
@@ -570,12 +635,74 @@ impl App {
         }
     }
 
-    /// Is the sidebar row at `idx` a landing spot for the cursor (file/thread)?
+    /// Is the sidebar row at `idx` a landing spot for the cursor? Every tree
+    /// row (dir, file, thread) is selectable.
     fn sb_selectable(&self, idx: usize) -> bool {
-        matches!(
-            self.sidebar_rows.get(idx),
-            Some(SbRow::File(_) | SbRow::Thread(_))
-        )
+        idx < self.sidebar_rows.len()
+    }
+
+    /// Rebuild the sidebar tree from the current collapse set.
+    fn rebuild_sidebar(&mut self) {
+        let (sr, map) = build_sidebar_rows(&self.changeset, &self.comments, &self.collapsed);
+        self.sidebar_rows = sr;
+        self.file_to_sbrow = map;
+    }
+
+    /// Expand every ancestor directory of `fi` so its row is visible.
+    fn reveal_file_in_tree(&mut self, fi: usize) {
+        let Some(f) = self.changeset.files.get(fi) else {
+            return;
+        };
+        let dir = dir_of(f.display_path());
+        if dir.is_empty() {
+            return;
+        }
+        let segs: Vec<&str> = dir.split('/').collect();
+        let mut changed = false;
+        for d in 0..segs.len() {
+            if self.collapsed.remove(&segs[..=d].join("/")) {
+                changed = true;
+            }
+        }
+        if changed {
+            self.rebuild_sidebar();
+        }
+    }
+
+    /// Toggle a directory node open/closed and keep the cursor on it.
+    fn toggle_dir(&mut self, path: String) {
+        if !self.collapsed.remove(&path) {
+            self.collapsed.insert(path.clone());
+        }
+        self.rebuild_sidebar();
+        if let Some(r) = self
+            .sidebar_rows
+            .iter()
+            .position(|row| matches!(row, SbRow::Dir { path: p, .. } if *p == path))
+        {
+            self.sidebar_sel = r;
+        }
+        self.sidebar_sel = self
+            .sidebar_sel
+            .min(self.sidebar_rows.len().saturating_sub(1));
+        self.reveal_sidebar();
+    }
+
+    /// Explicit activation (Enter/Space/click): toggle a dir, jump to a thread,
+    /// or step into the diff on a file.
+    fn activate_sidebar_explicit(&mut self) {
+        match self.sidebar_rows.get(self.sidebar_sel) {
+            Some(SbRow::Dir { path, .. }) => {
+                let path = path.clone();
+                self.toggle_dir(path);
+            }
+            Some(SbRow::Thread { idx, .. }) => {
+                let ti = *idx;
+                self.goto_thread(ti, true, true);
+            }
+            Some(SbRow::File { .. }) => self.focus = Focus::Diff,
+            None => {}
+        }
     }
 
     /// Move the sidebar cursor to the next/prev selectable row and act on it.
@@ -612,17 +739,19 @@ impl App {
     /// Apply the row under the sidebar cursor: switch file or jump to thread.
     fn activate_sidebar(&mut self) {
         match self.sidebar_rows.get(self.sidebar_sel) {
-            Some(SbRow::File(fi)) => {
-                let fi = *fi;
+            Some(SbRow::File { idx, .. }) => {
+                let fi = *idx;
                 if fi != self.current_file {
                     self.set_current_file(fi);
                 }
                 self.reveal_sidebar();
             }
-            Some(SbRow::Thread(ti)) => {
-                let ti = *ti;
+            Some(SbRow::Thread { idx, .. }) => {
+                let ti = *idx;
                 self.goto_thread(ti, false, false);
             }
+            // Directory rows are just a cursor resting spot during navigation;
+            // they toggle only on explicit activation.
             _ => {}
         }
     }
@@ -631,17 +760,23 @@ impl App {
         let off = row.saturating_sub(self.sidebar_area.y) as usize;
         let idx = self.sidebar_scroll + off;
         match self.sidebar_rows.get(idx) {
-            Some(SbRow::File(fi)) => {
+            Some(SbRow::Dir { path, .. }) => {
+                let path = path.clone();
+                self.focus = Focus::Sidebar;
+                self.sidebar_sel = idx;
+                self.toggle_dir(path);
+            }
+            Some(SbRow::File { idx: fi, .. }) => {
                 let fi = *fi;
                 self.focus = Focus::Sidebar;
                 self.set_current_file(fi);
             }
-            Some(SbRow::Thread(ti)) => {
+            Some(SbRow::Thread { idx: ti, .. }) => {
                 let ti = *ti;
                 self.sidebar_sel = idx;
                 self.goto_thread(ti, true, true);
             }
-            _ => {}
+            None => {}
         }
     }
 
@@ -677,7 +812,7 @@ impl App {
         if let Some(r) = self
             .sidebar_rows
             .iter()
-            .position(|row| matches!(row, SbRow::Thread(t) if *t == ti))
+            .position(|row| matches!(row, SbRow::Thread { idx, .. } if *idx == ti))
         {
             self.sidebar_sel = r;
             self.reveal_sidebar();
@@ -692,9 +827,18 @@ impl App {
     fn rebuild_rows(&mut self) {
         let anchor = self.anchor_at(self.selected);
         let cur_file = self.current_file;
-        self.rows = build_rows(&self.changeset, &self.comments, &self.expanded, self.comment_wrap);
-        self.split_rows =
-            build_split_rows(&self.changeset, &self.comments, &self.expanded, self.comment_wrap);
+        self.rows = build_rows(
+            &self.changeset,
+            &self.comments,
+            &self.expanded,
+            self.comment_wrap,
+        );
+        self.split_rows = build_split_rows(
+            &self.changeset,
+            &self.comments,
+            &self.expanded,
+            self.comment_wrap,
+        );
         let target = anchor.and_then(|a| {
             (0..self.active_len())
                 .find(|&i| self.is_selectable_at(i) && self.anchor_at(i) == Some(a))
@@ -821,9 +965,7 @@ impl App {
         }
         // Rebuild the sidebar + diff rows once both the diff and comments are
         // current. Thread indices may have shifted, so drop inline expansions.
-        let (sr, map) = build_sidebar_rows(&self.changeset, &self.comments);
-        self.sidebar_rows = sr;
-        self.file_to_sbrow = map;
+        self.rebuild_sidebar();
         self.expanded.clear();
         self.rebuild_rows();
         // Files may have changed; re-point at a valid file and selectable row.
@@ -888,10 +1030,13 @@ impl App {
     fn set_current_file(&mut self, file: usize) {
         self.sel_anchor = None;
         self.current_file = file.min(self.changeset.files.len().saturating_sub(1));
+        // A file in a collapsed directory has no visible row; open its ancestors.
+        self.reveal_file_in_tree(self.current_file);
         self.sidebar_sel = self
             .file_to_sbrow
             .get(self.current_file)
             .copied()
+            .filter(|&r| r != usize::MAX)
             .unwrap_or(0);
         self.reveal_sidebar();
         let (start, _) = self.file_range();
@@ -1006,15 +1151,12 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => self.move_sidebar(-1),
             KeyCode::Char('g') | KeyCode::Home => self.sidebar_edge(false),
             KeyCode::Char('G') | KeyCode::End => self.sidebar_edge(true),
-            // Enter: expand+focus a thread row, else just enter the diff.
-            KeyCode::Enter | KeyCode::Char('l') => {
-                if let Some(SbRow::Thread(ti)) = self.sidebar_rows.get(self.sidebar_sel) {
-                    let ti = *ti;
-                    self.goto_thread(ti, true, true);
-                } else {
-                    self.focus = Focus::Diff;
-                }
+            // Enter/Space/o: toggle a directory, jump to a thread, or enter the
+            // diff on a file.
+            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('o') => {
+                self.activate_sidebar_explicit()
             }
+            KeyCode::Char('l') => self.focus = Focus::Diff,
             _ => {}
         }
     }
@@ -1187,28 +1329,11 @@ impl App {
         let area = f.area();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Length(1),
-                Constraint::Min(1),
-                Constraint::Length(1),
-            ])
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
             .split(area);
 
-        // Title bar.
-        let n = self.comments.count();
-        let title = format!(
-            " hew — {}  ({} comment{}) ",
-            self.title,
-            n,
-            if n == 1 { "" } else { "s" }
-        );
-        f.render_widget(
-            Paragraph::new(title).style(Style::default().fg(Color::Black).bg(Color::Cyan)),
-            chunks[0],
-        );
-
         // Body: optional file sidebar on the left, diff on the right.
-        let body = chunks[1];
+        let body = chunks[0];
         let sidebar = self.show_sidebar && self.changeset.files.len() > 1 && body.width >= 60;
         let (diff_area, sidebar_area) = if sidebar {
             let cols = Layout::default()
@@ -1235,7 +1360,7 @@ impl App {
         self.sidebar_sb =
             if sidebar_area.width > 0 && self.sidebar_rows.len() > sidebar_area.height as usize {
                 Rect {
-                    x: sidebar_area.x + sidebar_area.width.saturating_sub(2),
+                    x: sidebar_area.x + sidebar_area.width.saturating_sub(1),
                     y: sidebar_area.y,
                     width: 1,
                     height: sidebar_area.height,
@@ -1274,9 +1399,8 @@ impl App {
         // Status line.
         f.render_widget(
             Paragraph::new(self.status.clone()).style(Style::default().fg(Color::DarkGray)),
-            chunks[2],
+            chunks[1],
         );
-
     }
 
     fn render_diff(&self, f: &mut Frame, area: Rect) {
@@ -1286,14 +1410,11 @@ impl App {
         }
     }
 
-    /// Left-hand file list: path + (+adds / -dels), current file highlighted.
+    /// Left-hand collapsible file tree: directories, files (with a one-letter
+    /// change status), and comment threads, indented by depth.
     fn render_sidebar(&self, f: &mut Frame, area: Rect) {
         let focused = self.effective_focus() == Focus::Sidebar;
-        let border = if focused {
-            Color::Cyan
-        } else {
-            Color::DarkGray
-        };
+        let border = if focused { SUBTLE_FOCUS } else { SUBTLE };
         let block = Block::default()
             .borders(Borders::RIGHT)
             .border_style(Style::default().fg(border));
@@ -1302,9 +1423,10 @@ impl App {
 
         let h = inner.height as usize;
         let n = self.sidebar_rows.len();
-        // Reserve a column for the scrollbar when the list overflows.
+        // The scrollbar shares the right border column, so the content keeps the
+        // full inner width.
         let need_sb = n > h;
-        let w = (inner.width as usize).saturating_sub(if need_sb { 1 } else { 0 });
+        let w = inner.width as usize;
         let max = n.saturating_sub(h);
         let scroll = self.sidebar_scroll.min(max);
 
@@ -1312,23 +1434,44 @@ impl App {
         let cur_anchor = self.anchor_at(self.selected);
         let mut lines: Vec<Line> = Vec::new();
         for idx in scroll..n.min(scroll + h) {
+            let is_cursor = focused && idx == self.sidebar_sel;
             match &self.sidebar_rows[idx] {
-                SbRow::Dir(dir) => {
-                    let text = format!("{}/", elide_left(dir, w.saturating_sub(1)));
-                    lines.push(Line::from(Span::styled(
-                        text,
-                        Style::default()
-                            .fg(Color::Rgb(106, 115, 130))
-                            .add_modifier(Modifier::BOLD),
-                    )));
+                SbRow::Dir { name, depth, path } => {
+                    let indent = "  ".repeat(depth + 1);
+                    let arrow = if self.collapsed.contains(path) {
+                        "▶ "
+                    } else {
+                        "▼ "
+                    };
+                    let avail = w.saturating_sub(indent.chars().count() + 2);
+                    let label = format!("{:<width$}", elide_left(name, avail), width = avail);
+                    let bg = if is_cursor { Some(FOCUS_BG) } else { None };
+                    let wbg = |st: Style| match bg {
+                        Some(b) => st.bg(b),
+                        None => st,
+                    };
+                    lines.push(Line::from(vec![
+                        Span::styled(indent, wbg(Style::default())),
+                        Span::styled(arrow, wbg(Style::default().fg(Color::Rgb(106, 115, 130)))),
+                        Span::styled(
+                            label,
+                            wbg(Style::default()
+                                .fg(Color::Rgb(106, 115, 130))
+                                .add_modifier(Modifier::BOLD)),
+                        ),
+                    ]));
                 }
-                SbRow::File(fi) => {
+                SbRow::File { idx: fi, depth } => {
                     let fi = *fi;
                     let is_cur = fi == self.current_file;
-                    let (adds, dels) = self.file_stats.get(fi).copied().unwrap_or((0, 0));
-                    let counts = format!(" +{adds} -{dels}");
-                    let prefix = "  ";
-                    let avail = w.saturating_sub(prefix.chars().count() + counts.chars().count());
+                    let (status, status_color) = self
+                        .changeset
+                        .files
+                        .get(fi)
+                        .map(file_status)
+                        .unwrap_or(('M', Color::Yellow));
+                    let indent = "  ".repeat(depth + 1);
+                    let avail = w.saturating_sub(indent.chars().count() + 2);
                     let base = self
                         .changeset
                         .files
@@ -1336,7 +1479,6 @@ impl App {
                         .map(|f| base_of(f.display_path()))
                         .unwrap_or_default();
                     let name = format!("{:<width$}", elide_left(base, avail), width = avail);
-                    let is_cursor = focused && idx == self.sidebar_sel;
                     let bg = if is_cursor {
                         Some(FOCUS_BG)
                     } else if is_cur {
@@ -1356,13 +1498,12 @@ impl App {
                         Style::default().fg(Color::Gray)
                     };
                     lines.push(Line::from(vec![
-                        Span::styled(prefix, wbg(Style::default().fg(Color::Cyan))),
+                        Span::styled(indent, wbg(Style::default())),
+                        Span::styled(format!("{status} "), wbg(Style::default().fg(status_color))),
                         Span::styled(name, wbg(name_style)),
-                        Span::styled(format!(" +{adds}"), wbg(Style::default().fg(Color::Green))),
-                        Span::styled(format!(" -{dels}"), wbg(Style::default().fg(Color::Red))),
                     ]));
                 }
-                SbRow::Thread(ti) => {
+                SbRow::Thread { idx: ti, depth } => {
                     let Some(t) = self.comments.threads.get(*ti) else {
                         continue;
                     };
@@ -1376,9 +1517,8 @@ impl App {
                         .next()
                         .unwrap_or("")
                         .trim();
-                    let indent = "    ";
-                    let avail =
-                        w.saturating_sub(indent.chars().count() + glyph.chars().count());
+                    let indent = "  ".repeat(depth + 1);
+                    let avail = w.saturating_sub(indent.chars().count() + glyph.chars().count());
                     let text = format!("{:<width$}", elide_right(snippet, avail), width = avail);
                     // Highlight when the diff cursor sits on a line this thread anchors.
                     let active = cur_anchor
@@ -1392,7 +1532,6 @@ impl App {
                                 && t.range.contains(l)
                         })
                         .unwrap_or(false);
-                    let is_cursor = focused && idx == self.sidebar_sel;
                     let bg = if is_cursor {
                         Some(FOCUS_BG)
                     } else if active {
@@ -1404,8 +1543,16 @@ impl App {
                         Some(b) => st.bg(b),
                         None => st,
                     };
-                    let glyph_color = if t.resolved { Color::DarkGray } else { Color::Yellow };
-                    let text_color = if t.resolved { Color::DarkGray } else { Color::Gray };
+                    let glyph_color = if t.resolved {
+                        Color::DarkGray
+                    } else {
+                        Color::Yellow
+                    };
+                    let text_color = if t.resolved {
+                        Color::DarkGray
+                    } else {
+                        Color::Gray
+                    };
                     lines.push(Line::from(vec![
                         Span::styled(indent, wbg(Style::default())),
                         Span::styled(glyph, wbg(Style::default().fg(glyph_color))),
@@ -1419,11 +1566,16 @@ impl App {
             let mut sb = ScrollbarState::new(max + 1)
                 .position(scroll)
                 .viewport_content_length(h);
+            // Render over the full area so the track replaces the right border
+            // (one vertical line, not two).
             f.render_stateful_widget(
                 Scrollbar::new(ScrollbarOrientation::VerticalRight)
                     .begin_symbol(None)
-                    .end_symbol(None),
-                inner,
+                    .end_symbol(None)
+                    .track_symbol(Some("│"))
+                    .thumb_style(Style::default().fg(SUBTLE_FOCUS))
+                    .track_style(Style::default().fg(SUBTLE)),
+                area,
                 &mut sb,
             );
         }
@@ -1444,7 +1596,9 @@ impl App {
         f.render_stateful_widget(
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
-                .end_symbol(None),
+                .end_symbol(None)
+                .thumb_style(Style::default().fg(SUBTLE_FOCUS))
+                .track_style(Style::default().fg(SUBTLE)),
             area,
             &mut sb,
         );
@@ -1506,7 +1660,7 @@ impl App {
                     self.side_spans(left.as_ref(), Side::Old, row.file_idx, side_w, selected);
                 spans.push(Span::styled(
                     divider.to_string(),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(SUBTLE),
                 ));
                 spans.extend(self.side_spans(
                     right.as_ref(),
@@ -1518,8 +1672,11 @@ impl App {
                 Line::from(spans)
             }
             SplitRowKind::Comment(cl) => {
-                let full = side_w * 2 + divider.chars().count();
-                self.comment_line_to_line(cl, full)
+                // In split view, comments live under the new (right) side only.
+                let pad = side_w + divider.chars().count();
+                let mut spans = vec![Span::styled(" ".repeat(pad), Style::default())];
+                spans.extend(self.comment_line_to_line(cl, side_w).spans);
+                Line::from(spans)
             }
         }
     }
@@ -1553,8 +1710,10 @@ impl App {
                         LineKind::Context => None,
                     }
                 };
-                let mut spans =
-                    vec![Span::styled(format!("{num} "), Style::default().fg(Color::DarkGray))];
+                let mut spans = vec![Span::styled(
+                    format!("{num} "),
+                    Style::default().fg(Color::DarkGray),
+                )];
                 spans.extend(self.styled_fit(file_idx, &c.text, width.saturating_sub(PREFIX), bg));
                 spans
             }
@@ -1644,12 +1803,14 @@ impl App {
                     replies,
                     if *replies == 1 { "" } else { "s" }
                 ),
-                if *resolved { Color::DarkGray } else { Color::Cyan },
+                if *resolved {
+                    Color::DarkGray
+                } else {
+                    Color::Cyan
+                },
                 true,
             ),
-            CommentLine::Author(a) => {
-                (format!("  ▏ @{a}"), Color::Yellow, true)
-            }
+            CommentLine::Author(a) => (format!("  ▏ @{a}"), Color::Yellow, true),
             CommentLine::Body(b) => (format!("  ▏   {b}"), Color::Gray, false),
             CommentLine::Gap => ("  ▏".to_string(), Color::DarkGray, false),
         };
