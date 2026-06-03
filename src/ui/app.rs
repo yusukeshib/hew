@@ -700,11 +700,41 @@ impl App {
     }
 
     /// Collapse (`collapse = true`) or expand the directory under the cursor.
+    /// Collapsing while on a file/thread row closes its containing folder and
+    /// moves the cursor onto that folder.
     fn fold_dir(&mut self, collapse: bool) {
-        if let Some(SbRow::Dir { path, .. }) = self.sidebar_rows.get(self.sidebar_sel) {
-            let path = path.clone();
-            self.set_dir_collapsed(path, collapse);
+        match self.sidebar_rows.get(self.sidebar_sel) {
+            Some(SbRow::Dir { path, .. }) => {
+                let path = path.clone();
+                self.set_dir_collapsed(path, collapse);
+            }
+            Some(SbRow::File { idx, .. }) if collapse => {
+                let fi = *idx;
+                if let Some(parent) = self.parent_dir_of_file(fi) {
+                    self.set_dir_collapsed(parent, true);
+                }
+            }
+            Some(SbRow::Thread { idx, .. }) if collapse => {
+                // A thread's container is the dir of the file it annotates.
+                let parent = self
+                    .comments
+                    .threads
+                    .get(*idx)
+                    .map(|t| dir_of(&t.file.to_string_lossy()).to_string())
+                    .filter(|d| !d.is_empty());
+                if let Some(parent) = parent {
+                    self.set_dir_collapsed(parent, true);
+                }
+            }
+            _ => {}
         }
+    }
+
+    /// The immediate containing directory of file `fi`, if it lives in one.
+    fn parent_dir_of_file(&self, fi: usize) -> Option<String> {
+        let f = self.changeset.files.get(fi)?;
+        let dir = dir_of(f.display_path());
+        (!dir.is_empty()).then(|| dir.to_string())
     }
 
     /// Toggle the directory under the cursor open/closed.
