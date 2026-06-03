@@ -23,7 +23,6 @@ use std::time::{Duration, SystemTime};
 const ADD_BG: Color = Color::Rgb(20, 42, 24);
 const DEL_BG: Color = Color::Rgb(48, 24, 26);
 const SEL_BG: Color = Color::Rgb(60, 66, 80);
-const COMMENT_BG: Color = Color::Rgb(30, 34, 44);
 
 /// Highlighted runs for one line: `(fg color, text)`.
 type LineRuns = Rc<Vec<(Color, String)>>;
@@ -1725,15 +1724,14 @@ impl App {
     /// (2-column left margin + `╭─╮`/`│ │`/`╰─╯` frame).
     fn comment_line_to_line(&self, cl: &CommentLine, width: usize) -> Line<'static> {
         const MARGIN: usize = 2;
-        let bg = COMMENT_BG;
         let border_col = Color::Rgb(92, 100, 118);
-        let bstyle = Style::default().fg(border_col).bg(bg);
+        let bstyle = Style::default().fg(border_col);
         // Box occupies cols [MARGIN, width); inner_w is the span between borders.
         let inner_w = width.saturating_sub(MARGIN + 2);
         if width <= MARGIN + 2 {
-            return Line::from(Span::styled(" ".repeat(width), Style::default().bg(bg)));
+            return Line::from(Span::raw(" ".repeat(width)));
         }
-        let margin = Span::styled(" ".repeat(MARGIN), Style::default().bg(bg));
+        let margin = Span::raw(" ".repeat(MARGIN));
         match cl {
             CommentLine::Top => Line::from(vec![
                 margin,
@@ -1763,7 +1761,7 @@ impl App {
                     CommentLine::Body(b) => (format!("   {b}"), Color::Gray, false),
                     _ => (String::new(), Color::Gray, false), // Gap
                 };
-                let mut cstyle = Style::default().fg(color).bg(bg);
+                let mut cstyle = Style::default().fg(color);
                 if bold {
                     cstyle = cstyle.add_modifier(Modifier::BOLD);
                 }
