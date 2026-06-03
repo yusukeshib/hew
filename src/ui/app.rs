@@ -12,7 +12,7 @@ use crossterm::event::{
 };
 use ratatui::prelude::*;
 use ratatui::widgets::{
-    Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -473,14 +473,15 @@ impl App {
 
     /// Column of the draggable sidebar/diff divider, if the sidebar is shown.
     fn divider_col(&self) -> Option<u16> {
-        (self.sidebar_area.width > 0).then(|| self.sidebar_area.x + self.sidebar_area.width - 1)
+        // The diff panel's left border (just past the sidebar) is the divider.
+        (self.sidebar_area.width > 0).then(|| self.sidebar_area.x + self.sidebar_area.width)
     }
 
     /// Resize the sidebar so its divider sits at column `col`.
     fn resize_to(&mut self, col: u16) {
         let total = self.sidebar_area.width + self.diff_area.width;
         let max = total.saturating_sub(MIN_DIFF).max(MIN_SIDEBAR);
-        self.sidebar_width = (col.saturating_sub(self.sidebar_area.x) + 1).clamp(MIN_SIDEBAR, max);
+        self.sidebar_width = col.saturating_sub(self.sidebar_area.x).clamp(MIN_SIDEBAR, max);
     }
 
     /// Mouse: wheel scrolls the pane under the pointer; left-click selects;
@@ -1320,7 +1321,7 @@ impl App {
         // Body: optional file sidebar on the left, diff on the right.
         let body = chunks[0];
         let sidebar = self.show_sidebar && self.changeset.files.len() > 1 && body.width >= 60;
-        let (diff_area, sidebar_area) = if sidebar {
+        let (diff_outer, sidebar_area) = if sidebar {
             let cols = Layout::default()
                 .direction(Direction::Horizontal)
                 .constraints([Constraint::Length(self.sidebar_width), Constraint::Min(1)])
@@ -1329,12 +1330,22 @@ impl App {
         } else {
             (body, Rect::default())
         };
+        // The diff is a floating panel sitting *on top of* the sidebar: a
+        // rounded border frames it and brightens when it holds focus, so Esc
+        // (which drops diff focus back to the sidebar) reads as dismissing the
+        // panel. Its left border doubles as the resize divider.
+        let diff_focused = self.effective_focus() == Focus::Diff;
+        let diff_block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(if diff_focused { SUBTLE_FOCUS } else { SUBTLE }));
+        let diff_inner = diff_block.inner(diff_outer);
         // Re-wrap inline comments to the current diff width before any code
         // reads the row lists (selection mapping depends on it).
         // While the divider is being dragged, leave the comment wrap (and the
         // expensive row rebuild it triggers) alone; the next draw after the
         // drag releases picks up the final width and rebuilds exactly once.
-        let cw = (diff_area.width as usize).saturating_sub(8);
+        let cw = (diff_inner.width as usize).saturating_sub(8);
         if cw != self.comment_wrap && !self.resizing {
             self.comment_wrap = cw;
             if !self.expanded.is_empty() {
@@ -1348,7 +1359,7 @@ impl App {
         self.sidebar_sb =
             if sidebar_area.width > 0 && self.sidebar_rows.len() > sidebar_area.height as usize {
                 Rect {
-                    x: sidebar_area.x + sidebar_area.width.saturating_sub(2),
+                    x: sidebar_area.x + sidebar_area.width.saturating_sub(1),
                     y: sidebar_area.y,
                     width: 1,
                     height: sidebar_area.height,
@@ -1356,32 +1367,33 @@ impl App {
             } else {
                 Rect::default()
             };
-        self.height = diff_area.height as usize;
-        // Reserve the rightmost column for a scrollbar when the file overflows.
+        f.render_widget(diff_block, diff_outer);
+        self.height = diff_inner.height as usize;
+        // Reserve the rightmost inner column for a scrollbar when it overflows.
         let (fr_start, fr_end) = self.file_range();
         let overflow = fr_end - fr_start > self.height;
         let content = if overflow {
             Rect {
-                width: diff_area.width.saturating_sub(1),
-                ..diff_area
+                width: diff_inner.width.saturating_sub(1),
+                ..diff_inner
             }
         } else {
-            diff_area
+            diff_inner
         };
         self.diff_area = content;
         self.diff_sb = if overflow {
             Rect {
-                x: diff_area.x + diff_area.width.saturating_sub(1),
-                y: diff_area.y,
+                x: diff_inner.x + diff_inner.width.saturating_sub(1),
+                y: diff_inner.y,
                 width: 1,
-                height: diff_area.height,
+                height: diff_inner.height,
             }
         } else {
             Rect::default()
         };
         self.render_diff(f, content);
         if overflow {
-            self.render_diff_scrollbar(f, diff_area);
+            self.render_diff_scrollbar(f, diff_inner);
         }
 
         // Status line.
@@ -1402,12 +1414,9 @@ impl App {
     /// change status), and comment threads, indented by depth.
     fn render_sidebar(&self, f: &mut Frame, area: Rect) {
         let focused = self.effective_focus() == Focus::Sidebar;
-        let border = if focused { SUBTLE_FOCUS } else { SUBTLE };
-        let block = Block::default()
-            .borders(Borders::RIGHT)
-            .border_style(Style::default().fg(border));
-        let inner = block.inner(area);
-        f.render_widget(block, area);
+        // No border on the sidebar: the floating diff panel's rounded left
+        // border is the visual divider between the two panes.
+        let inner = area;
 
         let h = inner.height as usize;
         let n = self.sidebar_rows.len();
