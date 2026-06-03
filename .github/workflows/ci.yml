@@ -17,11 +17,23 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Check flake.nix version matches Cargo.toml
         run: |
-          CARGO_VER=$(grep -m1 '^version' Cargo.toml | sed 's/.*"\(.*\)".*/\1/')
-          FLAKE_VER=$(grep -m1 'version = ' flake.nix | sed 's/.*"\(.*\)".*/\1/')
+          CARGO_VER=$(sed -nE 's/^version = "([^"]+)".*/\1/p' Cargo.toml | head -1)
+          if [ -z "$CARGO_VER" ]; then
+            echo "::error file=Cargo.toml::could not parse package version"
+            exit 1
+          fi
+          if [ ! -f flake.nix ]; then
+            echo "no flake.nix; skipping version-sync check"
+            exit 0
+          fi
+          FLAKE_VER=$(sed -nE 's/^[[:space:]]*version = "([^"]+)";.*/\1/p' flake.nix | head -1)
+          if [ -z "$FLAKE_VER" ]; then
+            echo "::error file=flake.nix::could not parse version"
+            exit 1
+          fi
           echo "Cargo.toml=$CARGO_VER flake.nix=$FLAKE_VER"
           if [ "$CARGO_VER" != "$FLAKE_VER" ]; then
-            echo "::error::version mismatch: Cargo.toml=$CARGO_VER flake.nix=$FLAKE_VER (update flake.nix)"
+            echo "::error file=flake.nix::version mismatch: Cargo.toml=$CARGO_VER flake.nix=$FLAKE_VER (update flake.nix)"
             exit 1
           fi
       - run: cargo fmt -- --check
