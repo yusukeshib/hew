@@ -306,7 +306,8 @@ pub struct App {
 impl App {
     /// Construct with a pre-loaded comment store (e.g. from a sidecar JSON).
     pub fn with_comments(changeset: Changeset, comments: CommentStore) -> Self {
-        let expanded = HashSet::new();
+        // Show every comment thread inline by default; `o`/Enter collapse them.
+        let expanded: HashSet<usize> = (0..comments.threads.len()).collect();
         let rows = build_rows(&changeset, &comments, &expanded, 0);
         let split_rows = build_split_rows(&changeset, &comments, &expanded, 0);
         let stats = file_stats(&changeset);
@@ -942,9 +943,10 @@ impl App {
             }
         }
         // Rebuild the sidebar + diff rows once both the diff and comments are
-        // current. Thread indices may have shifted, so drop inline expansions.
+        // current. Thread indices may have shifted; re-expand all threads so
+        // comments stay visible by default.
         self.rebuild_sidebar();
-        self.expanded.clear();
+        self.expanded = (0..self.comments.threads.len()).collect();
         self.rebuild_rows();
         // Files may have changed; re-point at a valid file and selectable row.
         self.set_current_file(self.current_file);
