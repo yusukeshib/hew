@@ -16,7 +16,7 @@
       system:
       let
         pkgs = import nixpkgs { inherit system; };
-        version = "0.1.1";
+        version = "0.2.0";
       in
       {
         packages.default = pkgs.rustPlatform.buildRustPackage {
