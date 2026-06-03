@@ -6,11 +6,15 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-/// Format a `SystemTime` as a UTC `YYYY-MM-DD` date (no external date crate).
+/// Format a `SystemTime` as a UTC `YYYY-MM-DD HH:MM` timestamp (no external
+/// date crate).
 fn fmt_date(t: SystemTime) -> String {
     let secs = t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    let days = secs.div_euclid(86_400);
+    let tod = secs.rem_euclid(86_400);
+    let (hh, mm) = (tod / 3600, (tod % 3600) / 60);
     // Howard Hinnant's civil-from-days algorithm.
-    let z = secs.div_euclid(86_400) + 719_468;
+    let z = days + 719_468;
     let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
     let doe = z - era * 146_097;
     let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
@@ -20,7 +24,7 @@ fn fmt_date(t: SystemTime) -> String {
     let d = doy - (153 * mp + 2) / 5 + 1;
     let m = if mp < 10 { mp + 3 } else { mp - 9 };
     let y = y + if m <= 2 { 1 } else { 0 };
-    format!("{y:04}-{m:02}-{d:02}")
+    format!("{y:04}-{m:02}-{d:02} {hh:02}:{mm:02}")
 }
 
 /// One visual line of an inline-expanded comment thread.
