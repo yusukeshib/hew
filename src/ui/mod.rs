@@ -1,6 +1,7 @@
 pub mod app;
 pub mod highlight;
 pub mod render_rows;
+pub mod theme;
 
 use anyhow::{Context, Result};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
