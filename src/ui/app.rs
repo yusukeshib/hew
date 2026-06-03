@@ -507,14 +507,11 @@ impl App {
                 self.sb_drag = Some(Focus::Diff);
                 self.drag_diff_sb(row);
             }
-            // The sidebar scrollbar shares the resize-divider column: grab the
-            // thumb to scroll, anywhere else on the edge to resize.
-            MouseEventKind::Down(MouseButton::Left)
-                if hit(self.sidebar_sb, col, row) && self.on_sidebar_thumb(row) =>
-            {
+            MouseEventKind::Down(MouseButton::Left) if hit(self.sidebar_sb, col, row) => {
                 self.sb_drag = Some(Focus::Sidebar);
                 self.drag_sidebar_sb(row);
             }
+            // The pane border (rightmost column) is the resize divider.
             MouseEventKind::Down(MouseButton::Left) if on_divider => self.resizing = true,
             MouseEventKind::Drag(MouseButton::Left) if self.sb_drag == Some(Focus::Diff) => {
                 self.drag_diff_sb(row)
@@ -611,29 +608,6 @@ impl App {
     fn drag_sidebar_sb(&mut self, row: u16) {
         let h = self.sidebar_sb.height as usize;
         self.sidebar_scroll = sb_thumb_pos(self.sidebar_sb.y, h, self.sidebar_rows.len(), h, row);
-    }
-
-    /// Is `row` over the sidebar scrollbar thumb? (The track column doubles as
-    /// the resize divider, so only the thumb itself grabs for scrolling.)
-    fn on_sidebar_thumb(&self, row: u16) -> bool {
-        let track = self.sidebar_sb;
-        if track.height == 0 {
-            return false;
-        }
-        let track_h = track.height as usize;
-        let total = self.sidebar_rows.len();
-        let max_top = total.saturating_sub(track_h);
-        if max_top == 0 {
-            return false;
-        }
-        let thumb = ((track_h as f32) * (track_h as f32) / (total as f32))
-            .round()
-            .max(1.0) as usize;
-        let span = track_h.saturating_sub(thumb).max(1);
-        let scroll = self.sidebar_scroll.min(max_top);
-        let off = ((scroll as f32 / max_top as f32) * span as f32).round() as usize;
-        let r = row.saturating_sub(track.y) as usize;
-        r >= off && r < off + thumb
     }
 
     /// Scroll the file list independently of the selection.
@@ -1452,7 +1426,7 @@ impl App {
         self.sidebar_sb =
             if sidebar_area.width > 0 && self.sidebar_rows.len() > sidebar_area.height as usize {
                 Rect {
-                    x: sidebar_area.x + sidebar_area.width.saturating_sub(1),
+                    x: sidebar_area.x + sidebar_area.width.saturating_sub(2),
                     y: sidebar_area.y,
                     width: 1,
                     height: sidebar_area.height,
@@ -1515,10 +1489,10 @@ impl App {
 
         let h = inner.height as usize;
         let n = self.sidebar_rows.len();
-        // The scrollbar shares the right border column, so the content keeps the
-        // full inner width.
+        // The scrollbar sits just left of the right border; reserve a content
+        // column for it when the list overflows.
         let need_sb = n > h;
-        let w = inner.width as usize;
+        let w = (inner.width as usize).saturating_sub(if need_sb { 1 } else { 0 });
         let max = n.saturating_sub(h);
         let scroll = self.sidebar_scroll.min(max);
 
@@ -1658,16 +1632,17 @@ impl App {
             let mut sb = ScrollbarState::new(max + 1)
                 .position(scroll)
                 .viewport_content_length(h);
-            // Render over the full area so the track replaces the right border
-            // (one vertical line, not two).
+            // Render inside `inner` so the thumb lands one column left of the
+            // pane border (which stays a clean, continuous resize divider). The
+            // track is blank so it doesn't double up against the border.
             f.render_stateful_widget(
                 Scrollbar::new(ScrollbarOrientation::VerticalRight)
                     .begin_symbol(None)
                     .end_symbol(None)
-                    .track_symbol(Some("│"))
-                    .thumb_style(Style::default().fg(SUBTLE_FOCUS))
-                    .track_style(Style::default().fg(SUBTLE)),
-                area,
+                    .track_symbol(Some(" "))
+                    .thumb_symbol("█")
+                    .thumb_style(Style::default().fg(SUBTLE_FOCUS)),
+                inner,
                 &mut sb,
             );
         }
@@ -1689,6 +1664,8 @@ impl App {
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
                 .end_symbol(None)
+                .track_symbol(Some("│"))
+                .thumb_symbol("█")
                 .thumb_style(Style::default().fg(SUBTLE_FOCUS))
                 .track_style(Style::default().fg(SUBTLE)),
             area,
