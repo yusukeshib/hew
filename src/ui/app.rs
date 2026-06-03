@@ -174,6 +174,8 @@ const MIN_SIDEBAR: u16 = 14;
 const MIN_DIFF: u16 = 20;
 /// Selection background when the pane is focused / unfocused.
 const FOCUS_BG: Color = SEL_BG;
+/// Background of the current (cursor) line when the diff pane is focused.
+const CURSOR_BG: Color = Color::Rgb(38, 116, 180);
 const UNFOCUS_BG: Color = Color::Rgb(40, 42, 48);
 /// Very dark, subtle chrome (borders, scrollbars, dividers).
 const SUBTLE: Color = Color::Rgb(38, 40, 46);
@@ -1096,7 +1098,7 @@ impl App {
     /// Selection background for the diff pane (dim when it isn't focused).
     fn diff_cursor_bg(&self) -> Color {
         if self.effective_focus() == Focus::Diff {
-            FOCUS_BG
+            CURSOR_BG
         } else {
             UNFOCUS_BG
         }
