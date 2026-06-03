@@ -76,10 +76,6 @@ enum SbRow {
         idx: usize,
         depth: usize,
     },
-    Thread {
-        idx: usize,
-        depth: usize,
-    },
 }
 
 /// One-letter change status for a file, with its accent color.
@@ -108,27 +104,12 @@ fn base_of(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-/// Truncate `s` from the right (keeping the head) to fit `w` columns.
-fn elide_right(s: &str, w: usize) -> String {
-    let n = s.chars().count();
-    if n <= w {
-        return s.to_string();
-    }
-    if w == 0 {
-        return String::new();
-    }
-    let mut out: String = s.chars().take(w - 1).collect();
-    out.push('…');
-    out
-}
-
 /// Build the collapsible file tree (keeping file order). Directory segments
-/// become `Dir` nodes; files nest under them with comment threads one level
-/// deeper. Subtrees under a collapsed directory are omitted. Returns the rows
-/// plus a `file_idx -> row` map (`usize::MAX` for files hidden by a collapse).
+/// become `Dir` nodes; files nest under them. Subtrees under a collapsed
+/// directory are omitted. Returns the rows plus a `file_idx -> row` map
+/// (`usize::MAX` for files hidden by a collapse).
 fn build_sidebar_rows(
     changeset: &Changeset,
-    comments: &CommentStore,
     collapsed: &HashSet<String>,
 ) -> (Vec<SbRow>, Vec<usize>) {
     let mut rows = Vec::new();
@@ -160,7 +141,7 @@ fn build_sidebar_rows(
             });
         }
         prev = segs.clone();
-        // Hide the file (and its threads) when any ancestor dir is collapsed.
+        // Hide the file when any ancestor dir is collapsed.
         let hidden = (0..segs.len()).any(|d| collapsed.contains(&segs[..=d].join("/")));
         if hidden {
             continue;
@@ -170,21 +151,23 @@ fn build_sidebar_rows(
             idx: i,
             depth: segs.len(),
         });
-        // Comment threads anchored to this file, nested one level deeper.
-        let path = PathBuf::from(f.display_path());
-        for (ti, _) in comments
-            .threads
-            .iter()
-            .enumerate()
-            .filter(|(_, t)| t.file == path)
-        {
-            rows.push(SbRow::Thread {
-                idx: ti,
-                depth: segs.len() + 1,
-            });
-        }
     }
     (rows, map)
+}
+
+/// Comment marker for a file: `Some(true)` when it has an unresolved thread,
+/// `Some(false)` when it only has resolved threads, `None` when it has none.
+fn file_comment_state(comments: &CommentStore, path: &str) -> Option<bool> {
+    let p = Path::new(path);
+    let mut any = false;
+    let mut open = false;
+    for t in comments.threads.iter().filter(|t| t.file == p) {
+        any = true;
+        if !t.resolved {
+            open = true;
+        }
+    }
+    any.then_some(open)
 }
 
 const SIDEBAR_WIDTH: u16 = 38;
@@ -328,7 +311,7 @@ impl App {
         let split_rows = build_split_rows(&changeset, &comments, &expanded, 0);
         let stats = file_stats(&changeset);
         let collapsed = HashSet::new();
-        let (sidebar_rows, file_to_sbrow) = build_sidebar_rows(&changeset, &comments, &collapsed);
+        let (sidebar_rows, file_to_sbrow) = build_sidebar_rows(&changeset, &collapsed);
         let mut app = App {
             changeset,
             rows,
@@ -644,7 +627,7 @@ impl App {
 
     /// Rebuild the sidebar tree from the current collapse set.
     fn rebuild_sidebar(&mut self) {
-        let (sr, map) = build_sidebar_rows(&self.changeset, &self.comments, &self.collapsed);
+        let (sr, map) = build_sidebar_rows(&self.changeset, &self.collapsed);
         self.sidebar_rows = sr;
         self.file_to_sbrow = map;
         // The row count shrank/grew; keep the scroll within bounds so clicks and
@@ -728,18 +711,6 @@ impl App {
                     self.set_dir_collapsed(parent, true);
                 }
             }
-            Some(SbRow::Thread { idx, .. }) if collapse => {
-                // A thread's container is the dir of the file it annotates.
-                let parent = self
-                    .comments
-                    .threads
-                    .get(*idx)
-                    .map(|t| dir_of(&t.file.to_string_lossy()).to_string())
-                    .filter(|d| !d.is_empty());
-                if let Some(parent) = parent {
-                    self.set_dir_collapsed(parent, true);
-                }
-            }
             _ => {}
         }
     }
@@ -800,10 +771,6 @@ impl App {
                 }
                 self.reveal_sidebar();
             }
-            Some(SbRow::Thread { idx, .. }) => {
-                let ti = *idx;
-                self.goto_thread(ti, false, false);
-            }
             // Directory rows are just a cursor resting spot during navigation;
             // they toggle only on explicit activation.
             _ => {}
@@ -829,54 +796,7 @@ impl App {
                 self.focus = Focus::Sidebar;
                 self.set_current_file(fi);
             }
-            Some(SbRow::Thread { idx: ti, .. }) => {
-                let ti = *ti;
-                self.sidebar_sel = idx;
-                self.goto_thread(ti, true, true);
-            }
             None => {}
-        }
-    }
-
-    /// Jump the diff pane straight to comment thread `ti` and select its line.
-    /// `focus_diff` moves keyboard focus to the diff (used for mouse clicks).
-    fn goto_thread(&mut self, ti: usize, focus_diff: bool, expand: bool) {
-        let Some(t) = self.comments.threads.get(ti) else {
-            return;
-        };
-        let (file, side, range) = (t.file.clone(), t.side, t.range);
-        let Some(fi) = self
-            .changeset
-            .files
-            .iter()
-            .position(|f| Path::new(f.display_path()) == file)
-        else {
-            return;
-        };
-        self.set_current_file(fi);
-        if expand && self.expanded.insert(ti) {
-            self.rebuild_rows();
-        }
-        let target = (0..self.active_len()).find(|&i| {
-            self.is_selectable_at(i)
-                && matches!(self.anchor_at(i), Some((f, s, l)) if f == fi && s == side && range.contains(l))
-        });
-        if let Some(i) = target {
-            self.selected = i;
-            self.scroll = i.saturating_sub(self.height / 2);
-            self.ensure_visible();
-        }
-        // Point the sidebar cursor at this thread's row and keep it on screen.
-        if let Some(r) = self
-            .sidebar_rows
-            .iter()
-            .position(|row| matches!(row, SbRow::Thread { idx, .. } if *idx == ti))
-        {
-            self.sidebar_sel = r;
-            self.reveal_sidebar();
-        }
-        if focus_diff {
-            self.focus = Focus::Diff;
         }
     }
 
@@ -1207,16 +1127,8 @@ impl App {
             KeyCode::Left | KeyCode::Char('h') => self.fold_dir(true),
             KeyCode::Right | KeyCode::Char('l') => self.fold_dir(false),
             KeyCode::Char(' ') | KeyCode::Char('o') => self.fold_dir_toggle(),
-            // Enter: move focus to the right (diff) pane. On a thread row, jump
-            // to that thread on the way over.
-            KeyCode::Enter => {
-                if let Some(SbRow::Thread { idx, .. }) = self.sidebar_rows.get(self.sidebar_sel) {
-                    let ti = *idx;
-                    self.goto_thread(ti, true, true);
-                } else {
-                    self.focus = Focus::Diff;
-                }
-            }
+            // Enter: move focus to the right (diff) pane.
+            KeyCode::Enter => self.focus = Focus::Diff,
             _ => {}
         }
     }
@@ -1496,8 +1408,6 @@ impl App {
         let max = n.saturating_sub(h);
         let scroll = self.sidebar_scroll.min(max);
 
-        // The thread the diff cursor currently sits on (for sidebar highlight).
-        let cur_anchor = self.anchor_at(self.selected);
         let mut lines: Vec<Line> = Vec::new();
         for idx in scroll..n.min(scroll + h) {
             let is_cursor = focused && idx == self.sidebar_sel;
@@ -1519,12 +1429,7 @@ impl App {
                     lines.push(Line::from(vec![
                         Span::styled(indent, wbg(Style::default())),
                         Span::styled(arrow, wbg(Style::default().fg(Color::Rgb(106, 115, 130)))),
-                        Span::styled(
-                            label,
-                            wbg(Style::default()
-                                .fg(Color::Rgb(106, 115, 130))
-                                .add_modifier(Modifier::BOLD)),
-                        ),
+                        Span::styled(label, wbg(Style::default().fg(Color::Rgb(106, 115, 130)))),
                     ]));
                 }
                 SbRow::File { idx: fi, depth } => {
@@ -1537,13 +1442,21 @@ impl App {
                         .map(file_status)
                         .unwrap_or(('M', Color::Yellow));
                     let indent = "  ".repeat(depth + 1);
-                    let avail = w.saturating_sub(indent.chars().count() + 2);
-                    let base = self
+                    let path = self
                         .changeset
                         .files
                         .get(fi)
-                        .map(|f| base_of(f.display_path()))
+                        .map(|f| f.display_path())
                         .unwrap_or_default();
+                    // A comment dot just left of the filename: yellow = open,
+                    // hollow gray = all resolved, blank = none.
+                    let (dot, dot_color) = match file_comment_state(&self.comments, path) {
+                        Some(true) => ("● ", Color::Yellow),
+                        Some(false) => ("○ ", Color::DarkGray),
+                        None => ("  ", Color::Reset),
+                    };
+                    let avail = w.saturating_sub(indent.chars().count() + 4);
+                    let base = base_of(path);
                     let name = format!("{:<width$}", elide_left(base, avail), width = avail);
                     let bg = if is_cursor {
                         Some(FOCUS_BG)
@@ -1566,63 +1479,8 @@ impl App {
                     lines.push(Line::from(vec![
                         Span::styled(indent, wbg(Style::default())),
                         Span::styled(format!("{status} "), wbg(Style::default().fg(status_color))),
+                        Span::styled(dot, wbg(Style::default().fg(dot_color))),
                         Span::styled(name, wbg(name_style)),
-                    ]));
-                }
-                SbRow::Thread { idx: ti, depth } => {
-                    let Some(t) = self.comments.threads.get(*ti) else {
-                        continue;
-                    };
-                    let glyph = if t.resolved { "○ " } else { "● " };
-                    let snippet = t
-                        .comments
-                        .first()
-                        .map(|c| c.body.as_str())
-                        .unwrap_or("")
-                        .lines()
-                        .next()
-                        .unwrap_or("")
-                        .trim();
-                    let indent = "  ".repeat(depth + 1);
-                    let avail = w.saturating_sub(indent.chars().count() + glyph.chars().count());
-                    let text = format!("{:<width$}", elide_right(snippet, avail), width = avail);
-                    // Highlight when the diff cursor sits on a line this thread anchors.
-                    let active = cur_anchor
-                        .map(|(f, s, l)| {
-                            self.changeset
-                                .files
-                                .get(f)
-                                .map(|cf| Path::new(cf.display_path()) == t.file)
-                                .unwrap_or(false)
-                                && s == t.side
-                                && t.range.contains(l)
-                        })
-                        .unwrap_or(false);
-                    let bg = if is_cursor {
-                        Some(FOCUS_BG)
-                    } else if active {
-                        Some(UNFOCUS_BG)
-                    } else {
-                        None
-                    };
-                    let wbg = |st: Style| match bg {
-                        Some(b) => st.bg(b),
-                        None => st,
-                    };
-                    let glyph_color = if t.resolved {
-                        Color::DarkGray
-                    } else {
-                        Color::Yellow
-                    };
-                    let text_color = if t.resolved {
-                        Color::DarkGray
-                    } else {
-                        Color::Gray
-                    };
-                    lines.push(Line::from(vec![
-                        Span::styled(indent, wbg(Style::default())),
-                        Span::styled(glyph, wbg(Style::default().fg(glyph_color))),
-                        Span::styled(text, wbg(Style::default().fg(text_color))),
                     ]));
                 }
             }
