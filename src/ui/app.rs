@@ -440,13 +440,22 @@ impl App {
                 self.needs_clear = false;
             }
             terminal.draw(|f| self.draw(f))?;
+            // Block for the first event (≤200ms so the watch poll still runs),
+            // then drain every event already queued before redrawing. A burst
+            // of mouse-drag events thus collapses into a single frame instead
+            // of one render per event, which is what made divider drags lag.
             if event::poll(Duration::from_millis(200))? {
-                match event::read()? {
-                    Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        self.on_key(key.code, key.modifiers);
+                loop {
+                    match event::read()? {
+                        Event::Key(key) if key.kind == KeyEventKind::Press => {
+                            self.on_key(key.code, key.modifiers);
+                        }
+                        Event::Mouse(me) => self.on_mouse(me),
+                        _ => {}
                     }
-                    Event::Mouse(me) => self.on_mouse(me),
-                    _ => {}
+                    if !event::poll(Duration::from_millis(0))? {
+                        break;
+                    }
                 }
             }
             if let Some(text) = self.pending_copy.take() {
@@ -1322,8 +1331,11 @@ impl App {
         };
         // Re-wrap inline comments to the current diff width before any code
         // reads the row lists (selection mapping depends on it).
+        // While the divider is being dragged, leave the comment wrap (and the
+        // expensive row rebuild it triggers) alone; the next draw after the
+        // drag releases picks up the final width and rebuilds exactly once.
         let cw = (diff_area.width as usize).saturating_sub(8);
-        if cw != self.comment_wrap {
+        if cw != self.comment_wrap && !self.resizing {
             self.comment_wrap = cw;
             if !self.expanded.is_empty() {
                 self.rebuild_rows();
