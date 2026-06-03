@@ -4,6 +4,24 @@ use crate::comments::model::{CommentStore, Thread};
 use crate::diff::model::{Changeset, LineKind, Side};
 use std::collections::HashSet;
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Format a `SystemTime` as a UTC `YYYY-MM-DD` date (no external date crate).
+fn fmt_date(t: SystemTime) -> String {
+    let secs = t.duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() as i64;
+    // Howard Hinnant's civil-from-days algorithm.
+    let z = secs.div_euclid(86_400) + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    let y = y + if m <= 2 { 1 } else { 0 };
+    format!("{y:04}-{m:02}-{d:02}")
+}
 
 /// One visual line of an inline-expanded comment thread.
 #[derive(Debug, Clone)]
@@ -12,8 +30,8 @@ pub enum CommentLine {
     Top,
     /// Thread header: resolved state + message count.
     Head { resolved: bool, replies: usize },
-    /// A message author line (`@name`).
-    Author(String),
+    /// A message author line (`@name`) with its formatted date.
+    Author { name: String, date: String },
     /// A (pre-wrapped) body line.
     Body(String),
     /// Blank spacer between messages.
@@ -88,9 +106,10 @@ pub fn thread_lines(t: &Thread, width: usize) -> Vec<CommentLine> {
         },
     ];
     for (i, c) in t.comments.iter().enumerate() {
-        out.push(CommentLine::Author(
-            c.author.clone().unwrap_or_else(|| "?".into()),
-        ));
+        out.push(CommentLine::Author {
+            name: c.author.clone().unwrap_or_else(|| "?".into()),
+            date: fmt_date(c.created_at),
+        });
         for raw in c.body.split('\n') {
             let s = sanitize_line(raw);
             if s.is_empty() {

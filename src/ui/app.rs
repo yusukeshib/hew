@@ -1741,6 +1741,32 @@ impl App {
                 margin,
                 Span::styled(format!("╰{}╯", "─".repeat(inner_w)), bstyle),
             ]),
+            CommentLine::Author { name, date } => {
+                // Name on the left, date flush right (1-col gutter before the
+                // border). Spans below total exactly `inner_w`.
+                let left = format!(" @{name}");
+                let llen = left.chars().count();
+                let dlen = date.chars().count();
+                let name_style = Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::BOLD);
+                let inner = if llen + dlen + 2 <= inner_w {
+                    vec![
+                        Span::styled(left, name_style),
+                        Span::raw(" ".repeat(inner_w - llen - dlen - 1)),
+                        Span::styled(date.clone(), Style::default().fg(Color::DarkGray)),
+                        Span::raw(" "),
+                    ]
+                } else {
+                    let l: String = left.chars().take(inner_w).collect();
+                    let pad = inner_w - l.chars().count();
+                    vec![Span::styled(l, name_style), Span::raw(" ".repeat(pad))]
+                };
+                let mut spans = vec![margin, Span::styled("│".to_string(), bstyle)];
+                spans.extend(inner);
+                spans.push(Span::styled("│".to_string(), bstyle));
+                Line::from(spans)
+            }
             _ => {
                 let (content, color, bold) = match cl {
                     CommentLine::Head { resolved, replies } => (
@@ -1757,7 +1783,6 @@ impl App {
                         },
                         true,
                     ),
-                    CommentLine::Author(a) => (format!(" @{a}"), Color::Yellow, true),
                     CommentLine::Body(b) => (format!("   {b}"), Color::Gray, false),
                     _ => (String::new(), Color::Gray, false), // Gap
                 };
