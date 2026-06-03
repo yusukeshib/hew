@@ -8,14 +8,18 @@ use std::path::Path;
 /// One visual line of an inline-expanded comment thread.
 #[derive(Debug, Clone)]
 pub enum CommentLine {
+    /// Top rounded border of the thread box.
+    Top,
     /// Thread header: resolved state + message count.
     Head { resolved: bool, replies: usize },
     /// A message author line (`@name`).
     Author(String),
     /// A (pre-wrapped) body line.
     Body(String),
-    /// Blank spacer between messages / after a thread.
+    /// Blank spacer between messages.
     Gap,
+    /// Bottom rounded border of the thread box.
+    Bottom,
 }
 
 /// Greedy word-wrap to `width` columns, hard-splitting over-long words.
@@ -76,10 +80,13 @@ fn wrap_text(s: &str, width: usize) -> Vec<String> {
 
 /// Expand a thread into wrapped visual lines.
 pub fn thread_lines(t: &Thread, width: usize) -> Vec<CommentLine> {
-    let mut out = vec![CommentLine::Head {
-        resolved: t.resolved,
-        replies: t.comments.len(),
-    }];
+    let mut out = vec![
+        CommentLine::Top,
+        CommentLine::Head {
+            resolved: t.resolved,
+            replies: t.comments.len(),
+        },
+    ];
     for (i, c) in t.comments.iter().enumerate() {
         out.push(CommentLine::Author(
             c.author.clone().unwrap_or_else(|| "?".into()),
@@ -98,7 +105,7 @@ pub fn thread_lines(t: &Thread, width: usize) -> Vec<CommentLine> {
             out.push(CommentLine::Gap);
         }
     }
-    out.push(CommentLine::Gap);
+    out.push(CommentLine::Bottom);
     out
 }
 

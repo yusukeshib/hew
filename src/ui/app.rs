@@ -1721,35 +1721,65 @@ impl App {
         }
     }
 
-    /// Render one inline comment line, padded so the tint spans the full width.
+    /// Render one inline comment line as part of a rounded box spanning `width`
+    /// (2-column left margin + `╭─╮`/`│ │`/`╰─╯` frame).
     fn comment_line_to_line(&self, cl: &CommentLine, width: usize) -> Line<'static> {
-        let (text, color, bold) = match cl {
-            CommentLine::Head { resolved, replies } => (
-                format!(
-                    "  ▏ {} · {} message{}",
-                    if *resolved { "resolved" } else { "open" },
-                    replies,
-                    if *replies == 1 { "" } else { "s" }
-                ),
-                if *resolved {
-                    Color::DarkGray
-                } else {
-                    Color::Cyan
-                },
-                true,
-            ),
-            CommentLine::Author(a) => (format!("  ▏ @{a}"), Color::Yellow, true),
-            CommentLine::Body(b) => (format!("  ▏   {b}"), Color::Gray, false),
-            CommentLine::Gap => ("  ▏".to_string(), Color::DarkGray, false),
-        };
-        let mut style = Style::default().fg(color).bg(COMMENT_BG);
-        if bold {
-            style = style.add_modifier(Modifier::BOLD);
+        const MARGIN: usize = 2;
+        let bg = COMMENT_BG;
+        let border_col = Color::Rgb(92, 100, 118);
+        let bstyle = Style::default().fg(border_col).bg(bg);
+        // Box occupies cols [MARGIN, width); inner_w is the span between borders.
+        let inner_w = width.saturating_sub(MARGIN + 2);
+        if width <= MARGIN + 2 {
+            return Line::from(Span::styled(" ".repeat(width), Style::default().bg(bg)));
         }
-        let pad = width.saturating_sub(text.chars().count());
-        Line::from(vec![
-            Span::styled(text, style),
-            Span::styled(" ".repeat(pad), Style::default().bg(COMMENT_BG)),
-        ])
+        let margin = Span::styled(" ".repeat(MARGIN), Style::default().bg(bg));
+        match cl {
+            CommentLine::Top => Line::from(vec![
+                margin,
+                Span::styled(format!("╭{}╮", "─".repeat(inner_w)), bstyle),
+            ]),
+            CommentLine::Bottom => Line::from(vec![
+                margin,
+                Span::styled(format!("╰{}╯", "─".repeat(inner_w)), bstyle),
+            ]),
+            _ => {
+                let (content, color, bold) = match cl {
+                    CommentLine::Head { resolved, replies } => (
+                        format!(
+                            " {} · {} message{}",
+                            if *resolved { "resolved" } else { "open" },
+                            replies,
+                            if *replies == 1 { "" } else { "s" }
+                        ),
+                        if *resolved {
+                            Color::DarkGray
+                        } else {
+                            Color::Cyan
+                        },
+                        true,
+                    ),
+                    CommentLine::Author(a) => (format!(" @{a}"), Color::Yellow, true),
+                    CommentLine::Body(b) => (format!("   {b}"), Color::Gray, false),
+                    _ => (String::new(), Color::Gray, false), // Gap
+                };
+                let mut cstyle = Style::default().fg(color).bg(bg);
+                if bold {
+                    cstyle = cstyle.add_modifier(Modifier::BOLD);
+                }
+                let clen = content.chars().count();
+                let content = if clen > inner_w {
+                    content.chars().take(inner_w).collect::<String>()
+                } else {
+                    format!("{content}{}", " ".repeat(inner_w - clen))
+                };
+                Line::from(vec![
+                    margin,
+                    Span::styled("│".to_string(), bstyle),
+                    Span::styled(content, cstyle),
+                    Span::styled("│".to_string(), bstyle),
+                ])
+            }
+        }
     }
 }
