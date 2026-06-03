@@ -1664,10 +1664,9 @@ impl App {
             Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .begin_symbol(None)
                 .end_symbol(None)
-                .track_symbol(Some("│"))
+                .track_symbol(Some(" "))
                 .thumb_symbol("█")
-                .thumb_style(Style::default().fg(SUBTLE_FOCUS))
-                .track_style(Style::default().fg(SUBTLE)),
+                .thumb_style(Style::default().fg(SUBTLE_FOCUS)),
             area,
             &mut sb,
         );
