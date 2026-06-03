@@ -22,7 +22,7 @@ use std::time::{Duration, SystemTime};
 
 const ADD_BG: Color = Color::Rgb(20, 42, 24);
 const DEL_BG: Color = Color::Rgb(48, 24, 26);
-const SEL_BG: Color = Color::Rgb(84, 92, 112);
+const SEL_BG: Color = Color::Rgb(96, 104, 128);
 
 /// Highlighted runs for one line: `(fg color, text)`.
 type LineRuns = Rc<Vec<(Color, String)>>;
