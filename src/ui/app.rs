@@ -1453,7 +1453,11 @@ impl App {
                         Some(false) => ("○ ", Color::DarkGray),
                         None => ("  ", Color::Reset),
                     };
-                    let avail = w.saturating_sub(indent.chars().count() + 4);
+                    let (adds, dels) = self.file_stats.get(fi).copied().unwrap_or((0, 0));
+                    let counts = format!(" +{adds} -{dels}");
+                    let avail = w
+                        .saturating_sub(indent.chars().count() + 4)
+                        .saturating_sub(counts.chars().count());
                     let base = base_of(path);
                     let name = format!("{:<width$}", elide_left(base, avail), width = avail);
                     let bg = if is_cursor {
@@ -1479,6 +1483,8 @@ impl App {
                         Span::styled(format!("{status} "), wbg(Style::default().fg(status_color))),
                         Span::styled(dot, wbg(Style::default().fg(dot_color))),
                         Span::styled(name, wbg(name_style)),
+                        Span::styled(format!(" +{adds}"), wbg(Style::default().fg(Color::Green))),
+                        Span::styled(format!(" -{dels}"), wbg(Style::default().fg(Color::Red))),
                     ]));
                 }
             }
