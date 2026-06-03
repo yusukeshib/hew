@@ -502,18 +502,20 @@ impl App {
                 self.resizing = false;
                 self.sb_drag = None;
             }
-            // The sidebar's right edge is the resize divider; it takes priority
-            // over the (co-located) sidebar scrollbar, which stays wheel-driven.
-            MouseEventKind::Down(MouseButton::Left) if on_divider => self.resizing = true,
             // Scrollbar thumb drag (start + continue).
             MouseEventKind::Down(MouseButton::Left) if hit(self.diff_sb, col, row) => {
                 self.sb_drag = Some(Focus::Diff);
                 self.drag_diff_sb(row);
             }
-            MouseEventKind::Down(MouseButton::Left) if hit(self.sidebar_sb, col, row) => {
+            // The sidebar scrollbar shares the resize-divider column: grab the
+            // thumb to scroll, anywhere else on the edge to resize.
+            MouseEventKind::Down(MouseButton::Left)
+                if hit(self.sidebar_sb, col, row) && self.on_sidebar_thumb(row) =>
+            {
                 self.sb_drag = Some(Focus::Sidebar);
                 self.drag_sidebar_sb(row);
             }
+            MouseEventKind::Down(MouseButton::Left) if on_divider => self.resizing = true,
             MouseEventKind::Drag(MouseButton::Left) if self.sb_drag == Some(Focus::Diff) => {
                 self.drag_diff_sb(row)
             }
@@ -609,6 +611,29 @@ impl App {
     fn drag_sidebar_sb(&mut self, row: u16) {
         let h = self.sidebar_sb.height as usize;
         self.sidebar_scroll = sb_thumb_pos(self.sidebar_sb.y, h, self.sidebar_rows.len(), h, row);
+    }
+
+    /// Is `row` over the sidebar scrollbar thumb? (The track column doubles as
+    /// the resize divider, so only the thumb itself grabs for scrolling.)
+    fn on_sidebar_thumb(&self, row: u16) -> bool {
+        let track = self.sidebar_sb;
+        if track.height == 0 {
+            return false;
+        }
+        let track_h = track.height as usize;
+        let total = self.sidebar_rows.len();
+        let max_top = total.saturating_sub(track_h);
+        if max_top == 0 {
+            return false;
+        }
+        let thumb = ((track_h as f32) * (track_h as f32) / (total as f32))
+            .round()
+            .max(1.0) as usize;
+        let span = track_h.saturating_sub(thumb).max(1);
+        let scroll = self.sidebar_scroll.min(max_top);
+        let off = ((scroll as f32 / max_top as f32) * span as f32).round() as usize;
+        let r = row.saturating_sub(track.y) as usize;
+        r >= off && r < off + thumb
     }
 
     /// Scroll the file list independently of the selection.
