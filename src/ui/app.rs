@@ -763,17 +763,14 @@ impl App {
 
     /// Apply the row under the sidebar cursor: switch file or jump to thread.
     fn activate_sidebar(&mut self) {
-        match self.sidebar_rows.get(self.sidebar_sel) {
-            Some(SbRow::File { idx, .. }) => {
-                let fi = *idx;
-                if fi != self.current_file {
-                    self.set_current_file(fi);
-                }
-                self.reveal_sidebar();
+        // Directory rows are just a cursor resting spot during navigation;
+        // they toggle only on explicit activation.
+        if let Some(SbRow::File { idx, .. }) = self.sidebar_rows.get(self.sidebar_sel) {
+            let fi = *idx;
+            if fi != self.current_file {
+                self.set_current_file(fi);
             }
-            // Directory rows are just a cursor resting spot during navigation;
-            // they toggle only on explicit activation.
-            _ => {}
+            self.reveal_sidebar();
         }
     }
 
