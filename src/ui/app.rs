@@ -338,7 +338,7 @@ impl App {
             selected: 0,
             scroll: 0,
             height: 1,
-            status: "q quit  j/k move  g/G top/bot  [/] file  n/N comment  o expand  tab split"
+            status: "q/^C/^D quit  j/k move  enter focus →  esc focus ←  ←/→ fold  tab split"
                 .into(),
             watch: None,
             needs_clear: false,
@@ -669,10 +669,15 @@ impl App {
         }
     }
 
-    /// Toggle a directory node open/closed and keep the cursor on it.
-    fn toggle_dir(&mut self, path: String) {
-        if !self.collapsed.remove(&path) {
-            self.collapsed.insert(path.clone());
+    /// Open or close directory `path`, keeping the cursor on its row.
+    fn set_dir_collapsed(&mut self, path: String, collapsed: bool) {
+        let changed = if collapsed {
+            self.collapsed.insert(path.clone())
+        } else {
+            self.collapsed.remove(&path)
+        };
+        if !changed {
+            return;
         }
         self.rebuild_sidebar();
         if let Some(r) = self
@@ -688,20 +693,25 @@ impl App {
         self.reveal_sidebar();
     }
 
-    /// Explicit activation (Enter/Space/click): toggle a dir, jump to a thread,
-    /// or step into the diff on a file.
-    fn activate_sidebar_explicit(&mut self) {
-        match self.sidebar_rows.get(self.sidebar_sel) {
-            Some(SbRow::Dir { path, .. }) => {
-                let path = path.clone();
-                self.toggle_dir(path);
-            }
-            Some(SbRow::Thread { idx, .. }) => {
-                let ti = *idx;
-                self.goto_thread(ti, true, true);
-            }
-            Some(SbRow::File { .. }) => self.focus = Focus::Diff,
-            None => {}
+    /// Toggle the directory under the cursor (no-op on file/thread rows).
+    fn toggle_dir(&mut self, path: String) {
+        let collapsed = self.collapsed.contains(&path);
+        self.set_dir_collapsed(path, !collapsed);
+    }
+
+    /// Collapse (`collapse = true`) or expand the directory under the cursor.
+    fn fold_dir(&mut self, collapse: bool) {
+        if let Some(SbRow::Dir { path, .. }) = self.sidebar_rows.get(self.sidebar_sel) {
+            let path = path.clone();
+            self.set_dir_collapsed(path, collapse);
+        }
+    }
+
+    /// Toggle the directory under the cursor open/closed.
+    fn fold_dir_toggle(&mut self) {
+        if let Some(SbRow::Dir { path, .. }) = self.sidebar_rows.get(self.sidebar_sel) {
+            let path = path.clone();
+            self.toggle_dir(path);
         }
     }
 
@@ -1118,14 +1128,9 @@ impl App {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         // Global keys, independent of the focused pane.
         match code {
+            // Quit only on q / Ctrl-C / Ctrl-D (never Esc).
             KeyCode::Char('q') => return self.quit = true,
-            KeyCode::Left => {
-                if self.sidebar_available() {
-                    self.focus = Focus::Sidebar;
-                }
-                return;
-            }
-            KeyCode::Right => return self.focus = Focus::Diff,
+            KeyCode::Char('c') | KeyCode::Char('d') if ctrl => return self.quit = true,
             KeyCode::Tab | KeyCode::Char('s') => return self.toggle_view(),
             KeyCode::Char('b') if ctrl => {
                 self.show_sidebar = !self.show_sidebar;
@@ -1143,20 +1148,27 @@ impl App {
         }
     }
 
-    /// Navigation when the file sidebar is focused: move by row (files and the
-    /// comment threads nested under them).
+    /// Navigation when the file sidebar (left pane) is focused.
     fn on_key_sidebar(&mut self, code: KeyCode) {
         match code {
             KeyCode::Char('j') | KeyCode::Down => self.move_sidebar(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_sidebar(-1),
             KeyCode::Char('g') | KeyCode::Home => self.sidebar_edge(false),
             KeyCode::Char('G') | KeyCode::End => self.sidebar_edge(true),
-            // Enter/Space/o: toggle a directory, jump to a thread, or enter the
-            // diff on a file.
-            KeyCode::Enter | KeyCode::Char(' ') | KeyCode::Char('o') => {
-                self.activate_sidebar_explicit()
+            // Left/Right (or h/l): toggle the folder open state on a dir row.
+            KeyCode::Left | KeyCode::Char('h') => self.fold_dir(true),
+            KeyCode::Right | KeyCode::Char('l') => self.fold_dir(false),
+            KeyCode::Char(' ') | KeyCode::Char('o') => self.fold_dir_toggle(),
+            // Enter: move focus to the right (diff) pane. On a thread row, jump
+            // to that thread on the way over.
+            KeyCode::Enter => {
+                if let Some(SbRow::Thread { idx, .. }) = self.sidebar_rows.get(self.sidebar_sel) {
+                    let ti = *idx;
+                    self.goto_thread(ti, true, true);
+                } else {
+                    self.focus = Focus::Diff;
+                }
             }
-            KeyCode::Char('l') => self.focus = Focus::Diff,
             _ => {}
         }
     }
@@ -1169,8 +1181,7 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => self.move_by(1, 1),
             KeyCode::Char('k') | KeyCode::Up => self.move_by(-1, 1),
 
-            // Half-page: Ctrl-D / Ctrl-U (vim/less).
-            KeyCode::Char('d') if ctrl => self.move_by(1, half),
+            // Half-page up: Ctrl-U (Ctrl-D is reserved for quit).
             KeyCode::Char('u') if ctrl => self.move_by(-1, half),
 
             // Full page: Space / Ctrl-F / PageDown forward, b / PageUp back.
@@ -1204,9 +1215,16 @@ impl App {
             KeyCode::Char(']') => self.jump_file(1),
             KeyCode::Char('[') => self.jump_file(-1),
 
-            // Copy the selected line(s); Esc clears a drag selection.
+            // Copy the selected line(s).
             KeyCode::Char('y') => self.copy_selection(),
-            KeyCode::Esc => self.sel_anchor = None,
+            // Esc: drop any drag selection and hand focus back to the sidebar
+            // (never quits).
+            KeyCode::Esc => {
+                self.sel_anchor = None;
+                if self.sidebar_available() {
+                    self.focus = Focus::Sidebar;
+                }
+            }
             _ => {}
         }
     }
