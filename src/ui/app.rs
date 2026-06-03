@@ -1338,7 +1338,7 @@ impl App {
         let diff_block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(if diff_focused { SUBTLE_FOCUS } else { SUBTLE }));
+            .border_style(Style::default().fg(if diff_focused { Color::White } else { SUBTLE }));
         let diff_inner = diff_block.inner(diff_outer);
         // Re-wrap inline comments to the current diff width before any code
         // reads the row lists (selection mapping depends on it).
