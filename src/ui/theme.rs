@@ -13,9 +13,7 @@ pub struct Theme {
     pub add_bg: Color,
     /// Removed line tint.
     pub del_bg: Color,
-    /// Focused selection background (sidebar row / generic selection).
-    pub sel_bg: Color,
-    /// Current (cursor) line when the diff pane is focused.
+    /// Current (cursor) line when its pane is focused (diff or sidebar).
     pub cursor_bg: Color,
     /// Current/selected line when its pane is *not* focused.
     pub unfocus_bg: Color,
@@ -60,7 +58,6 @@ pub struct Theme {
 pub const THEME: Theme = Theme {
     add_bg: Color::Rgb(20, 42, 24),
     del_bg: Color::Rgb(48, 24, 26),
-    sel_bg: Color::Rgb(96, 104, 128),
     cursor_bg: Color::Rgb(38, 116, 180),
     unfocus_bg: Color::Rgb(40, 42, 48),
     file_header_bg: Color::Rgb(40, 44, 52),

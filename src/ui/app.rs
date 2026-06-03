@@ -1435,7 +1435,11 @@ impl App {
                     };
                     let avail = w.saturating_sub(indent.chars().count() + 2);
                     let label = format!("{:<width$}", elide_left(name, avail), width = avail);
-                    let bg = if is_cursor { Some(THEME.sel_bg) } else { None };
+                    let bg = if is_cursor {
+                        Some(THEME.cursor_bg)
+                    } else {
+                        None
+                    };
                     let wbg = |st: Style| match bg {
                         Some(b) => st.bg(b),
                         None => st,
@@ -1477,7 +1481,7 @@ impl App {
                     let base = base_of(path);
                     let name = format!("{:<width$}", elide_left(base, avail), width = avail);
                     let bg = if is_cursor {
-                        Some(THEME.sel_bg)
+                        Some(THEME.cursor_bg)
                     } else if is_cur {
                         Some(THEME.unfocus_bg)
                     } else {
