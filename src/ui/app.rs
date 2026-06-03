@@ -502,6 +502,9 @@ impl App {
                 self.resizing = false;
                 self.sb_drag = None;
             }
+            // The sidebar's right edge is the resize divider; it takes priority
+            // over the (co-located) sidebar scrollbar, which stays wheel-driven.
+            MouseEventKind::Down(MouseButton::Left) if on_divider => self.resizing = true,
             // Scrollbar thumb drag (start + continue).
             MouseEventKind::Down(MouseButton::Left) if hit(self.diff_sb, col, row) => {
                 self.sb_drag = Some(Focus::Diff);
@@ -518,7 +521,6 @@ impl App {
                 self.drag_sidebar_sb(row)
             }
             MouseEventKind::Drag(MouseButton::Left) if self.resizing => self.resize_to(col),
-            MouseEventKind::Down(MouseButton::Left) if on_divider => self.resizing = true,
             // Wheel scrolls the pane under the pointer. Over the sidebar it
             // moves the list only — selection/focus are left untouched.
             MouseEventKind::ScrollDown => {
