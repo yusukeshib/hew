@@ -457,6 +457,7 @@ dependencies = [
  "anyhow",
  "clap",
  "crossterm",
+ "libc",
  "patch",
  "ratatui",
  "serde",
