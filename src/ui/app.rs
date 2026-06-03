@@ -708,7 +708,15 @@ impl App {
         match self.sidebar_rows.get(self.sidebar_sel) {
             Some(SbRow::Dir { path, .. }) => {
                 let path = path.clone();
-                self.set_dir_collapsed(path, collapse);
+                // ← on an already-closed folder closes its container instead.
+                if collapse && self.collapsed.contains(&path) {
+                    let parent = dir_of(&path);
+                    if !parent.is_empty() {
+                        self.set_dir_collapsed(parent.to_string(), true);
+                    }
+                } else {
+                    self.set_dir_collapsed(path, collapse);
+                }
             }
             Some(SbRow::File { idx, .. }) if collapse => {
                 let fi = *idx;
