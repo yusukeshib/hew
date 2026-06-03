@@ -1724,7 +1724,7 @@ impl App {
     /// (2-column left margin + `╭─╮`/`│ │`/`╰─╯` frame).
     fn comment_line_to_line(&self, cl: &CommentLine, width: usize) -> Line<'static> {
         const MARGIN: usize = 2;
-        let border_col = Color::Rgb(92, 100, 118);
+        let border_col = Color::White;
         let bstyle = Style::default().fg(border_col);
         // Box occupies cols [MARGIN, width); inner_w is the span between borders.
         let inner_w = width.saturating_sub(MARGIN + 2);
