@@ -472,7 +472,9 @@ impl App {
     fn resize_to(&mut self, col: u16) {
         let total = self.sidebar_area.width + self.diff_area.width;
         let max = total.saturating_sub(MIN_DIFF).max(MIN_SIDEBAR);
-        self.sidebar_width = col.saturating_sub(self.sidebar_area.x).clamp(MIN_SIDEBAR, max);
+        self.sidebar_width = col
+            .saturating_sub(self.sidebar_area.x)
+            .clamp(MIN_SIDEBAR, max);
     }
 
     /// Mouse: wheel scrolls the pane under the pointer; left-click selects;
@@ -1770,9 +1772,7 @@ impl App {
                 let left = format!(" @{name}");
                 let llen = left.chars().count();
                 let dlen = date.chars().count();
-                let name_style = Style::default()
-                    .fg(THEME.warn)
-                    .add_modifier(Modifier::BOLD);
+                let name_style = Style::default().fg(THEME.warn).add_modifier(Modifier::BOLD);
                 let inner = if llen + dlen + 2 <= inner_w {
                     vec![
                         Span::styled(left, name_style),
@@ -1799,11 +1799,7 @@ impl App {
                             replies,
                             if *replies == 1 { "" } else { "s" }
                         ),
-                        if *resolved {
-                            THEME.muted
-                        } else {
-                            THEME.accent
-                        },
+                        if *resolved { THEME.muted } else { THEME.accent },
                         true,
                     ),
                     CommentLine::Body(b) => (format!("   {b}"), THEME.text, false),
