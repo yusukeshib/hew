@@ -178,6 +178,8 @@ const UNFOCUS_BG: Color = Color::Rgb(40, 42, 48);
 /// Very dark, subtle chrome (borders, scrollbars, dividers).
 const SUBTLE: Color = Color::Rgb(38, 40, 46);
 const SUBTLE_FOCUS: Color = Color::Rgb(58, 62, 70);
+/// Diff panel border when it isn't focused: dim, but clearly visible.
+const BORDER_UNFOCUS: Color = Color::Rgb(78, 84, 96);
 
 /// Per-file (additions, deletions) counts for the sidebar.
 fn file_stats(changeset: &Changeset) -> Vec<(usize, usize)> {
@@ -1338,7 +1340,11 @@ impl App {
         let diff_block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(if diff_focused { Color::White } else { SUBTLE }));
+            .border_style(Style::default().fg(if diff_focused {
+                Color::White
+            } else {
+                BORDER_UNFOCUS
+            }));
         let diff_inner = diff_block.inner(diff_outer);
         // Re-wrap inline comments to the current diff width before any code
         // reads the row lists (selection mapping depends on it).
