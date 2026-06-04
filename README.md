@@ -33,21 +33,42 @@ hew - < change.patch             # explicit stdin
 hew change.patch --json          # print the parsed changeset as JSON, no TUI
 ```
 
-Load review comments from a sidecar JSON file:
+Load existing review comments from a sidecar JSON file. This file is an
+**immutable input** — hew reads it as the review's starting point and never
+writes back to it:
 
 ```sh
 hew change.patch --comments review.json
 ```
 
-Reload automatically when the patch or comments file changes on disk:
+On exit, hew prints a **compacted action log** (what the session changed) to
+stdout — it never modifies its inputs:
 
 ```sh
-hew change.patch --comments review.json --watch
+git diff | hew --comments base.json > actions.json
 ```
 
-`--watch` reloads file inputs when they change on disk: edit `review.json` (or
-regenerate the patch) in another window and the view refreshes. Watching only
-applies to file inputs — a stdin patch can't be re-read.
+The log is the minimal set of actions (`add_comment`, `reply`, `resolve`,
+`unresolve`, `delete`) that turn `base.json` into the reviewed state; a thread
+created then deleted, or a resolve toggled back, cancels out. An untouched
+session prints `[]`. A consumer (e.g. a GitHub bridge) replays the log against
+the same base.
+
+> **Replay needs stable thread ids.** Actions reference threads by `id`. For the
+> log to be replayable against `base.json`, that base must carry stable `id`
+> values (a producer like a GitHub bridge writes them). A handwritten sidecar
+> that omits `id` gets fresh random ids at load, so its `resolve`/`reply`/`delete`
+> actions won't match the on-disk base — fine for ad-hoc viewing, not for replay.
+
+Reload automatically when the patch file changes on disk:
+
+```sh
+hew change.patch --watch
+```
+
+`--watch` reloads the **patch** when it changes on disk (regenerate it in another
+window and the view refreshes). The `--comments` base is immutable and is never
+reloaded; watching has no effect when the patch is read from stdin.
 
 ### Options
 
@@ -57,7 +78,7 @@ applies to file inputs — a stdin patch can't be re-read.
 | `--comments <FILE>` | Sidecar JSON of review comments to load. |
 | `--name <NAME>` | Name this session in the registry (defaults to a short id). |
 | `--json` | Print the parsed changeset as JSON and exit (no TUI). |
-| `--watch` | Reload the patch/comments files when they change on disk. |
+| `--watch` | Reload the patch file when it changes on disk (the `--comments` base is never reloaded). |
 
 ### Talking to a running session
 
@@ -116,9 +137,9 @@ Unified stacks `-`/`+` lines; split shows old on the left and new on the right
 (like `git delta --side-by-side`), pairing changed lines across a divider.
 Toggling keeps the cursor on the same line.
 
-Comments are loaded from a sidecar and displayed (gutter markers + inline
-popup). You can resolve/delete threads in-app (`R`/`D`); the review store is
-flushed back to the sidecar (or stdout) on exit.
+Comments are loaded from a sidecar (immutable) and displayed (gutter markers +
+inline popup). You can compose/reply/resolve/delete threads in-app; on exit hew
+prints the compacted action log to stdout (the inputs are never written).
 
 ## Comment sidecar format
 
@@ -159,13 +180,13 @@ See [examples/README.md](examples/README.md) for how to fetch more.
 
 ## Design & roadmap
 
-`hew` stays intentionally small: no GitHub/network integration, no patch
-apply/edit/merge, no structural (AST) diff. It loads a unified patch plus
-sidecar review threads, lets you resolve/delete threads in-app, and flushes the
-review back to JSON (or stdout) on exit. It offers unified and split layouts,
-syntax highlighting (syntect + two-face's bat syntax set for broad language
-coverage, Monokai Extended Bright theme, pure-Rust fancy-regex), sidecar comment
-threads, and `--watch` reload.
+`hew` stays intentionally small and is a **pure filter**: no GitHub/network
+integration, no patch apply/edit/merge, no structural (AST) diff, and no "save"
+— its inputs (the patch and the `--comments` base) are immutable, and it emits a
+compacted action log to stdout on exit. It offers unified and split layouts,
+in-app authoring (compose/reply/resolve/delete), syntax highlighting (syntect +
+two-face's bat syntax set for broad language coverage, Monokai Extended Bright
+theme, pure-Rust fancy-regex), sidecar comment threads, and `--watch` reload.
 
 Planned: a tree-sitter highlighting backend, theme selection, and a loopback
 session server so an agent/CLI can drive a running TUI.

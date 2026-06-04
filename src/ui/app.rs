@@ -30,19 +30,18 @@ type LineRuns = Rc<Vec<(Color, String)>>;
 /// Cache key: which file + the exact line text.
 type HlKey = (usize, String);
 
-/// File inputs to reload from when `--watch` is set. `patch` is `None` when the
+/// File inputs to reload from when `--watch` is set. Only the patch is watched:
+/// the `--comments` base is an immutable input and must stay fixed for the
+/// session (the action log is diffed against it). `patch` is `None` when the
 /// diff came from stdin (a stream can't be re-read).
 pub struct WatchPaths {
     pub patch: Option<PathBuf>,
-    pub comments: Option<PathBuf>,
 }
 
-/// Tracks watched files and their last-seen modification times.
+/// Tracks the watched patch file and its last-seen modification time.
 struct Watch {
     patch: Option<PathBuf>,
-    comments: Option<PathBuf>,
     patch_mtime: Option<SystemTime>,
-    comments_mtime: Option<SystemTime>,
 }
 
 fn file_mtime(p: &Path) -> Option<SystemTime> {
@@ -476,9 +475,7 @@ impl App {
     pub fn watching(mut self, paths: WatchPaths) -> Self {
         self.watch = Some(Watch {
             patch_mtime: paths.patch.as_deref().and_then(file_mtime),
-            comments_mtime: paths.comments.as_deref().and_then(file_mtime),
             patch: paths.patch,
-            comments: paths.comments,
         });
         self
     }
@@ -1131,13 +1128,6 @@ impl App {
                         changed = true;
                     }
                 }
-                if let Some(p) = &w.comments {
-                    let m = file_mtime(p);
-                    if m != w.comments_mtime {
-                        w.comments_mtime = m;
-                        changed = true;
-                    }
-                }
                 changed
             }
         };
@@ -1146,10 +1136,11 @@ impl App {
         }
     }
 
-    /// Re-read the watched patch/comments and rebuild, keeping the cursor sane.
+    /// Re-read the watched patch and rebuild, keeping the cursor sane. The
+    /// comment store is left untouched (the `--comments` base is immutable).
     fn reload(&mut self) {
-        let (patch, comments) = match &self.watch {
-            Some(w) => (w.patch.clone(), w.comments.clone()),
+        let patch = match &self.watch {
+            Some(w) => w.patch.clone(),
             None => return,
         };
         if let Some(p) = patch {
@@ -1163,12 +1154,6 @@ impl App {
                     self.status = format!("reload failed: {e}");
                     return;
                 }
-            }
-        }
-        if let Some(p) = comments {
-            match crate::loader::load_comments(&p) {
-                Ok(store) => self.comments = store,
-                Err(e) => self.status = format!("comments reload failed: {e}"),
             }
         }
         // Rebuild the sidebar + diff rows once both the diff and comments are

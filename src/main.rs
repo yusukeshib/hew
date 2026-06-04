@@ -24,26 +24,23 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
-    // `--comments <file>` names the review document hew opens *and* saves to;
-    // a missing file just starts a fresh review there.
-    let comments = match &args.comments {
+    // `--comments <file>` is an immutable input: hew loads it as the review's
+    // starting point and never writes back to it. A missing file just starts
+    // from an empty base.
+    let base = match &args.comments {
         Some(path) => loader::load_comments_or_default(path)?,
         None => comments::CommentStore::default(),
     };
 
-    // --watch reloads file inputs; a stdin patch can't be re-read, so only
-    // watch when there is at least one real file to poll.
+    // --watch reloads the patch when it changes on disk. The --comments base is
+    // immutable, so it is never watched; a stdin patch can't be re-read either,
+    // so there's nothing to watch in that case.
     let watch = if args.watch {
-        let patch = args.file.as_ref().filter(|p| p.as_os_str() != "-").cloned();
-        let comments_path = args.comments.clone();
-        if patch.is_some() || comments_path.is_some() {
-            Some(ui::WatchPaths {
-                patch,
-                comments: comments_path,
-            })
-        } else {
-            None
-        }
+        args.file
+            .as_ref()
+            .filter(|p| p.as_os_str() != "-")
+            .cloned()
+            .map(|patch| ui::WatchPaths { patch: Some(patch) })
     } else {
         None
     };
@@ -64,19 +61,13 @@ fn main() -> Result<()> {
         }
     };
 
-    let final_comments = ui::run(changeset, comments, watch, ipc)?;
+    let final_comments = ui::run(changeset, base.clone(), watch, ipc)?;
 
-    // Flush the review on exit. With `--comments` it round-trips to that file;
-    // without it, the review goes to stdout, but only when non-empty so a plain
-    // `git diff | hew` view doesn't print an empty `{ "threads": [] }`.
-    match &args.comments {
-        Some(path) => loader::save_comments(path, &final_comments)?,
-        None => {
-            if !final_comments.threads.is_empty() {
-                println!("{}", serde_json::to_string_pretty(&final_comments)?);
-            }
-        }
-    }
+    // Output is a compacted action log: the minimal review actions that turn
+    // the immutable base into the final state. Always to stdout; an empty
+    // session (no edits) prints `[]`.
+    let actions = comments::diff(&base, &final_comments);
+    println!("{}", serde_json::to_string_pretty(&actions)?);
     Ok(())
 }
 
