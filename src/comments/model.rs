@@ -1,5 +1,7 @@
-//! Read-only PR-style review comments, loaded from a sidecar JSON file.
-//! hew never mutates these in-app: to change them, edit the JSON (and reload).
+//! PR-style review comments, loaded from a sidecar JSON file and edited in
+//! place. The store is the single in-memory source of truth: the TUI (and,
+//! later, the `hew comment` socket client) mutate it through the methods on
+//! [`CommentStore`], and it is flushed back to JSON on exit.
 
 use crate::diff::model::Side;
 use serde::{Deserialize, Serialize};
@@ -51,6 +53,87 @@ pub struct CommentStore {
     pub threads: Vec<Thread>,
 }
 
+impl CommentStore {
+    /// Start a new thread anchored to `(file, side, range)` with a root
+    /// comment, returning its thread id. This is the single write path shared
+    /// by the TUI and (later) the `hew comment` socket client.
+    // Wired up by the in-app composer (next PR) and the Phase 4 socket.
+    #[allow(dead_code)]
+    pub fn add_thread(
+        &mut self,
+        file: PathBuf,
+        side: Side,
+        range: LineRange,
+        author: Option<String>,
+        body: String,
+    ) -> Uuid {
+        let id = Uuid::new_v4();
+        self.threads.push(Thread {
+            id,
+            file,
+            side,
+            range,
+            resolved: false,
+            comments: vec![Comment {
+                id: Uuid::new_v4(),
+                author,
+                body,
+                created_at: SystemTime::now(),
+            }],
+        });
+        id
+    }
+
+    /// Append a reply to the thread with `thread_id`. Returns `false` when no
+    /// such thread exists.
+    // Wired up by the in-app composer (next PR) and the Phase 4 socket.
+    #[allow(dead_code)]
+    pub fn reply(&mut self, thread_id: Uuid, author: Option<String>, body: String) -> bool {
+        match self.threads.iter_mut().find(|t| t.id == thread_id) {
+            Some(t) => {
+                t.comments.push(Comment {
+                    id: Uuid::new_v4(),
+                    author,
+                    body,
+                    created_at: SystemTime::now(),
+                });
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Remove the thread with `id`. Returns `true` when one was removed.
+    pub fn remove_thread(&mut self, id: Uuid) -> bool {
+        let before = self.threads.len();
+        self.threads.retain(|t| t.id != id);
+        self.threads.len() != before
+    }
+
+    /// Set the resolved flag on the thread with `id`. Returns `false` when no
+    /// such thread exists.
+    // The TUI toggles; explicit set is for the Phase 4 socket `resolve` /
+    // `unresolve` commands, which must be idempotent.
+    #[allow(dead_code)]
+    pub fn set_resolved(&mut self, id: Uuid, resolved: bool) -> bool {
+        match self.threads.iter_mut().find(|t| t.id == id) {
+            Some(t) => {
+                t.resolved = resolved;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Flip the resolved flag on the thread with `id`, returning the new state
+    /// (or `None` when no such thread exists).
+    pub fn toggle_resolved(&mut self, id: Uuid) -> Option<bool> {
+        let t = self.threads.iter_mut().find(|t| t.id == id)?;
+        t.resolved = !t.resolved;
+        Some(t.resolved)
+    }
+}
+
 /// Serialize `SystemTime` as a unix-millis integer.
 mod ts {
     use serde::{Deserialize, Deserializer, Serializer};
@@ -63,5 +146,61 @@ mod ts {
     pub fn deserialize<'de, D: Deserializer<'de>>(d: D) -> Result<SystemTime, D::Error> {
         let ms = u64::deserialize(d)?;
         Ok(UNIX_EPOCH + Duration::from_millis(ms))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn range(start: u32, end: u32) -> LineRange {
+        LineRange { start, end }
+    }
+
+    #[test]
+    fn add_thread_then_reply() {
+        let mut store = CommentStore::default();
+        let id = store.add_thread(
+            "src/main.rs".into(),
+            Side::New,
+            range(10, 12),
+            Some("agent".into()),
+            "looks off".into(),
+        );
+        assert_eq!(store.threads.len(), 1);
+        assert_eq!(store.threads[0].comments.len(), 1);
+        assert!(!store.threads[0].resolved);
+
+        assert!(store.reply(id, Some("you".into()), "good catch".into()));
+        assert_eq!(store.threads[0].comments.len(), 2);
+        assert_eq!(store.threads[0].comments[1].body, "good catch");
+
+        // Replying to an unknown thread is a no-op.
+        assert!(!store.reply(Uuid::new_v4(), None, "x".into()));
+        assert_eq!(store.threads[0].comments.len(), 2);
+    }
+
+    #[test]
+    fn toggle_and_set_resolved() {
+        let mut store = CommentStore::default();
+        let id = store.add_thread("f".into(), Side::Old, range(1, 1), None, "hi".into());
+        assert_eq!(store.toggle_resolved(id), Some(true));
+        assert!(store.threads[0].resolved);
+        assert_eq!(store.toggle_resolved(id), Some(false));
+        assert!(store.set_resolved(id, true));
+        assert!(store.threads[0].resolved);
+        // Unknown ids report failure without panicking.
+        assert_eq!(store.toggle_resolved(Uuid::new_v4()), None);
+        assert!(!store.set_resolved(Uuid::new_v4(), true));
+    }
+
+    #[test]
+    fn remove_thread_reports_hit() {
+        let mut store = CommentStore::default();
+        let id = store.add_thread("f".into(), Side::New, range(2, 2), None, "hi".into());
+        assert!(store.remove_thread(id));
+        assert!(store.threads.is_empty());
+        // Removing again is a no-op.
+        assert!(!store.remove_thread(id));
     }
 }

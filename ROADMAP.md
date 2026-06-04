@@ -79,22 +79,26 @@ in Phase 3; this phase just wires load+flush so authored comments survive.)
 
 ## Phase 3 — In-app comment authoring (TUI becomes writable)
 
-Today hew is read-only (`model.rs`: "hew never mutates these in-app"). Both the
-TUI and the socket mutate **one** in-memory `CommentStore`, so the mutation API
+hew started life read-only. This phase makes the store writable: the TUI and
+(later) the socket mutate **one** in-memory `CommentStore`, so the mutation API
 lands here first and Phase 4's socket rides on it.
 
-- [ ] Add mutation methods to `CommentStore` (add thread, reply to thread,
-      remove comment/thread, toggle resolve) — the single shared write path.
-- [ ] Make the loaded `CommentStore` owned mutably by the running app/TUI.
+- [x] Add mutation methods to `CommentStore` (`add_thread`, `reply`,
+      `remove_thread`, `set_resolved`/`toggle_resolved`) — the single shared
+      write path, unit-tested. (`add_thread`/`reply`/`set_resolved` wired up by
+      the composer + Phase 4 socket; `#[allow(dead_code)]` until then.)
+- [x] Make the loaded `CommentStore` owned mutably by the running app/TUI.
+- [x] Remove a thread from the TUI (`D`).
+- [x] **Resolve / unresolve** a thread from the TUI (`R`, toggles
+      `Thread.resolved`).
+- [x] Re-render after every mutation via `rebuild_rows` (anchor-preserving;
+      cursor/scroll stay stable).
 - [ ] Visual line-select mode (`v`) to anchor a comment to a `(file, side, range)`.
 - [ ] Comment composer in the TUI (`i`): open an input box, write a body, submit
-      → new thread on the selection.
-- [ ] Reply to an existing thread from the TUI.
-- [ ] Remove a thread from the TUI.
-- [ ] **Resolve / unresolve** a thread from the TUI (toggle `Thread.resolved`;
-      the field already exists in `model.rs`). Visually distinguish resolved
-      threads (dim / collapsed / filterable).
-- [ ] Re-render after every mutation; keep cursor/scroll position stable.
+      → new thread on the selection. **(next PR)**
+- [ ] Reply to an existing thread from the TUI. **(next PR)**
+- [ ] Visually distinguish resolved threads beyond the header flag (dim /
+      collapsed / filterable).
 - [ ] Mark the store dirty so Phase 4 flush knows there is something to save.
 
 ## Phase 4 — Live editing over a socket (AI joins the discussion)
