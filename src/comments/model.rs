@@ -56,9 +56,7 @@ pub struct CommentStore {
 impl CommentStore {
     /// Start a new thread anchored to `(file, side, range)` with a root
     /// comment, returning its thread id. This is the single write path shared
-    /// by the TUI and (later) the `hew comment` socket client.
-    // Wired up by the in-app composer (next PR) and the Phase 4 socket.
-    #[allow(dead_code)]
+    /// by the TUI composer and (later) the `hew comment` socket client.
     pub fn add_thread(
         &mut self,
         file: PathBuf,
@@ -86,8 +84,6 @@ impl CommentStore {
 
     /// Append a reply to the thread with `thread_id`. Returns `false` when no
     /// such thread exists.
-    // Wired up by the in-app composer (next PR) and the Phase 4 socket.
-    #[allow(dead_code)]
     pub fn reply(&mut self, thread_id: Uuid, author: Option<String>, body: String) -> bool {
         match self.threads.iter_mut().find(|t| t.id == thread_id) {
             Some(t) => {

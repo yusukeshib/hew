@@ -70,6 +70,8 @@ applies to file inputs — a stdin patch can't be re-read.
 | `[` / `]` | Jump to previous / next file |
 | `n` / `N` | Jump to next / previous comment |
 | `Enter` / `o` | Toggle the comment thread on the current line |
+| `i` | Write a new comment on the current line |
+| `r` | Reply to the thread on the current line |
 | `R` | Resolve / unresolve the thread on the current line |
 | `D` | Delete the thread on the current line |
 | `←` / `→` | Focus the file list / the diff pane |

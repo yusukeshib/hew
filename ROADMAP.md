@@ -93,10 +93,13 @@ lands here first and Phase 4's socket rides on it.
       `Thread.resolved`).
 - [x] Re-render after every mutation via `rebuild_rows` (anchor-preserving;
       cursor/scroll stay stable).
-- [ ] Visual line-select mode (`v`) to anchor a comment to a `(file, side, range)`.
-- [ ] Comment composer in the TUI (`i`): open an input box, write a body, submit
-      → new thread on the selection. **(next PR)**
-- [ ] Reply to an existing thread from the TUI. **(next PR)**
+- [x] Comment composer in the TUI (`i`): modal input box, write a body, submit
+      → new thread on the current line (author `you`).
+- [x] Reply to an existing thread from the TUI (`r`).
+- [ ] Visual line-select mode (`v`) to anchor a comment to a multi-line
+      `(file, side, range)` (composer currently anchors to the single cursor
+      line).
+- [ ] Multi-line comment bodies (composer is single-line; `enter` submits).
 - [ ] Visually distinguish resolved threads beyond the header flag (dim /
       collapsed / filterable).
 - [ ] Mark the store dirty so Phase 4 flush knows there is something to save.

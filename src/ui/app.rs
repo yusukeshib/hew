@@ -1,6 +1,6 @@
 //! TUI application state and render loop.
 
-use crate::comments::model::CommentStore;
+use crate::comments::model::{CommentStore, LineRange};
 use crate::diff::model::{Changeset, DiffFile, LineKind, Side};
 use crate::ui::highlight::Highlighter;
 use crate::ui::render_rows::{
@@ -13,7 +13,8 @@ use crossterm::event::{
 };
 use ratatui::prelude::*;
 use ratatui::widgets::{
-    Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
+    Wrap,
 };
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -154,6 +155,16 @@ fn build_sidebar_rows(
 
 /// Comment marker for a file: `Some(true)` when it has an unresolved thread,
 /// `Some(false)` when it only has resolved threads, `None` when it has none.
+/// A `width`×`height` rect centered inside `area` (clamped to fit).
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width: width.min(area.width),
+        height: height.min(area.height),
+    }
+}
+
 fn file_comment_state(comments: &CommentStore, path: &str) -> Option<bool> {
     let p = Path::new(path);
     let mut any = false;
@@ -254,9 +265,27 @@ fn elide_left(s: &str, w: usize) -> String {
     format!("…{tail}")
 }
 
+/// What an open composer will write on submit.
+enum ComposeTarget {
+    /// A brand-new thread anchored to a diff line.
+    NewThread {
+        file_idx: usize,
+        side: Side,
+        line: u32,
+    },
+    /// A reply appended to an existing thread.
+    Reply { thread_id: Uuid },
+}
+
+/// In-progress comment text and where it lands.
+struct Composer {
+    target: ComposeTarget,
+    buf: String,
+}
+
 /// Diff/review TUI state. Comments are loaded from a sidecar, displayed and
-/// navigated inline, and mutated in place (resolve/delete); the store is
-/// flushed back on exit.
+/// navigated inline, and mutated in place (compose/reply/resolve/delete); the
+/// store is flushed back on exit.
 pub struct App {
     changeset: Changeset,
     rows: Vec<Row>,
@@ -292,6 +321,7 @@ pub struct App {
     highlighter: Highlighter,
     /// (file_idx, line text) -> highlighted runs. Viewport-only, grows lazily.
     hl_cache: RefCell<HashMap<HlKey, LineRuns>>,
+    composer: Option<Composer>,
     quit: bool,
 }
 
@@ -321,7 +351,7 @@ impl App {
             selected: 0,
             scroll: 0,
             height: 1,
-            status: "q quit  j/k move  enter fold  R resolve  D delete  tab split".into(),
+            status: "q quit  j/k move  i comment  r reply  R resolve  D delete".into(),
             watch: None,
             needs_clear: false,
             show_sidebar: true,
@@ -350,6 +380,7 @@ impl App {
             sb_drag: None,
             highlighter: Highlighter::new(),
             hl_cache: RefCell::new(HashMap::new()),
+            composer: None,
             quit: false,
         };
         app.selected = app.first_selectable().unwrap_or(0);
@@ -490,6 +521,10 @@ impl App {
     /// Mouse: wheel scrolls the pane under the pointer; left-click selects;
     /// dragging the divider resizes the sidebar.
     fn on_mouse(&mut self, me: MouseEvent) {
+        // The composer modal swallows mouse input too.
+        if self.composer.is_some() {
+            return;
+        }
         let (col, row) = (me.column, me.row);
         let on_divider = self.divider_col() == Some(col);
         let over_sidebar = self.sidebar_area.width > 0 && hit(self.sidebar_area, col, row);
@@ -875,6 +910,110 @@ impl App {
         self.rebuild_rows();
     }
 
+    /// Open the composer for a new thread on the selected diff line.
+    fn open_new_thread(&mut self) {
+        let Some((file_idx, side, line)) = self.anchor_at(self.selected) else {
+            self.status = "put the cursor on a diff line first".into();
+            return;
+        };
+        self.composer = Some(Composer {
+            target: ComposeTarget::NewThread {
+                file_idx,
+                side,
+                line,
+            },
+            buf: String::new(),
+        });
+        self.status = "new comment — type, enter to submit, esc to cancel".into();
+    }
+
+    /// Open the composer to reply to the thread on the selected line.
+    fn open_reply(&mut self) {
+        let Some(id) = self.current_thread_id() else {
+            self.status = "no comment thread on this line".into();
+            return;
+        };
+        self.composer = Some(Composer {
+            target: ComposeTarget::Reply { thread_id: id },
+            buf: String::new(),
+        });
+        self.status = "reply — type, enter to submit, esc to cancel".into();
+    }
+
+    /// Keystrokes while the composer modal is open.
+    fn on_key_compose(&mut self, code: KeyCode, mods: KeyModifiers) {
+        let ctrl = mods.contains(KeyModifiers::CONTROL);
+        match code {
+            // Esc or Ctrl-C/D cancels without saving.
+            KeyCode::Esc => {
+                self.composer = None;
+                self.status = "cancelled".into();
+            }
+            KeyCode::Char('c') | KeyCode::Char('d') if ctrl => {
+                self.composer = None;
+                self.status = "cancelled".into();
+            }
+            KeyCode::Enter => self.submit_compose(),
+            KeyCode::Backspace => {
+                if let Some(c) = self.composer.as_mut() {
+                    c.buf.pop();
+                }
+            }
+            KeyCode::Char(ch) if !ctrl => {
+                if let Some(c) = self.composer.as_mut() {
+                    c.buf.push(ch);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Commit the composer's text as a new thread or a reply.
+    fn submit_compose(&mut self) {
+        let Some(c) = self.composer.take() else {
+            return;
+        };
+        let body = c.buf.trim().to_string();
+        if body.is_empty() {
+            self.status = "empty comment discarded".into();
+            return;
+        }
+        match c.target {
+            ComposeTarget::NewThread {
+                file_idx,
+                side,
+                line,
+            } => {
+                let Some(file) = self.changeset.files.get(file_idx) else {
+                    return;
+                };
+                let path = PathBuf::from(file.display_path());
+                self.comments.add_thread(
+                    path,
+                    side,
+                    LineRange {
+                        start: line,
+                        end: line,
+                    },
+                    Some("you".into()),
+                    body,
+                );
+                // Thread indices shifted; reset the positional expand set and
+                // show every thread so the new one is visible.
+                self.expanded = (0..self.comments.threads.len()).collect();
+                self.status = "added comment".into();
+            }
+            ComposeTarget::Reply { thread_id } => {
+                if self.comments.reply(thread_id, Some("you".into()), body) {
+                    self.status = "added reply".into();
+                } else {
+                    self.status = "thread no longer exists".into();
+                }
+            }
+        }
+        self.rebuild_rows();
+    }
+
     /// The id of the first comment thread anchored to the selected line, if any.
     fn current_thread_id(&self) -> Option<Uuid> {
         let (fi, side, line) = self.anchor_at(self.selected)?;
@@ -1145,6 +1284,10 @@ impl App {
     }
 
     fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) {
+        // While composing, the modal owns every keystroke.
+        if self.composer.is_some() {
+            return self.on_key_compose(code, mods);
+        }
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         // Global keys, independent of the focused pane.
         match code {
@@ -1222,6 +1365,10 @@ impl App {
 
             // Toggle the inline comment thread on the current line.
             KeyCode::Enter | KeyCode::Char('o') => self.toggle_comment(),
+
+            // Compose a new thread (i) or reply to the thread here (r).
+            KeyCode::Char('i') => self.open_new_thread(),
+            KeyCode::Char('r') => self.open_reply(),
 
             // Resolve/unresolve (R) or delete (D) the thread on this line.
             KeyCode::Char('R') => self.resolve_current_thread(),
@@ -1453,6 +1600,67 @@ impl App {
             Paragraph::new(self.status.clone()).style(Style::default().fg(THEME.muted)),
             chunks[1],
         );
+
+        // Composer modal floats on top of everything when open.
+        self.render_composer(f, area);
+    }
+
+    /// Draw the comment composer modal, centered over the whole frame.
+    fn render_composer(&self, f: &mut Frame, area: Rect) {
+        let Some(c) = &self.composer else {
+            return;
+        };
+        let title = match &c.target {
+            ComposeTarget::NewThread { file_idx, line, .. } => {
+                let path = self
+                    .changeset
+                    .files
+                    .get(*file_idx)
+                    .map(|f| f.display_path())
+                    .unwrap_or("?");
+                format!(" new comment — {path}:{line} ")
+            }
+            ComposeTarget::Reply { .. } => " reply ".into(),
+        };
+        let width = area.width.saturating_sub(8).clamp(20, 72);
+        let height = 7u16.min(area.height);
+        let rect = centered_rect(width, height, area);
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(THEME.border_focus))
+            .title(title);
+        let inner = block.inner(rect);
+        f.render_widget(Clear, rect);
+        f.render_widget(block, rect);
+        if inner.height == 0 {
+            return;
+        }
+        // Body (with a block caret) above a one-line hint.
+        let body_h = inner.height.saturating_sub(1).max(1);
+        let body = Rect {
+            height: body_h,
+            ..inner
+        };
+        let mut text = c.buf.clone();
+        text.push('█');
+        f.render_widget(
+            Paragraph::new(text)
+                .wrap(Wrap { trim: false })
+                .style(Style::default().fg(THEME.text)),
+            body,
+        );
+        if inner.height > 1 {
+            let hint = Rect {
+                y: inner.y + body_h,
+                height: 1,
+                ..inner
+            };
+            f.render_widget(
+                Paragraph::new("enter submit · esc cancel").style(Style::default().fg(THEME.muted)),
+                hint,
+            );
+        }
     }
 
     fn render_diff(&self, f: &mut Frame, area: Rect) {
