@@ -75,24 +75,9 @@ reloaded; watching has no effect when the patch is read from stdin.
 | Flag | Meaning |
 |---|---|
 | `FILE` (positional) | Patch file to review. Omit or use `-` for stdin. |
-| `--comments <FILE>` | Sidecar JSON of review comments to load. |
-| `--name <NAME>` | Name this session in the registry (defaults to a short id). |
+| `--comments <FILE>` | Sidecar JSON of existing review comments to load (immutable). |
 | `--json` | Print the parsed changeset as JSON and exit (no TUI). |
 | `--watch` | Reload the patch file when it changes on disk (the `--comments` base is never reloaded). |
-
-### Talking to a running session
-
-While a `hew` TUI is open it advertises itself on a Unix socket under
-`$XDG_RUNTIME_DIR/hew/` (or `/tmp/hew-$UID/`), so another process — you or an
-AI agent — can read the live review:
-
-```sh
-hew comment list                 # the only running session
-hew comment list --session pr-42  # by --name (or id) when several are open
-```
-
-`hew comment list` prints the session's current review store as JSON. (Writing
-comments over the socket — `hew comment add/remove/resolve` — is coming next.)
 
 ## Keys
 
@@ -188,8 +173,9 @@ in-app authoring (compose/reply/resolve/delete), syntax highlighting (syntect +
 two-face's bat syntax set for broad language coverage, Monokai Extended Bright
 theme, pure-Rust fancy-regex), sidecar comment threads, and `--watch` reload.
 
-Planned: a tree-sitter highlighting backend, theme selection, and a loopback
-session server so an agent/CLI can drive a running TUI.
+Planned: a tree-sitter highlighting backend, theme selection, and example
+`gh` wrappers that turn the action log into GitHub review actions. A live
+socket for in-session AI co-review is deferred (see `ROADMAP.md`).
 
 Note: `hew` parses **plain unified diffs**, not git `format-patch` mailbox output
 (`gh pr diff --patch`). Use a `.diff`/`git diff` stream instead.

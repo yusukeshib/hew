@@ -16,8 +16,6 @@ pub use app::WatchPaths;
 
 use crate::comments::model::CommentStore;
 use crate::diff::model::Changeset;
-use crate::session::IpcMessage;
-use std::sync::mpsc::Receiver;
 
 /// When stdin isn't a TTY (e.g. `git diff | hew`), point fd 0 at a real
 /// terminal so crossterm's raw-mode and event reader have something to read
@@ -77,7 +75,6 @@ pub fn run(
     changeset: Changeset,
     comments: CommentStore,
     watch: Option<WatchPaths>,
-    ipc: Option<Receiver<IpcMessage>>,
 ) -> Result<CommentStore> {
     // With nothing to watch, an empty changeset has nothing to show.
     if changeset.is_empty() && watch.is_none() {
@@ -94,8 +91,8 @@ pub fn run(
     reattach_stdin_to_tty()?;
 
     // Render to stderr, not stdout: stdout is reserved for the review JSON we
-    // flush on exit, so `git diff | hew > review.json` writes the result to the
-    // file while the TUI still draws on the inherited terminal (fzf-style).
+    // action log on exit, so `git diff | hew > actions.json` writes the result
+    // to the file while the TUI still draws on the inherited terminal (fzf-style).
     enable_raw_mode()?;
     let mut out = stderr();
     execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
@@ -106,9 +103,6 @@ pub fn run(
     if let Some(w) = watch {
         app = app.watching(w);
     }
-    if let Some(rx) = ipc {
-        app = app.listening(rx);
-    }
     let result = app.run(&mut terminal);
 
     disable_raw_mode()?;
@@ -118,6 +112,6 @@ pub fn run(
         DisableMouseCapture
     )?;
     terminal.show_cursor()?;
-    // Hand the final in-memory store back so the caller can flush it.
+    // Hand the final store back so the caller can diff it against the base.
     result.map(|()| app.into_comments())
 }
