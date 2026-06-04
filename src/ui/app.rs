@@ -20,31 +20,13 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::time::{Duration, SystemTime};
+use std::time::Duration;
 use uuid::Uuid;
 
 /// Highlighted runs for one line: `(fg color, text)`.
 type LineRuns = Rc<Vec<(Color, String)>>;
 /// Cache key: which file + the exact line text.
 type HlKey = (usize, String);
-
-/// File inputs to reload from when `--watch` is set. Only the patch is watched:
-/// the `--comments` base is an immutable input and must stay fixed for the
-/// session (the action log is diffed against it). `patch` is `None` when the
-/// diff came from stdin (a stream can't be re-read).
-pub struct WatchPaths {
-    pub patch: Option<PathBuf>,
-}
-
-/// Tracks the watched patch file and its last-seen modification time.
-struct Watch {
-    patch: Option<PathBuf>,
-    patch_mtime: Option<SystemTime>,
-}
-
-fn file_mtime(p: &Path) -> Option<SystemTime> {
-    std::fs::metadata(p).and_then(|m| m.modified()).ok()
-}
 
 /// Diff layout: unified (stacked) or split (old | new, like `git delta`).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -296,7 +278,6 @@ pub struct App {
     scroll: usize,   // top row of viewport
     height: usize,   // last known viewport height
     status: String,
-    watch: Option<Watch>,
     needs_clear: bool,
     show_sidebar: bool,
     sidebar_width: u16,
@@ -351,7 +332,6 @@ impl App {
             scroll: 0,
             height: 1,
             status: "q quit  j/k move  i comment  r reply  R resolve  D delete".into(),
-            watch: None,
             needs_clear: false,
             show_sidebar: true,
             sidebar_width: SIDEBAR_WIDTH,
@@ -441,15 +421,6 @@ impl App {
         out
     }
 
-    /// Enable `--watch`: reload the patch and/or comments file when they change.
-    pub fn watching(mut self, paths: WatchPaths) -> Self {
-        self.watch = Some(Watch {
-            patch_mtime: paths.patch.as_deref().and_then(file_mtime),
-            patch: paths.patch,
-        });
-        self
-    }
-
     fn first_selectable(&self) -> Option<usize> {
         let (s, e) = self.file_range();
         (s..e).find(|&i| self.is_selectable_at(i))
@@ -467,22 +438,24 @@ impl App {
                 self.needs_clear = false;
             }
             terminal.draw(|f| self.draw(f))?;
-            // Block for the first event (≤200ms so the watch poll still runs),
-            // then drain every event already queued before redrawing. A burst
-            // of mouse-drag events thus collapses into a single frame instead
-            // of one render per event, which is what made divider drags lag.
-            if event::poll(Duration::from_millis(200))? {
-                loop {
-                    match event::read()? {
-                        Event::Key(key) if key.kind == KeyEventKind::Press => {
-                            self.on_key(key.code, key.modifiers);
-                        }
-                        Event::Mouse(me) => self.on_mouse(me),
-                        _ => {}
+            // Block for the first event, then drain every event already queued
+            // before redrawing. A burst of mouse-drag events thus collapses
+            // into a single frame instead of one render per event, which is
+            // what made divider drags lag.
+            match event::read()? {
+                Event::Key(key) if key.kind == KeyEventKind::Press => {
+                    self.on_key(key.code, key.modifiers);
+                }
+                Event::Mouse(me) => self.on_mouse(me),
+                _ => {}
+            }
+            while event::poll(Duration::from_millis(0))? {
+                match event::read()? {
+                    Event::Key(key) if key.kind == KeyEventKind::Press => {
+                        self.on_key(key.code, key.modifiers);
                     }
-                    if !event::poll(Duration::from_millis(0))? {
-                        break;
-                    }
+                    Event::Mouse(me) => self.on_mouse(me),
+                    _ => {}
                 }
             }
             if let Some(text) = self.pending_copy.take() {
@@ -495,7 +468,6 @@ impl App {
                 let _ = out.write_all(seq.as_bytes());
                 let _ = out.flush();
             }
-            self.poll_reload();
         }
         Ok(())
     }
@@ -988,9 +960,9 @@ impl App {
                 line,
             } => {
                 let Some(file) = self.changeset.files.get(file_idx) else {
-                    // The diff reloaded out from under us (--watch) and the
-                    // anchored file is gone; tell the user their text was lost.
-                    self.status = "comment discarded — that file is no longer in the diff".into();
+                    // Defensive: the anchor's file index should always be valid
+                    // (the changeset is fixed for the session).
+                    self.status = "comment discarded — unknown file".into();
                     return;
                 };
                 let path = PathBuf::from(file.display_path());
@@ -1082,58 +1054,6 @@ impl App {
             }
             self.ensure_visible();
         }
-    }
-
-    /// On `--watch`: if any watched file's mtime changed, reload it.
-    fn poll_reload(&mut self) {
-        let changed = match self.watch.as_mut() {
-            None => false,
-            Some(w) => {
-                let mut changed = false;
-                if let Some(p) = &w.patch {
-                    let m = file_mtime(p);
-                    if m != w.patch_mtime {
-                        w.patch_mtime = m;
-                        changed = true;
-                    }
-                }
-                changed
-            }
-        };
-        if changed {
-            self.reload();
-        }
-    }
-
-    /// Re-read the watched patch and rebuild, keeping the cursor sane. The
-    /// comment store is left untouched (the `--comments` base is immutable).
-    fn reload(&mut self) {
-        let patch = match &self.watch {
-            Some(w) => w.patch.clone(),
-            None => return,
-        };
-        if let Some(p) = patch {
-            match crate::loader::load_patch(Some(&p)) {
-                Ok(cs) => {
-                    self.changeset = cs;
-                    self.file_stats = file_stats(&self.changeset);
-                    self.hl_cache.borrow_mut().clear();
-                }
-                Err(e) => {
-                    self.status = format!("reload failed: {e}");
-                    return;
-                }
-            }
-        }
-        // Rebuild the sidebar + diff rows once both the diff and comments are
-        // current. Thread indices may have shifted; re-expand all threads so
-        // comments stay visible by default.
-        self.rebuild_sidebar();
-        self.expanded = (0..self.comments.threads.len()).collect();
-        self.rebuild_rows();
-        // Files may have changed; re-point at a valid file and selectable row.
-        self.set_current_file(self.current_file);
-        self.status = "reloaded".into();
     }
 
     // ---- active-list abstraction (unified vs split) ----

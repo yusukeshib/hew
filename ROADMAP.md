@@ -40,16 +40,17 @@ section); the turn-based flow above covers the v1 workflows without it.
 - [ ] **Channels stay separated:** stdin = patch, stderr/tty = render,
       stdout = action-log result.
 - [ ] **No daemon, no DB, no background services** in v1.
-- [ ] Resist new flags. The CLI stays small (`FILE`, `--comments`, `--json`,
-      `--watch`).
+- [ ] Resist new flags. The CLI stays minimal: just `FILE` and `--comments`.
 
 ## Flag changes
 
 - [x] `--comments` is an **immutable input** (load-only, the review's starting
       base). hew never writes back to it; output is the action log on stdout.
-- [ ] `--watch` still reloads the patch/comments files on disk change. Open
-      question: whether comment-anchor drift on patch reload needs solving (see
-      Open questions); no behaviour change planned for v1.
+- [x] Removed `--json` (parsed-changeset dump — unrelated to the review output).
+- [x] Removed `--watch`. It only reloaded a file-input patch (not the common
+      stdin pipe), contradicted the turn-based flow (you fix *after* reviewing),
+      and reintroduced comment-anchor drift on reload. The patch is fixed for
+      the session.
 
 ---
 
@@ -62,10 +63,10 @@ Frees stdout so the review JSON can be the program's result, fzf-style.
 - [x] Move OSC 52 clipboard writes from stdout → stderr in `src/ui/app.rs`.
 - [x] Verify the existing tty-borrow logic (`reattach_stdin_to_tty`) still holds
       with stderr as the render target (macOS `/dev/tty` + kqueue `EINVAL` caveat).
-- [x] Build + test suite green; `--json` still writes the changeset to stdout.
-- [ ] Manual check: `git diff | hew` renders correctly on a real terminal.
-- [ ] Manual check: `git diff | hew > out.json` renders to the terminal (not the
-      file) and leaves the terminal clean on exit.
+- [x] Build + test suite green.
+- [x] `git diff | hew` renders correctly on a real terminal.
+- [x] `git diff | hew > out.json` renders to the terminal (not the file) and
+      leaves the terminal clean on exit.
 
 ## Phase 2 — Output model: compacted action log ✅
 
@@ -117,10 +118,6 @@ wrappers.
 - [ ] Shape `Thread`/`Comment` JSON close to a GitHub review-thread structure so
       translation stays trivial (path/side/line/resolved/body/author/created_at,
       stable thread id for re-post matching).
-
-- [ ] Shape `Thread`/`Comment` JSON close to a GitHub review-thread structure so
-      translation stays trivial (path/side/line/resolved/body/author/created_at,
-      stable thread id for re-post matching).
 - [ ] `examples/gh-to-hew` — `gh api` PR threads → hew comment JSON.
 - [ ] `examples/hew-to-gh` — hew JSON → posted GitHub review/thread drafts.
 - [ ] Handle line anchoring (GitHub `(path, line, side, commit)` ↔ hew
@@ -145,9 +142,6 @@ requires solving anchor-drift when the patch reloads mid-session.
 ## Open questions
 
 - [ ] `--comments` vs `--review` naming.
-- [ ] Anchor remapping when the patch reloads and hunk line numbers shift
-      (pre-existing issue, but the two-way flow makes it more visible).
-- [ ] Conflict/merge policy if `comment add` targets a line that no longer exists
-      after a patch reload.
-- [ ] Windows: the socket layer is Unix-domain; decide whether Windows is out of
-      scope or needs a named-pipe shim.
+- [ ] Anchor remapping when the patch changes is **moot in v1**: the patch is
+      fixed for the session (no `--watch`). It only resurfaces if live patch
+      reload (Deferred) is ever added.

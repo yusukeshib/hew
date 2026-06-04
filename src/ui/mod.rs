@@ -12,8 +12,6 @@ use crossterm::terminal::{
 use ratatui::prelude::*;
 use std::io::stderr;
 
-pub use app::WatchPaths;
-
 use crate::comments::model::CommentStore;
 use crate::diff::model::Changeset;
 
@@ -70,14 +68,9 @@ fn reattach_stdin_to_tty() -> Result<()> {
 }
 
 /// Set up the terminal, run the app, and restore the terminal afterwards.
-/// When `watch` is `Some`, the listed files are reloaded on change.
-pub fn run(
-    changeset: Changeset,
-    comments: CommentStore,
-    watch: Option<WatchPaths>,
-) -> Result<CommentStore> {
-    // With nothing to watch, an empty changeset has nothing to show.
-    if changeset.is_empty() && watch.is_none() {
+pub fn run(changeset: Changeset, comments: CommentStore) -> Result<CommentStore> {
+    // An empty changeset has nothing to show.
+    if changeset.is_empty() {
         // Diagnostic goes to stderr; stdout stays clean for the review JSON.
         eprintln!("hew: no changes to review");
         return Ok(comments);
@@ -100,9 +93,6 @@ pub fn run(
     let mut terminal = Terminal::new(backend)?;
 
     let mut app = app::App::with_comments(changeset, comments);
-    if let Some(w) = watch {
-        app = app.watching(w);
-    }
     let result = app.run(&mut terminal);
 
     disable_raw_mode()?;
