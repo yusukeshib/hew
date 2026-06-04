@@ -141,7 +141,7 @@ fn comment_rows_for(
     path: &str,
     anchors: &[(Side, u32)],
     width: usize,
-) -> Vec<CommentLine> {
+) -> Vec<(Side, CommentLine)> {
     let mut out = Vec::new();
     for (i, t) in comments.threads.iter().enumerate() {
         if !expanded.contains(&i) || emitted.contains(&i) || t.file.as_path() != Path::new(path) {
@@ -154,7 +154,7 @@ fn comment_rows_for(
             .any(|(s, l)| *s == t.side && t.range.contains(*l))
         {
             emitted.insert(i);
-            out.extend(thread_lines(t, width));
+            out.extend(thread_lines(t, width).into_iter().map(|cl| (t.side, cl)));
         }
     }
     out
@@ -272,8 +272,13 @@ pub enum SplitRowKind {
         left: Option<SideCell>,
         right: Option<SideCell>,
     },
-    /// An inline-expanded comment-thread line (non-selectable).
-    Comment(CommentLine),
+    /// An inline-expanded comment-thread line (non-selectable). `side` records
+    /// which column (old=left / new=right) the thread is anchored to so split
+    /// view can render it under the correct side.
+    Comment {
+        side: Side,
+        line: CommentLine,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -391,7 +396,7 @@ pub fn build_split_rows(
                         if let Some(l) = line.new_line {
                             anchors.push((Side::New, l));
                         }
-                        for cl in comment_rows_for(
+                        for (side, cl) in comment_rows_for(
                             comments,
                             expanded,
                             &mut emitted,
@@ -401,7 +406,7 @@ pub fn build_split_rows(
                         ) {
                             rows.push(SplitRow {
                                 file_idx: fi,
-                                kind: SplitRowKind::Comment(cl),
+                                kind: SplitRowKind::Comment { side, line: cl },
                                 text: String::new(),
                             });
                         }
@@ -455,10 +460,10 @@ fn flush_pairs(
             kind: SplitRowKind::Pair { left, right },
             text: String::new(),
         });
-        for cl in comment_rows_for(comments, expanded, emitted, path, &anchors, width) {
+        for (side, cl) in comment_rows_for(comments, expanded, emitted, path, &anchors, width) {
             rows.push(SplitRow {
                 file_idx,
-                kind: SplitRowKind::Comment(cl),
+                kind: SplitRowKind::Comment { side, line: cl },
                 text: String::new(),
             });
         }
@@ -515,7 +520,7 @@ pub fn build_rows(
                     _ => (Side::New, line.new_line),
                 };
                 if let Some(ln) = ln {
-                    for cl in comment_rows_for(
+                    for (_, cl) in comment_rows_for(
                         comments,
                         expanded,
                         &mut emitted,
@@ -539,9 +544,81 @@ pub fn build_rows(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::comments::model::{CommentStore, LineRange};
+    use crate::diff::parse::parse_unified;
     use crate::loader::{load_comments, load_patch};
     use std::collections::HashSet;
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
+
+    // A two-line change: old line 2 (`b`) deleted, new line 2 (`B`) added.
+    const SIMPLE_DIFF: &str = "\
+--- a/foo.txt
++++ b/foo.txt
+@@ -1,3 +1,3 @@ fn main
+ a
+-b
++B
+ c
+";
+
+    fn store_with(side: Side, line: u32) -> CommentStore {
+        let mut store = CommentStore::default();
+        store.add_thread(
+            PathBuf::from("foo.txt"),
+            side,
+            LineRange {
+                start: line,
+                end: line,
+            },
+            Some("me".into()),
+            "a comment".into(),
+        );
+        store
+    }
+
+    #[test]
+    fn split_comment_renders_under_anchored_side() {
+        let cs = parse_unified(SIMPLE_DIFF);
+        let all: HashSet<usize> = [0].into_iter().collect();
+
+        // Old-side thread (anchored to the deleted line 2) is tagged Old.
+        let old = store_with(Side::Old, 2);
+        let rows = build_split_rows(&cs, &old, &all, 80);
+        assert!(
+            rows.iter().any(|r| matches!(
+                r.kind,
+                SplitRowKind::Comment {
+                    side: Side::Old,
+                    ..
+                }
+            )),
+            "old-side comment should be tagged Side::Old"
+        );
+        assert!(
+            !rows.iter().any(|r| matches!(
+                r.kind,
+                SplitRowKind::Comment {
+                    side: Side::New,
+                    ..
+                }
+            )),
+            "old-side comment must not be tagged Side::New"
+        );
+
+        // New-side thread (anchored to the added line 2) is tagged New.
+        let new = store_with(Side::New, 2);
+        let rows = build_split_rows(&cs, &new, &all, 80);
+        assert!(
+            rows.iter().any(|r| matches!(
+                r.kind,
+                SplitRowKind::Comment {
+                    side: Side::New,
+                    ..
+                }
+            )),
+            "new-side comment should be tagged Side::New"
+        );
+    }
 
     #[test]
     fn expands_tabs_and_strips_controls() {
