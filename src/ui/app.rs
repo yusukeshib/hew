@@ -294,6 +294,13 @@ pub struct App {
 }
 
 impl App {
+    /// Consume the app and return the final in-memory review store, so the
+    /// caller can flush it on exit (the save half of the `--comments`
+    /// round-trip).
+    pub fn into_comments(self) -> CommentStore {
+        self.comments
+    }
+
     /// Construct with a pre-loaded comment store (e.g. from a sidecar JSON).
     pub fn with_comments(changeset: Changeset, comments: CommentStore) -> Self {
         // Show every comment thread inline by default; `o`/Enter collapse them.

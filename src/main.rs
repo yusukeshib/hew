@@ -18,8 +18,10 @@ fn main() -> Result<()> {
         return Ok(());
     }
 
+    // `--comments <file>` names the review document hew opens *and* saves to;
+    // a missing file just starts a fresh review there.
     let comments = match &args.comments {
-        Some(path) => loader::load_comments(path)?,
+        Some(path) => loader::load_comments_or_default(path)?,
         None => comments::CommentStore::default(),
     };
 
@@ -40,5 +42,18 @@ fn main() -> Result<()> {
         None
     };
 
-    ui::run(changeset, comments, watch)
+    let final_comments = ui::run(changeset, comments, watch)?;
+
+    // Flush the review on exit. With `--comments` it round-trips to that file;
+    // without it, the review goes to stdout, but only when non-empty so a plain
+    // `git diff | hew` view doesn't print an empty `{ "threads": [] }`.
+    match &args.comments {
+        Some(path) => loader::save_comments(path, &final_comments)?,
+        None => {
+            if !final_comments.threads.is_empty() {
+                println!("{}", serde_json::to_string_pretty(&final_comments)?);
+            }
+        }
+    }
+    Ok(())
 }

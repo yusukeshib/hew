@@ -61,19 +61,21 @@ Frees stdout so the review JSON can be the program's result, fzf-style.
 - [ ] Manual check: `git diff | hew > out.json` renders to the terminal (not the
       file) and leaves the terminal clean on exit.
 
-## Phase 2 — Persistence round-trip (`--comments` as a document)
+## Phase 2 — Persistence round-trip (`--comments` as a document) ✅
 
 Output is dead unless it can be re-loaded; this closes the loop. (Authoring lands
 in Phase 3; this phase just wires load+flush so authored comments survive.)
 
-- [ ] On exit, flush the in-memory `CommentStore` as JSON:
-      - [ ] to `--comments <file>` when given (same file it loaded from)
-      - [ ] to **stdout** when `--comments` is omitted
-- [ ] `--comments <file>` loads existing state when the file exists, starts empty
-      when it doesn't.
-- [ ] Decide omitted-`--comments` exit behaviour beyond stdout (e.g. nothing else;
-      no auto-`.hew/` file — keep it explicit).
-- [ ] Round-trip test: open → add a comment → quit → reopen → comment is still there.
+- [x] On exit, flush the in-memory `CommentStore` as JSON:
+      - [x] to `--comments <file>` when given (same file it loaded from)
+      - [x] to **stdout** when `--comments` is omitted
+- [x] `--comments <file>` loads existing state when the file exists, starts empty
+      when it doesn't (`load_comments_or_default`).
+- [x] Omitted-`--comments` exit: stdout **only when the store is non-empty**, so a
+      plain `git diff | hew` view never prints an empty `{ "threads": [] }`. No
+      auto-`.hew/` file — kept explicit.
+- [x] Round-trip test (`save_then_load_roundtrips`) + missing-file test. (The
+      full open→author→quit→reopen loop completes once Phase 3 adds authoring.)
 
 ## Phase 3 — In-app comment authoring (TUI becomes writable)
 
