@@ -69,6 +69,9 @@ refreshes. Watching only applies to file inputs — a stdin patch can't be re-re
 | `g` / `G` (or `Home`/`End`) | Jump to top / bottom |
 | `[` / `]` | Jump to previous / next file |
 | `n` / `N` | Jump to next / previous comment |
+| `Enter` / `o` | Toggle the comment thread on the current line |
+| `R` | Resolve / unresolve the thread on the current line |
+| `D` | Delete the thread on the current line |
 | `←` / `→` | Focus the file list / the diff pane |
 | `Ctrl-B` | Toggle the file list sidebar |
 | `Tab` / `s` | Toggle unified ↔ split (side-by-side) layout |

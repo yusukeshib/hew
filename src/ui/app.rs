@@ -20,6 +20,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, SystemTime};
+use uuid::Uuid;
 
 /// Highlighted runs for one line: `(fg color, text)`.
 type LineRuns = Rc<Vec<(Color, String)>>;
@@ -319,8 +320,7 @@ impl App {
             selected: 0,
             scroll: 0,
             height: 1,
-            status: "q/^C/^D quit  j/k move  enter focus →  esc focus ←  ←/→ fold  tab split"
-                .into(),
+            status: "q quit  j/k move  enter fold  R resolve  D delete  tab split".into(),
             watch: None,
             needs_clear: false,
             show_sidebar: true,
@@ -874,6 +874,47 @@ impl App {
         self.rebuild_rows();
     }
 
+    /// The id of the first comment thread anchored to the selected line, if any.
+    fn current_thread_id(&self) -> Option<Uuid> {
+        let (fi, side, line) = self.anchor_at(self.selected)?;
+        let file = self.changeset.files.get(fi)?;
+        let path = Path::new(file.display_path());
+        self.comments
+            .threads
+            .iter()
+            .find(|t| t.file.as_path() == path && t.side == side && t.range.contains(line))
+            .map(|t| t.id)
+    }
+
+    /// Toggle the resolved state of the thread on the selected line.
+    fn resolve_current_thread(&mut self) {
+        let Some(id) = self.current_thread_id() else {
+            self.status = "no comment thread on this line".into();
+            return;
+        };
+        match self.comments.toggle_resolved(id) {
+            Some(true) => self.status = "resolved thread".into(),
+            Some(false) => self.status = "unresolved thread".into(),
+            None => return,
+        }
+        self.rebuild_rows();
+    }
+
+    /// Delete the thread on the selected line.
+    fn delete_current_thread(&mut self) {
+        let Some(id) = self.current_thread_id() else {
+            self.status = "no comment thread on this line".into();
+            return;
+        };
+        if self.comments.remove_thread(id) {
+            // `expanded` holds positional thread indices; removing a thread
+            // shifts them, so reset to "all expanded" before rebuilding.
+            self.expanded = (0..self.comments.threads.len()).collect();
+            self.status = "deleted thread".into();
+            self.rebuild_rows();
+        }
+    }
+
     /// Place the cursor at the clicked diff row. `anchor` starts a new
     /// selection there; otherwise the existing anchor is kept (drag extend).
     fn click_diff(&mut self, row: u16, anchor: bool) {
@@ -1180,6 +1221,10 @@ impl App {
 
             // Toggle the inline comment thread on the current line.
             KeyCode::Enter | KeyCode::Char('o') => self.toggle_comment(),
+
+            // Resolve/unresolve (R) or delete (D) the thread on this line.
+            KeyCode::Char('R') => self.resolve_current_thread(),
+            KeyCode::Char('D') => self.delete_current_thread(),
 
             // Jump between files.
             KeyCode::Char(']') => self.jump_file(1),
