@@ -10,7 +10,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::prelude::*;
-use std::io::stdout;
+use std::io::stderr;
 
 pub use app::WatchPaths;
 
@@ -74,7 +74,8 @@ fn reattach_stdin_to_tty() -> Result<()> {
 pub fn run(changeset: Changeset, comments: CommentStore, watch: Option<WatchPaths>) -> Result<()> {
     // With nothing to watch, an empty changeset has nothing to show.
     if changeset.is_empty() && watch.is_none() {
-        println!("hew: no changes to review");
+        // Diagnostic goes to stderr; stdout stays clean for the review JSON.
+        eprintln!("hew: no changes to review");
         return Ok(());
     }
 
@@ -85,8 +86,11 @@ pub fn run(changeset: Changeset, comments: CommentStore, watch: Option<WatchPath
     // initialize input reader".
     reattach_stdin_to_tty()?;
 
+    // Render to stderr, not stdout: stdout is reserved for the review JSON we
+    // flush on exit, so `git diff | hew > review.json` writes the result to the
+    // file while the TUI still draws on the inherited terminal (fzf-style).
     enable_raw_mode()?;
-    let mut out = stdout();
+    let mut out = stderr();
     execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;

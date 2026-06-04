@@ -27,6 +27,21 @@ pub fn load_comments(path: &Path) -> Result<CommentStore> {
     Ok(CommentStore { threads })
 }
 
+fn read_patch(path: Option<&Path>) -> Result<String> {
+    match path {
+        Some(p) if p.as_os_str() != "-" => {
+            std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))
+        }
+        _ => {
+            let mut buf = String::new();
+            std::io::stdin()
+                .read_to_string(&mut buf)
+                .context("reading patch from stdin")?;
+            Ok(buf)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -56,20 +71,5 @@ mod tests {
         assert_eq!(t.comments.len(), 2);
         assert!(!t.resolved); // default
         let _ = std::fs::remove_file(&path);
-    }
-}
-
-fn read_patch(path: Option<&Path>) -> Result<String> {
-    match path {
-        Some(p) if p.as_os_str() != "-" => {
-            std::fs::read_to_string(p).with_context(|| format!("reading {}", p.display()))
-        }
-        _ => {
-            let mut buf = String::new();
-            std::io::stdin()
-                .read_to_string(&mut buf)
-                .context("reading patch from stdin")?;
-            Ok(buf)
-        }
     }
 }

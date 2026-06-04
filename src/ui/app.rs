@@ -451,9 +451,11 @@ impl App {
             }
             if let Some(text) = self.pending_copy.take() {
                 // OSC 52: write the selection to the terminal clipboard.
+                // Target stderr, where the TUI renders; stdout is the JSON
+                // result channel and may be redirected to a file.
                 use std::io::Write;
                 let seq = format!("\x1b]52;c;{}\x07", base64(text.as_bytes()));
-                let mut out = std::io::stdout();
+                let mut out = std::io::stderr();
                 let _ = out.write_all(seq.as_bytes());
                 let _ = out.flush();
             }
