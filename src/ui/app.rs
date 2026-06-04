@@ -4,7 +4,8 @@ use crate::comments::model::{CommentStore, LineRange};
 use crate::diff::model::{Changeset, DiffFile, LineKind, Side};
 use crate::ui::highlight::Highlighter;
 use crate::ui::render_rows::{
-    build_rows, build_split_rows, CommentLine, Row, RowKind, SideCell, SplitRow, SplitRowKind,
+    build_rows, build_split_rows, sanitize_line, CommentLine, Row, RowKind, SideCell, SplitRow,
+    SplitRowKind,
 };
 use crate::ui::theme::THEME;
 use anyhow::Result;
@@ -16,17 +17,76 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
     Wrap,
 };
-use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::rc::Rc;
+use std::sync::mpsc::{self, Sender};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use uuid::Uuid;
 
-/// Highlighted runs for one line: `(fg color, text)`.
-type LineRuns = Rc<Vec<(Color, String)>>;
+/// Highlighted runs for one line: `(fg color, text)`. `Arc` (not `Rc`) so the
+/// background pre-warm worker can share entries with the render thread.
+type LineRuns = Arc<Vec<(Color, String)>>;
 /// Cache key: which file + the exact line text.
 type HlKey = (usize, String);
+/// Highlight cache shared between the render thread and the warm worker.
+type SharedCache = Arc<Mutex<HashMap<HlKey, LineRuns>>>;
+
+/// A request to pre-highlight every line of one file off the render path.
+struct WarmJob {
+    file_idx: usize,
+    /// Display path, used to resolve the syntax in the worker.
+    path: String,
+    /// The exact `sanitize_line` texts the renderer will look up.
+    lines: Vec<String>,
+}
+
+/// Spawn the background highlighter. It owns its own `Highlighter` and fills
+/// `cache` ahead of the viewport so scrolling hits warm entries instead of
+/// paying syntect's per-line parse cost (hundreds of µs/line) mid-scroll.
+///
+/// The worker always tracks the freshest job: if the user switches files while
+/// a file is still warming, the newer request preempts the current one so we
+/// never burn cycles highlighting a file nobody is looking at.
+fn spawn_warm_worker(cache: SharedCache) -> Sender<WarmJob> {
+    let (tx, rx) = mpsc::channel::<WarmJob>();
+    std::thread::spawn(move || {
+        let hl = Highlighter::new();
+        let mut pending: Option<WarmJob> = None;
+        loop {
+            // Take the freshest queued job (collapsing any backlog).
+            let mut job = match pending.take() {
+                Some(j) => j,
+                None => match rx.recv() {
+                    Ok(j) => j,
+                    Err(_) => return, // app dropped the sender; exit.
+                },
+            };
+            while let Ok(newer) = rx.try_recv() {
+                job = newer;
+            }
+            let syntax = hl.syntax_for(&job.path);
+            for text in &job.lines {
+                // A newer job means this file is stale: stash and restart.
+                match rx.try_recv() {
+                    Ok(newer) => {
+                        pending = Some(newer);
+                        break;
+                    }
+                    Err(mpsc::TryRecvError::Disconnected) => return,
+                    Err(mpsc::TryRecvError::Empty) => {}
+                }
+                let key = (job.file_idx, text.clone());
+                if cache.lock().unwrap().contains_key(&key) {
+                    continue;
+                }
+                let runs = Arc::new(hl.line(syntax, text));
+                cache.lock().unwrap().insert(key, runs);
+            }
+        }
+    });
+    tx
+}
 
 /// Diff layout: unified (stacked) or split (old | new, like `git delta`).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -300,8 +360,14 @@ pub struct App {
     sidebar_sb: Rect,       // sidebar scrollbar track (zero-sized when none)
     sb_drag: Option<Focus>, // which scrollbar is being dragged
     highlighter: Highlighter,
-    /// (file_idx, line text) -> highlighted runs. Viewport-only, grows lazily.
-    hl_cache: RefCell<HashMap<HlKey, LineRuns>>,
+    /// (file_idx, line text) -> highlighted runs. Grows lazily on the render
+    /// path and is also filled ahead of time by the warm worker.
+    hl_cache: SharedCache,
+    /// Sends per-file warm requests to the background highlighter.
+    hl_tx: Sender<WarmJob>,
+    /// Last file we asked the worker to pre-highlight (so we only enqueue on
+    /// change, not every frame).
+    warmed_file: Option<usize>,
     composer: Option<Composer>,
     quit: bool,
 }
@@ -322,6 +388,8 @@ impl App {
         let stats = file_stats(&changeset);
         let collapsed = HashSet::new();
         let (sidebar_rows, file_to_sbrow) = build_sidebar_rows(&changeset, &collapsed);
+        let hl_cache: SharedCache = Arc::new(Mutex::new(HashMap::new()));
+        let hl_tx = spawn_warm_worker(hl_cache.clone());
         let mut app = App {
             changeset,
             rows,
@@ -358,7 +426,9 @@ impl App {
             sidebar_sb: Rect::default(),
             sb_drag: None,
             highlighter: Highlighter::new(),
-            hl_cache: RefCell::new(HashMap::new()),
+            hl_cache,
+            hl_tx,
+            warmed_file: None,
             composer: None,
             quit: false,
         };
@@ -367,9 +437,13 @@ impl App {
     }
 
     /// Highlighted `(color, text)` runs for a line, cached per (file, text).
+    ///
+    /// On a miss we still highlight synchronously so the current frame is
+    /// correct; the background worker just front-runs us so misses are rare
+    /// during scroll.
     fn highlight(&self, file_idx: usize, text: &str) -> LineRuns {
         let key = (file_idx, text.to_string());
-        if let Some(v) = self.hl_cache.borrow().get(&key) {
+        if let Some(v) = self.hl_cache.lock().unwrap().get(&key) {
             return v.clone();
         }
         let spans = match self.changeset.files.get(file_idx) {
@@ -379,9 +453,36 @@ impl App {
             }
             None => vec![(THEME.text, text.to_string())],
         };
-        let rc = Rc::new(spans);
-        self.hl_cache.borrow_mut().insert(key, rc.clone());
+        let rc = Arc::new(spans);
+        self.hl_cache.lock().unwrap().insert(key, rc.clone());
         rc
+    }
+
+    /// Ask the background worker to pre-highlight every line of `file_idx`,
+    /// unless we already requested it. Cheap no-op when the file is unchanged.
+    fn warm_file(&mut self, file_idx: usize) {
+        if self.warmed_file == Some(file_idx) {
+            return;
+        }
+        let Some(f) = self.changeset.files.get(file_idx) else {
+            return;
+        };
+        self.warmed_file = Some(file_idx);
+        let lines: Vec<String> = f
+            .hunks
+            .iter()
+            .flat_map(|h| h.lines.iter())
+            .map(|l| sanitize_line(&l.text))
+            .collect();
+        if lines.is_empty() {
+            return;
+        }
+        // If the worker has gone away the render path still highlights lazily.
+        let _ = self.hl_tx.send(WarmJob {
+            file_idx,
+            path: f.display_path().to_string(),
+            lines,
+        });
     }
 
     /// Highlighted spans for `text`, truncated/padded to exactly `width` chars,
@@ -1431,6 +1532,10 @@ impl App {
     }
 
     fn draw(&mut self, f: &mut Frame) {
+        // Pre-highlight the file in view off the render path so scrolling stays
+        // smooth. Catches every path that changes the visible file (nav, jumps,
+        // scroll across file boundaries).
+        self.warm_file(self.current_file);
         let area = f.area();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
