@@ -282,9 +282,10 @@ struct Composer {
     buf: String,
 }
 
-/// Diff/review TUI state. Comments are loaded from a sidecar, displayed and
-/// navigated inline, and mutated in place (compose/reply/resolve/delete); the
-/// store is flushed back on exit.
+/// Diff/review TUI state. Comments are loaded from a sidecar (immutable),
+/// displayed and navigated inline, and mutated in place
+/// (compose/reply/resolve/delete); on exit the final store is diffed against
+/// the base into an action log.
 pub struct App {
     changeset: Changeset,
     rows: Vec<Row>,

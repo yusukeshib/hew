@@ -1,34 +1,36 @@
 # hew roadmap
 
-From **read-only patch viewer** → **two-way review buffer** where humans (TUI)
-and AI agents (`hew comment …` over a socket) discuss inline, and the structured
-result is flushed to JSON on exit — usable as a GitHub PR thread draft *and* as
-input for the next AI session.
+From **read-only patch viewer** → **review buffer / pure filter**: a human reviews
+a diff in the TUI (composing, replying, resolving), and on exit hew emits the
+session's changes as a compacted **action log** to stdout — which an agent turns
+into GitHub review actions, or feeds into the next step.
 
-## North star
+## North star (v1, turn-based — no socket)
 
 ```
-git diff | hew --comments review.json
-  ├─ human types in the TUI         (v → select, i → comment)
-  ├─ AI talks to the live process   (hew comment add --reply-to …)
-  └─ q → flush review.json          (GitHub draft / next AI session input)
+# agent prepares a base review (its own comments, or fetched PR threads),
+# opens hew for the human, then drives gh from the action log:
+agent-review > base.json
+git diff | hew --comments base.json > actions.json
+  ├─ human reads the agent's comments, replies (r), resolves (R), adds (i)
+  └─ q → actions.json = compacted action log (delta vs the immutable base)
+agent applies actions.json  (post to GitHub / fix code / …)
 ```
+
+Live in-session AI co-review over a socket is **deferred** (see the Deferred
+section); the turn-based flow above covers the v1 workflows without it.
 
 ## Design invariants (do not break — these are what keep hew *not* fat)
 
 - [ ] **hew never talks to GitHub.** It eats a patch + a comment JSON, nothing
       else. GitHub round-trip is external `gh` wrappers (shipped only as
       `examples/`, never a dependency).
-- [ ] **The running TUI process is the sole writer of the comment store.** Human
-      input *and* AI `comment add` both mutate one in-memory `CommentStore`.
-      No two writers, no file-edit races.
-- [ ] **No daemon, no DB.** Multi-process coordination is a registry directory of
-      sockets + tiny JSON metadata. Each process registers itself and cleans up.
-- [ ] **Sessions never talk to each other.** Cross-session is the *client's* job
-      (read the registry). Each hew is autonomous.
 - [ ] **hew is a pure filter — no "save".** All inputs are immutable: the patch
       (stdin) and the `--comments` base JSON are read, never written. There is
       no save/flush/autosave/document concept.
+- [ ] **The TUI is the sole writer of its in-memory store.** All edits
+      (compose/reply/resolve/delete) mutate one `CommentStore`; nothing else
+      writes it during a session.
 - [ ] **Output is a compacted action log**, not the comment store. On exit hew
       emits `diff(base, final)` as a minimal action array to **stdout** (a
       thread created then deleted, or a resolve toggled back, cancels out).
@@ -37,19 +39,17 @@ git diff | hew --comments review.json
       replayable (fine for ad-hoc viewing).
 - [ ] **Channels stay separated:** stdin = patch, stderr/tty = render,
       stdout = action-log result.
-- [ ] Resist new flags. Behaviour should be implicit (always listen, auto-watch),
-      not opt-in. `--name` is the only genuinely new flag.
+- [ ] **No daemon, no DB, no background services** in v1.
+- [ ] Resist new flags. The CLI stays small (`FILE`, `--comments`, `--json`,
+      `--watch`).
 
 ## Flag changes
 
-- [ ] Remove `--watch` for comments (replaced by socket IPC; keeping it would
-      clobber the in-memory store on reload).
-- [ ] Decide patch reload: make patch auto-reload default-on for file inputs
-      (mirror of "always listen"), dropping the `--watch` flag entirely.
-- [ ] Drop `--listen` idea — listening is always-on for any TUI session.
 - [x] `--comments` is an **immutable input** (load-only, the review's starting
       base). hew never writes back to it; output is the action log on stdout.
-- [ ] Add `--name <id>` (optional) to label a session in the registry.
+- [ ] `--watch` still reloads the patch/comments files on disk change. Open
+      question: whether comment-anchor drift on patch reload needs solving (see
+      Open questions); no behaviour change planned for v1.
 
 ---
 
@@ -85,14 +85,12 @@ output is a delta, never a write-back.)
 
 ## Phase 3 — In-app comment authoring (TUI becomes writable)
 
-hew started life read-only. This phase makes the store writable: the TUI and
-(later) the socket mutate **one** in-memory `CommentStore`, so the mutation API
-lands here first and Phase 4's socket rides on it.
+hew started life read-only. This phase makes the store writable: TUI edits
+mutate **one** in-memory `CommentStore` through a single shared write path.
 
 - [x] Add mutation methods to `CommentStore` (`add_thread`, `reply`,
-      `remove_thread`, `set_resolved`/`toggle_resolved`) — the single shared
-      write path, unit-tested. (`add_thread`/`reply`/`set_resolved` wired up by
-      the composer + Phase 4 socket; `#[allow(dead_code)]` until then.)
+      `remove_thread`, `toggle_resolved`) — the single shared write path,
+      unit-tested, all driven by the TUI.
 - [x] Make the loaded `CommentStore` owned mutably by the running app/TUI.
 - [x] Remove a thread from the TUI (`D`).
 - [x] **Resolve / unresolve** a thread from the TUI (`R`, toggles

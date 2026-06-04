@@ -91,8 +91,8 @@ pub fn run(
     reattach_stdin_to_tty()?;
 
     // Render to stderr, not stdout: stdout is reserved for the review JSON we
-    // flush on exit, so `git diff | hew > review.json` writes the result to the
-    // file while the TUI still draws on the inherited terminal (fzf-style).
+    // action log on exit, so `git diff | hew > actions.json` writes the result
+    // to the file while the TUI still draws on the inherited terminal (fzf-style).
     enable_raw_mode()?;
     let mut out = stderr();
     execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
@@ -112,6 +112,6 @@ pub fn run(
         DisableMouseCapture
     )?;
     terminal.show_cursor()?;
-    // Hand the final in-memory store back so the caller can flush it.
+    // Hand the final store back so the caller can diff it against the base.
     result.map(|()| app.into_comments())
 }
