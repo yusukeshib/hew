@@ -1,6 +1,7 @@
 {
   "threads": [
     {
+      "id": "e88467d3-2733-4fe3-87c7-d6c7c636f87b",
       "file": "tests/ui/target-feature/tied-features-no-implication-1.rs",
       "side": "new",
       "range": {
@@ -10,11 +11,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "6d62d0a5-7f68-48fe-a2f1-a8526c7de546",
           "author": "workingjubilee",
           "body": "maybe these tests should be using minicore... well, whatever for now.",
           "created_at": 1741044531000
         },
         {
+          "id": "f85c6c74-ad5c-4394-9c54-7eec6803abb9",
           "author": "davidtwco",
           "body": "I ported as many tests as I could to using minicore in rust-lang/rust#137599, if this one wasn't ported it was either because adding minicore made it fail or because adding minicore made it harder to debug/reason about/some-other-test-specific-reason.",
           "created_at": 1741167213000
@@ -22,6 +25,7 @@
       ]
     },
     {
+      "id": "b6278475-321f-4df1-b27c-8a5dbaaaf0ee",
       "file": "compiler/rustc_middle/src/ty/adt.rs",
       "side": "new",
       "range": {
@@ -31,11 +35,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "cd38e307-9f42-4539-8971-064f957eece6",
           "author": "fee1-dead",
           "body": "Should capitalize `MetaSized` here",
           "created_at": 1741423382000
         },
         {
+          "id": "ef9bdd04-51a6-468d-a570-070a44f4ca1f",
           "author": "davidtwco",
           "body": "Fixed",
           "created_at": 1741602607000
@@ -43,6 +49,7 @@
       ]
     },
     {
+      "id": "83a6a818-368c-4ef7-9915-01618c92ca92",
       "file": "compiler/rustc_middle/src/ty/adt.rs",
       "side": "new",
       "range": {
@@ -52,11 +59,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "a8a82dff-7b9b-40c1-ac22-37507ef39694",
           "author": "fee1-dead",
           "body": "same as above",
           "created_at": 1741423389000
         },
         {
+          "id": "90cf76b6-68af-49a9-ba8f-14a014308b94",
           "author": "davidtwco",
           "body": "Fixed",
           "created_at": 1741602611000
@@ -64,6 +73,7 @@
       ]
     },
     {
+      "id": "1ca9dd86-172c-4a5c-ad03-78528639957b",
       "file": "compiler/rustc_next_trait_solver/src/solve/assembly/structural_traits.rs",
       "side": "new",
       "range": {
@@ -73,11 +83,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "7e679e82-8adb-4569-81b5-71ff3722e9f1",
           "author": "fee1-dead",
           "body": "Is something like `[str]` `PointeeSized`? Might be a dumb question since that's probably not well-formed?",
           "created_at": 1741423578000
         },
         {
+          "id": "d2a98225-e823-4d1b-a407-0580472f4c38",
           "author": "davidtwco",
           "body": "It is, everything is `PointeeSized`.",
           "created_at": 1741599193000
@@ -85,6 +97,7 @@
       ]
     },
     {
+      "id": "fff47718-fe27-4b9d-b0a0-0c7acd0d5772",
       "file": "compiler/rustc_next_trait_solver/src/solve/assembly/structural_traits.rs",
       "side": "new",
       "range": {
@@ -94,11 +107,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "a366d3ae-7403-4f0e-afba-7131156e2a2d",
           "author": "fee1-dead",
           "body": "are these missing the `{Meta,Pointee,} or intentional? ",
           "created_at": 1741423646000
         },
         {
+          "id": "6cfa6569-6f4b-41f5-b83e-525a30f2d7d8",
           "author": "davidtwco",
           "body": "Unintentional, fixed",
           "created_at": 1741602620000
@@ -106,6 +121,7 @@
       ]
     },
     {
+      "id": "21558d06-30a7-4260-82e5-246b090b5a02",
       "file": "compiler/rustc_ty_utils/src/ty.rs",
       "side": "new",
       "range": {
@@ -115,11 +131,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "0cf0bf3f-3ec8-40e5-8178-b7f11bf409e1",
           "author": "fee1-dead",
           "body": "would probably be better to specify what they are (`str`, `[T]`, foreign types)",
           "created_at": 1741426176000
         },
         {
+          "id": "66127b23-8281-4526-be8f-503cd784841a",
           "author": "davidtwco",
           "body": "Fixed",
           "created_at": 1741602624000
@@ -127,6 +145,7 @@
       ]
     },
     {
+      "id": "30aa1a8c-1a20-4132-9f4a-fb5e751d27e9",
       "file": "compiler/rustc_ty_utils/src/ty.rs",
       "side": "new",
       "range": {
@@ -136,11 +155,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "bd570ccf-6d6e-42da-b13e-f36b99c62f5d",
           "author": "fee1-dead",
           "body": "as above",
           "created_at": 1741426187000
         },
         {
+          "id": "68d0aad3-1732-42d5-89e7-bd11b1024877",
           "author": "davidtwco",
           "body": "Fixed",
           "created_at": 1741602627000
@@ -148,6 +169,7 @@
       ]
     },
     {
+      "id": "28d1efd2-de37-4a47-b279-cde2bc074279",
       "file": "compiler/rustc_ty_utils/src/ty.rs",
       "side": "new",
       "range": {
@@ -157,11 +179,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "b34a8641-427a-487e-87b9-e3bf6a0a1b87",
           "author": "fee1-dead",
           "body": "extra line of empty docstring",
           "created_at": 1741426202000
         },
         {
+          "id": "a3013467-ebbc-4b69-a0b4-77f37308fc6c",
           "author": "davidtwco",
           "body": "Fixed",
           "created_at": 1741602631000
@@ -169,6 +193,7 @@
       ]
     },
     {
+      "id": "89233dcf-fac4-401c-966c-45b9088c4feb",
       "file": "compiler/rustc_ty_utils/src/ty.rs",
       "side": "new",
       "range": {
@@ -178,11 +203,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "12926317-c11c-478e-a1c2-b60e533fff2d",
           "author": "fee1-dead",
           "body": "this should be reworded now that there's only one case",
           "created_at": 1741426220000
         },
         {
+          "id": "f3d65794-f0b1-4ff7-a175-d117a24a5c72",
           "author": "davidtwco",
           "body": "Fixed",
           "created_at": 1741602636000
@@ -190,6 +217,7 @@
       ]
     },
     {
+      "id": "8502a667-a4e9-41a9-a3b5-1dc59f28b840",
       "file": "compiler/rustc_ty_utils/src/ty.rs",
       "side": "new",
       "range": {
@@ -199,11 +227,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "d3799dfb-3465-49eb-adf5-888a456a8fcc",
           "author": "fee1-dead",
           "body": "`{Meta,Pointee,}`",
           "created_at": 1741426248000
         },
         {
+          "id": "786d848f-2159-4beb-86f8-9d3c6bffe411",
           "author": "davidtwco",
           "body": "Fixed",
           "created_at": 1741602639000
@@ -211,6 +241,7 @@
       ]
     },
     {
+      "id": "a7aa4508-a4c1-4dad-9eaf-15f226278646",
       "file": "tests/ui/sized-hierarchy/impls.rs",
       "side": "new",
       "range": {
@@ -220,11 +251,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "41f4b6b9-343b-4805-8fdf-df5324cdaeb9",
           "author": "fee1-dead",
           "body": "should be PointeeSized",
           "created_at": 1741426412000
         },
         {
+          "id": "84d75aff-1969-4971-8ed9-0d542238231e",
           "author": "davidtwco",
           "body": "Fixed",
           "created_at": 1741602644000
@@ -232,6 +265,7 @@
       ]
     },
     {
+      "id": "4d15229f-6b8a-41dc-b751-a176aa69b7bd",
       "file": "tests/ui/sized-hierarchy/impls.rs",
       "side": "new",
       "range": {
@@ -241,11 +275,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "a4221ff7-9b4f-4a24-8fa2-c89f969f7e08",
           "author": "fee1-dead",
           "body": "PointeeSized",
           "created_at": 1741426420000
         },
         {
+          "id": "25bee474-6a72-4819-9d5b-68f1f7f33fa6",
           "author": "davidtwco",
           "body": "Fixed",
           "created_at": 1741602650000
@@ -253,6 +289,7 @@
       ]
     },
     {
+      "id": "092c2c53-3d67-4f49-beb0-86b32732cbdd",
       "file": "tests/ui/sized-hierarchy/impls.rs",
       "side": "new",
       "range": {
@@ -262,16 +299,19 @@
       "resolved": false,
       "comments": [
         {
+          "id": "1b5d0c73-27a2-4d4b-a907-16c725ce8943",
           "author": "fee1-dead",
           "body": "I'm a little confused as to what this achieves with this kind of type implementing `MetaSized`, although that is what is described in the RfC..",
           "created_at": 1741426640000
         },
         {
+          "id": "fe1984e5-bb6a-442f-9d2f-01913db04520",
           "author": "davidtwco",
           "body": "This type wouldn't be especially useful but I think it's better for the rule for what is `MetaSized` to be consistent.",
           "created_at": 1741602656000
         },
         {
+          "id": "e3991647-53af-4731-b361-5528dbc5f569",
           "author": "fee1-dead",
           "body": "I'd like to see a more thorough exploration of how allowing this would affect our semantic model. But that is not a blocker for this PR.\r\n\r\nI feel like if `T: MetaSized` then `&T` should be well-formed. But that's not what's shown here. But `StructAllFieldsMetaSized` already isn't wf since only the trailing field is allowed to be `!Sized` right now, but still I think this is a point worth thinking about.",
           "created_at": 1745297237000
@@ -279,6 +319,7 @@
       ]
     },
     {
+      "id": "2c332c84-9f31-4065-a5fd-7707320c4aed",
       "file": "library/core/src/marker.rs",
       "side": "new",
       "range": {
@@ -288,21 +329,25 @@
       "resolved": false,
       "comments": [
         {
+          "id": "9c864346-a786-4fba-9015-af2bc124f82f",
           "author": "fee1-dead",
           "body": "lang = \"pointee_sized\"",
           "created_at": 1741926355000
         },
         {
+          "id": "4f4f1eb6-2fe8-4cd4-b36d-31b802d6308b",
           "author": "davidtwco",
           "body": "I haven't changed this because I think it should match the trait.",
           "created_at": 1742224384000
         },
         {
+          "id": "25ada953-7151-4f01-8f06-7eabe738f2f2",
           "author": "davidtwco",
           "body": "Oh, I see your previous comment regarding this now, will change it.",
           "created_at": 1742226803000
         },
         {
+          "id": "b90acc79-e27c-4880-8f98-51162b3750a6",
           "author": "davidtwco",
           "body": "Fixed",
           "created_at": 1742234294000
@@ -310,6 +355,7 @@
       ]
     },
     {
+      "id": "f27664a7-c08e-4806-915e-cfa3c22c1cde",
       "file": "compiler/rustc_next_trait_solver/src/solve/trait_goals.rs",
       "side": "new",
       "range": {
@@ -319,11 +365,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "69a2fe09-6f2f-4dc1-a1b9-d1c3f1f2822d",
           "author": "fee1-dead",
           "body": "I don't think we this extra layer of indirection as there is already `instantiate_constituent_tys_for_sizedness_trait` which takes any `SizedTraitKind`",
           "created_at": 1741926511000
         },
         {
+          "id": "f89b4dc0-9acd-4f1d-98ee-36c0d8c7646b",
           "author": "davidtwco",
           "body": "Fixed",
           "created_at": 1742224233000
@@ -331,6 +379,7 @@
       ]
     },
     {
+      "id": "e18131f3-8d7f-4bfd-90aa-205cd0be759e",
       "file": "compiler/rustc_hir_analysis/src/hir_ty_lowering/bounds.rs",
       "side": "new",
       "range": {
@@ -340,11 +389,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "aaf9506a-b822-44a6-b337-4312f05a3db8",
           "author": "fee1-dead",
           "body": "This part can be deduplicated through doing something like\r\n\r\n```rust\r\nlet collected = if ... { &mut sized } else if ... { &mut meta_sized } else if { &mut pointee_sized } else { continue };  \r\n```",
           "created_at": 1741927384000
         },
         {
+          "id": "582e4134-5c32-411b-8960-75285e009d03",
           "author": "davidtwco",
           "body": "Fixed",
           "created_at": 1742224237000
@@ -352,6 +403,7 @@
       ]
     },
     {
+      "id": "f80d46f0-6cdc-4e8f-9a91-4173134e906c",
       "file": "compiler/rustc_hir_analysis/src/hir_ty_lowering/bounds.rs",
       "side": "new",
       "range": {
@@ -361,11 +413,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "d0877725-bed1-4a4f-81ac-6390aee151a7",
           "author": "fee1-dead",
           "body": "Any chance for duplication? In any case we should use\r\n\r\n```rust\r\nbounds.retain(|(clause, _)| clause.as_trait_clause().map_or(false, |clause| clause.skip_binder().def_id() != did))\r\n```\r\ninstead.",
           "created_at": 1741927541000
         },
         {
+          "id": "60d4159e-71b5-410d-9fc3-5f26ba7514b6",
           "author": "davidtwco",
           "body": "Fixed",
           "created_at": 1742224256000
@@ -373,6 +427,7 @@
       ]
     },
     {
+      "id": "fc35d311-2ae0-4df3-8709-4b1086b6aa5c",
       "file": "tests/ui/sized-hierarchy/default-supertrait.rs",
       "side": "new",
       "range": {
@@ -382,11 +437,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "09b8801d-8af5-4ea6-baef-9d72ebccd36a",
           "author": "fee1-dead",
           "body": "Should add a `trait Bare {}` here and test",
           "created_at": 1741927924000
         },
         {
+          "id": "cb3c097e-5b3f-4d4c-9f24-166316af85c0",
           "author": "davidtwco",
           "body": "Added",
           "created_at": 1742224263000
@@ -394,6 +451,7 @@
       ]
     },
     {
+      "id": "4b386306-8bef-49b6-8310-e165c58cf7a3",
       "file": "tests/ui/sized-hierarchy/pointee-supertrait.rs",
       "side": "new",
       "range": {
@@ -403,11 +461,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "e7627500-1a5b-4c6d-ade4-6111ebc16052",
           "author": "fee1-dead",
           "body": "Hmmm. Where does this test come from?",
           "created_at": 1741927994000
         },
         {
+          "id": "5aae2d3a-19e3-409b-9588-a51228722fa8",
           "author": "davidtwco",
           "body": "This is reduction of the error that requires the `cfg(bootstrap)` on `PartialEq` - I forget what the exact error I was getting was, but it happened w/ my changes and w/out my changes when adding a blanket `PointeeSized` bound. This motivated the change making `PointeeSized` effectively syntactic sugar for an absence of any bounds whatsoever. I've added a comment describing this.",
           "created_at": 1742224285000
@@ -415,6 +475,7 @@
       ]
     },
     {
+      "id": "263eebd2-00f0-4d0d-b39d-dc9496a6d8fe",
       "file": "compiler/rustc_trait_selection/src/traits/dyn_compatibility.rs",
       "side": "new",
       "range": {
@@ -424,11 +485,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "1697e2ac-61e3-4187-8822-568e6dcf783c",
           "author": "fee1-dead",
           "body": "Does this need to be proven? It's not referenced in the commit message, and also `U: MetaSized` already implies it.",
           "created_at": 1741937692000
         },
         {
+          "id": "1b0e1f15-ad04-49c0-bc0b-67720aa35d8c",
           "author": "davidtwco",
           "body": "It doesn't, fixed",
           "created_at": 1742224298000
@@ -436,6 +499,7 @@
       ]
     },
     {
+      "id": "d6e9c989-d581-4b62-bced-b1192cb23d48",
       "file": "tests/ui/sized-hierarchy/pretty-print-no-feat.stderr",
       "side": "new",
       "range": {
@@ -445,11 +509,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "cf9d7bbc-3359-4c49-9511-90e40d320ea9",
           "author": "fee1-dead",
           "body": "How would the pretty printer work if we're working with a dependency crate that uses the `sized_hierarchy` feature but the caller does not enable it? Add a test please",
           "created_at": 1741938290000
         },
         {
+          "id": "05edda2c-4a47-4779-8255-a21a9d864161",
           "author": "davidtwco",
           "body": "Added a test, works as expected, crate w/out feature sees `?Sized` written rather than the new traits",
           "created_at": 1742224306000
@@ -457,6 +523,7 @@
       ]
     },
     {
+      "id": "0de5ea64-7949-4e38-80fb-fc2dfd5cb8fa",
       "file": "tests/ui/traits/non_lifetime_binders/on-rpit.rs",
       "side": "new",
       "range": {
@@ -466,16 +533,19 @@
       "resolved": false,
       "comments": [
         {
+          "id": "b12ecca8-cf49-49f7-9048-4eefd33cdca1",
           "author": "fee1-dead",
           "body": "After the sized hierarchy is introduced, does this _need_ `sized_hierarchy` enabled to work? If yes, that is a potential concern. If not, these tests should remain without using the feature, while you can add the tests to under the experimental feature.",
           "created_at": 1742020922000
         },
         {
+          "id": "bd000899-9359-49f4-be99-42dab8dc379a",
           "author": "davidtwco",
           "body": "It is necessary for the `non_lifetime_binders` tests - these tests only work when `for<T>` is unconstrained and with that feature being incomplete, it isn't possible to  add the bounds necessary to keep this test passing w/out the parameters being unconstrained. The only way to make a parameter unconstrained now is with `PointeeSized`, so the feature needs to be enabled.",
           "created_at": 1742224326000
         },
         {
+          "id": "149ba45d-1fc6-402f-b77e-0c9e4072b531",
           "author": "fee1-dead",
           "body": "Understood, thanks.",
           "created_at": 1742465845000
@@ -483,6 +553,7 @@
       ]
     },
     {
+      "id": "edf13621-a29e-4343-9bf0-3e2bdbb08bc3",
       "file": "compiler/rustc_middle/src/ty/adt.rs",
       "side": "new",
       "range": {
@@ -492,11 +563,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "a01f39aa-39ac-473e-956d-8c9b2a6eff5b",
           "author": "fee1-dead",
           "body": "This comment is actually slightly misleading. The function only checks whether the type is a struct. If it returns `None` it could still be a `str` that is not `Sized`. This should really be renamed alongside `adt_sizedness_constraint` to something that better matches what they actually do, something like `opt_trailing_field_ty` or a name to that effect",
           "created_at": 1745075400000
         },
         {
+          "id": "ac60c1d0-ba52-4272-9081-12cbba7a3dc3",
           "author": "davidtwco",
           "body": "I've rewritten the comments on `sizedness_constraint`, `adt_sizedness_constraint` and `sizedness_constraint_for_ty` but I haven't renamed them. I don't think `opt_trailing_field_ty` is the correct name because the functions do sizedness-specific things.\r\n\r\nIn the case of this specific function, it wouldn't return `None` for a `str` because this is a function on `AdtDef` and could never be a `str`. This could apply to `adt_sizedness_constraint` or `sizedness_constraint_for_ty` and I've clarified what the result would be in the comments of those.",
           "created_at": 1745326841000
@@ -504,6 +577,7 @@
       ]
     },
     {
+      "id": "d0fce34b-e812-4e15-b24e-402511197262",
       "file": "compiler/rustc_ty_utils/src/ty.rs",
       "side": "new",
       "range": {
@@ -513,11 +587,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "cee3c20c-70d6-4530-b99b-49f51eb22cdb",
           "author": "fee1-dead",
           "body": "Yeah, as above, this needs some revamp with how it is presented and named.",
           "created_at": 1745296498000
         },
         {
+          "id": "6c405a46-d465-463c-b507-490502a245ee",
           "author": "davidtwco",
           "body": "See previous comment",
           "created_at": 1745326843000
@@ -525,6 +601,7 @@
       ]
     },
     {
+      "id": "db94ecc7-7eb0-4a72-8487-a0085685a2b5",
       "file": "library/core/src/ops/deref.rs",
       "side": "new",
       "range": {
@@ -534,11 +611,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "7024ecd0-1ddf-4a7a-b8d0-ca7c6e760a45",
           "author": "fee1-dead",
           "body": "These now needs to be removed in the \"lint: don't consider sizedness in upcastable lint\" commit.",
           "created_at": 1745298455000
         },
         {
+          "id": "d7062269-9882-4093-8f31-abbba4ad2885",
           "author": "davidtwco",
           "body": "It's still necessary for bootstrap, but I'll add a `cfg_attr(bootstrap, ..)` in that commit",
           "created_at": 1745326846000
@@ -546,6 +625,7 @@
       ]
     },
     {
+      "id": "c8118783-ba6d-4902-9d31-3ceef1557929",
       "file": "compiler/rustc_hir_analysis/src/hir_ty_lowering/errors.rs",
       "side": "new",
       "range": {
@@ -555,21 +635,25 @@
       "resolved": false,
       "comments": [
         {
+          "id": "b328a44b-28d4-4d46-8ef3-c7ebb403e12b",
           "author": "fee1-dead",
           "body": "Are there any tests for this? Perhaps I missed something.",
           "created_at": 1745299742000
         },
         {
+          "id": "c6346eee-1976-4825-9c51-f0ea960c7be8",
           "author": "davidtwco",
           "body": "This function just extracts the error reporting logic that already existed for default bounds into its own function, so the tests are just what were already there.",
           "created_at": 1745321857000
         },
         {
+          "id": "c9d5e8e8-32e5-4ee6-8441-17d5460e1cb9",
           "author": "fee1-dead",
           "body": "> the error reporting logic that already existed for default bounds\r\n\r\nWould there not be additional error reporting for `MetaSized` and `PointeeSized`?",
           "created_at": 1745322453000
         },
         {
+          "id": "9c4fe0c8-7555-4bb5-9a8d-864fbea72465",
           "author": "davidtwco",
           "body": "No, we just check for repeated default bounds where `MetaSized`/`PointeeSized` are irrelevant, and for non-`Sized` relaxed bounds, which was already written such that it would catch `?MetaSized` and `?PointeeSized`.",
           "created_at": 1745322618000
@@ -577,32 +661,43 @@
       ]
     },
     {
+      "id": "5b973bcd-8f34-4f21-93d7-6ee5f1ae2e36",
       "file": "compiler/rustc_hir_analysis/src/collect/item_bounds.rs",
       "side": "new",
       "range": {
         "start": 47,
         "end": 47
       },
-      "resolved": false,
+      "resolved": true,
       "comments": [
         {
+          "id": "3931580a-7c6b-48a7-b5b2-26df4f12a171",
           "author": "oli-obk",
           "body": "All the other sites adjust sizedness before adding default bounds and right after lower_bounds. May be worth a comment here",
           "created_at": 1745311831000
         },
         {
+          "id": "74b96694-2adb-4f2e-af4d-b6e78392d082",
           "author": "oli-obk",
           "body": "it is kind of annoying that every `lower_bounds` call has to be paired with an adjust call, but with subtle differences",
           "created_at": 1745311871000
         },
         {
+          "id": "a9d281b9-10f3-44b8-8d2c-5708e70e28be",
           "author": "davidtwco",
           "body": "I've reordered these, the difference wasn't significant. I've also pulled forward a change from Part II that removes `adjust_sizedness_predicate` (where I removed `PointeeSized`) and just puts that in `lower_bounds` to avoid lowering any of those predicates in the first place (in Part II, I also need to migrate `Sized` to `const Sized`, which ended up being another change that made sense in `lower_bounds` to make sure it always happened).",
           "created_at": 1745321575000
+        },
+        {
+          "id": "5a86155a-3a0d-40c9-8bad-817c50554556",
+          "author": "you",
+          "body": "something.",
+          "created_at": 1780539222548
         }
       ]
     },
     {
+      "id": "9659fe18-5e27-487f-8e6e-7fb33f349b7c",
       "file": "compiler/rustc_trait_selection/src/traits/util.rs",
       "side": "new",
       "range": {
@@ -612,11 +707,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "fcd1c6f2-1734-4dc9-a81e-d8509be3e60e",
           "author": "oli-obk",
           "body": "Similarly polarity is not checked here",
           "created_at": 1745312414000
         },
         {
+          "id": "49b6adae-a56d-4597-9733-12e8391e333b",
           "author": "davidtwco",
           "body": "Fixed!",
           "created_at": 1745321571000
@@ -624,6 +721,7 @@
       ]
     },
     {
+      "id": "09156852-0328-4ac1-9f23-d87971aa6367",
       "file": "compiler/rustc_ty_utils/src/ty.rs",
       "side": "new",
       "range": {
@@ -633,11 +731,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "8cd7eab3-3ec8-4804-abdd-d225f50cded0",
           "author": "oli-obk",
           "body": "it's kind of unfortunate that we need to have the same match in multiple places, but it also seems kinda unavoidable",
           "created_at": 1745312816000
         },
         {
+          "id": "a534168c-4ad5-4cee-aea7-a1e049f9790b",
           "author": "davidtwco",
           "body": "Yeah, between the new solver, old solver and `is_trivially_sized`, lots of similar functions, but hard to deduplicate.",
           "created_at": 1745321570000
@@ -645,6 +745,7 @@
       ]
     },
     {
+      "id": "26b7df6e-e994-47fe-a344-379068b5c888",
       "file": "library/core/src/ops/unsize.rs",
       "side": "new",
       "range": {
@@ -654,11 +755,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "edf94e4a-93d5-473a-942a-98e9f298596c",
           "author": "oli-obk",
           "body": "After a bootstrap bump we'll be able to remove most `?Sized` from libcore, right?",
           "created_at": 1745313668000
         },
         {
+          "id": "b37b31b5-39e7-438e-b90d-cbed6562a6c3",
           "author": "davidtwco",
           "body": "Yeah, they're just there because the bootstrap compiler doesn't understand that `PointeeSized` does a relaxation.",
           "created_at": 1745314808000
@@ -666,6 +769,7 @@
       ]
     },
     {
+      "id": "82c8c2c6-1a84-4306-96a8-625bd7d933d4",
       "file": "tests/incremental/hashes/trait_defs.rs",
       "side": "new",
       "range": {
@@ -675,21 +779,25 @@
       "resolved": false,
       "comments": [
         {
+          "id": "d447b9b7-ea06-4b9a-a415-8b1c6c3f5952",
           "author": "oli-obk",
           "body": "why are predicates_of now dirty?",
           "created_at": 1745313893000
         },
         {
+          "id": "8bff5bc7-d722-4a59-95e8-bd895a59e0cb",
           "author": "davidtwco",
           "body": "I'm not sure - it fails without the change. `predicates_of` is where the default bounds/supertrait are added, so I just assumed it was related to that.",
           "created_at": 1745321564000
         },
         {
+          "id": "5eb810d4-11a3-48bb-bd54-b017ec3794aa",
           "author": "oli-obk",
           "body": "right, the question is why. I don't think your changes should have affected that, so some additional query edges seem to have been added. I wish incremental tests told us why something was dirty 🙃 Would be nice to fix or at least know why",
           "created_at": 1745322041000
         },
         {
+          "id": "6621e63e-b3e6-4d19-b509-8090e2a0e455",
           "author": "davidtwco",
           "body": "Confirmed that this change to the test is definitely still necessary.\r\n\r\nMy best guess is that I check `tcx.trait_is_auto` now? I need that to avoid adding the default supertrait to things like `Copy`, because if I do that, I can't relax it back with `PointeeSized` unless I do it with a `cfg(bootstrap)` (beta rustc won't allow explicit supertraits on auto traits). This could be fixed later by allowing the sizedness traits to be added to auto traits and then once that is in beta, removing the `trait_is_auto` condition (or doing that now with a `cfg` on all(?) our auto traits). \r\n\r\nOther than that, the only methods called in diff additions in all of `rustc_hir_analysis` on `tcx` are:\r\n\r\n- `require_lang_item`\r\n- `is_lang_item`\r\n- `is_default_trait`\r\n- `trait_is_auto`",
           "created_at": 1745326833000
@@ -697,6 +805,7 @@
       ]
     },
     {
+      "id": "c897178e-2ace-4d9e-a67d-f1fe02f662f1",
       "file": "tests/ui/layout/unconstrained-param-ice-137308.rs",
       "side": "new",
       "range": {
@@ -706,26 +815,31 @@
       "resolved": false,
       "comments": [
         {
+          "id": "8341f2bb-085e-474f-9646-6a2b84e4137e",
           "author": "oli-obk",
           "body": "did you search and replace the test suite for `?Sized`? I'm not sure what's best, but I would have assumed keeping most of the test suite on `?Sized` and only changing what needs changing would be best.",
           "created_at": 1745314056000
         },
         {
+          "id": "ae86f9ff-ee50-4e89-9a71-1de36315a297",
           "author": "davidtwco",
           "body": "I didn't, I only changed tests that failed and needed changing. In this test, for example, `?Sized` would no longer be unconstrained, it would be `MetaSized`-constrained, and so the test would be doing something different (and failing as a consequence).",
           "created_at": 1745314902000
         },
         {
+          "id": "c19aacc1-4eb7-4d97-bd6b-4ee821fd4b73",
           "author": "oli-obk",
           "body": "I think something is wrong then. `C` is unconstrained because it is not used in the impl, what bounds are on it are irrelevant.",
           "created_at": 1745315067000
         },
         {
+          "id": "8629685d-5825-44dc-ac5c-24f9d77e6ac0",
           "author": "davidtwco",
           "body": "I can check if this test still fails because it might just have been the state of the implementation at the time.",
           "created_at": 1745322215000
         },
         {
+          "id": "b91cfc40-d726-4d3b-8375-9cbac2ee0dff",
           "author": "davidtwco",
           "body": "I've revisited these tests and they fail with some additional \"type annotations needed\" errors, which I expect is what I was trying to avoid, but these are likely just downstream of the unconstrained parameter error as there's now an unconstrained `C: MetaSized` instead of bare `C`. I've just blessed these instead in the commit which was changing them.",
           "created_at": 1745326838000
@@ -733,6 +847,7 @@
       ]
     },
     {
+      "id": "11acd2f6-116c-43c3-900a-c8264b558e44",
       "file": "compiler/rustc_hir_analysis/src/collect/item_bounds.rs",
       "side": "new",
       "range": {
@@ -742,11 +857,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "f33dd7a9-3db1-4614-8357-61cafd5cba20",
           "author": "oli-obk",
           "body": "Same thing, reorder to keep it the same everywhere",
           "created_at": 1745322468000
         },
         {
+          "id": "ae647f4b-ebc7-4ce9-8d0a-4558a69fe54b",
           "author": "davidtwco",
           "body": "Fixed",
           "created_at": 1745326849000
@@ -754,6 +871,7 @@
       ]
     },
     {
+      "id": "c51e24e3-fdc3-4244-bc90-478dc790823f",
       "file": "compiler/rustc_lint/src/multiple_supertrait_upcastable.rs",
       "side": "new",
       "range": {
@@ -763,11 +881,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "0c9f6b8c-d738-4ac6-b77b-3a63eea4d128",
           "author": "lcnr",
           "body": "i'd expect this lint to never trigger for `Sized` :thinking: if `Sized` is a super trait the trait cannot be used as a trait object, can it?",
           "created_at": 1745521392000
         },
         {
+          "id": "855ba0a9-537e-40ee-9d67-df2af51ac45e",
           "author": "davidtwco",
           "body": "Removed `Sized` from this commit.",
           "created_at": 1746120322000
@@ -775,6 +895,7 @@
       ]
     },
     {
+      "id": "b5ea5efc-f4fb-4a8c-91f2-1f561bcad5e1",
       "file": "compiler/rustc_next_trait_solver/src/solve/trait_goals.rs",
       "side": "new",
       "range": {
@@ -784,11 +905,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "f4d31ba4-8479-4551-83e3-260466b47fc0",
           "author": "lcnr",
           "body": "structurally equatingn (using `==`) types does not handle alias types. Create a `<sized_self_type>: MetaSized` assumption instead and then recur.\r\n\r\nWith your impl, a `<T as Id>::This: Sized` where-clause does not imply `T: MetaSized`. Please add this as a test. ",
           "created_at": 1745521901000
         },
         {
+          "id": "87dee4f7-e3d1-4fca-a596-e6eff0ce0c36",
           "author": "davidtwco",
           "body": "Fixed and added test",
           "created_at": 1746120329000
@@ -796,6 +919,7 @@
       ]
     },
     {
+      "id": "de339ed8-69cb-4fe3-a283-1a7defad9b7a",
       "file": "compiler/rustc_trait_selection/src/traits/wf.rs",
       "side": "new",
       "range": {
@@ -805,11 +929,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "8b0b9853-fd80-491a-a108-e188e3dae589",
           "author": "lcnr",
           "body": "```suggestion\r\n        // traits, so `MetaSized` will always be WF if `Sized` is WF and vice-versa. Determining\r\n```",
           "created_at": 1745522714000
         },
         {
+          "id": "2f19aee4-e887-4a6a-9a23-78cf6f405af5",
           "author": "davidtwco",
           "body": "Fixed",
           "created_at": 1746120344000
@@ -817,6 +943,7 @@
       ]
     },
     {
+      "id": "176d5aee-302d-4c64-b15f-1687f40d2b3b",
       "file": "compiler/rustc_next_trait_solver/src/solve/assembly/mod.rs",
       "side": "new",
       "range": {
@@ -826,11 +953,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "1b8da9cb-4540-4b2d-b76a-36bf23222bd4",
           "author": "lcnr",
           "body": "ICE baby",
           "created_at": 1747136755000
         },
         {
+          "id": "a9a8447a-067f-4b18-b870-c6c0da1dc7d1",
           "author": "davidtwco",
           "body": "Fixed, this also required skipping `PointeeSized` during WF-checking, as that would hit this branch.",
           "created_at": 1747208438000
@@ -838,6 +967,7 @@
       ]
     },
     {
+      "id": "8422d864-afdb-4dd7-badf-e9bc04298ab0",
       "file": "compiler/rustc_next_trait_solver/src/solve/assembly/structural_traits.rs",
       "side": "new",
       "range": {
@@ -847,11 +977,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "f312cd12-008b-4f41-93ff-92bc5bd7687f",
           "author": "lcnr",
           "body": "no `Pointee` in comments",
           "created_at": 1747136776000
         },
         {
+          "id": "6e270f75-489b-40f9-9c4d-47a9bc813285",
           "author": "davidtwco",
           "body": "Fixed",
           "created_at": 1747208470000
@@ -859,6 +991,7 @@
       ]
     },
     {
+      "id": "90ba266d-fa30-465a-8bee-69d53d2af411",
       "file": "compiler/rustc_trait_selection/src/traits/select/candidate_assembly.rs",
       "side": "new",
       "range": {
@@ -868,11 +1001,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "17ec3ac0-21e2-438d-82ff-98673707e804",
           "author": "lcnr",
           "body": "even for unelaborated `Sized` bounds, check `match_normalize_trait_ref` using the trait ref returned by `unelaborated_sizedness_candidate`",
           "created_at": 1747137411000
         },
         {
+          "id": "99bb87a0-a579-4f52-831d-2b01f1b83a59",
           "author": "davidtwco",
           "body": "Fixed",
           "created_at": 1747220072000
@@ -880,6 +1015,7 @@
       ]
     },
     {
+      "id": "0fe2c1c5-ceac-46eb-b6eb-c287c3293485",
       "file": "compiler/rustc_trait_selection/src/traits/select/candidate_assembly.rs",
       "side": "new",
       "range": {
@@ -889,16 +1025,19 @@
       "resolved": false,
       "comments": [
         {
+          "id": "38f7f4f9-e342-44ee-a5ac-a59131696cf0",
           "author": "lcnr",
           "body": "also use the below reject logic",
           "created_at": 1747137642000
         },
         {
+          "id": "5ca4eee7-3366-4548-a3e2-243edbe55329",
           "author": "davidtwco",
           "body": "I don't think this is possible, the below reject logic uses the `obligation` in the `TraitObligationStack`, which I can't modify. I can use my obligation instead but then things fail later when the `stack.obligation` doesn't match.",
           "created_at": 1747207412000
         },
         {
+          "id": "dcd66086-ad96-4793-a47c-84e83b548a8e",
           "author": "davidtwco",
           "body": "Fixed per our discussion earlier",
           "created_at": 1747220062000
@@ -906,6 +1045,7 @@
       ]
     },
     {
+      "id": "43fc2c61-ae6e-44ae-b81b-1f953cecc6c5",
       "file": "src/tools/miri/src/shims/native_lib.rs",
       "side": "new",
       "range": {
@@ -915,16 +1055,19 @@
       "resolved": false,
       "comments": [
         {
+          "id": "f75737db-0258-4185-81cd-17e73e937d3c",
           "author": "lcnr",
           "body": ":thinking: ",
           "created_at": 1747138954000
         },
         {
+          "id": "d66deed3-e0ce-4c7d-99e0-afffd8dbba8a",
           "author": "lcnr",
           "body": "```suggestion\r\n            &ty::Tuple(t_list) if t_list.is_empty() => {\r\n```",
           "created_at": 1747139075000
         },
         {
+          "id": "c44ac2f8-9281-42b0-b989-e9ee4b020ccc",
           "author": "davidtwco",
           "body": "Tried this and it doesn't work, so leaving it as-is.",
           "created_at": 1747147723000
@@ -932,6 +1075,7 @@
       ]
     },
     {
+      "id": "88348e65-7019-4d9b-826c-f8bd34ceb7ff",
       "file": "compiler/rustc_hir_analysis/src/collect/predicates_of.rs",
       "side": "new",
       "range": {
@@ -941,11 +1085,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "aa7a431e-fb5c-4b88-b608-c5ef3ff61c40",
           "author": "oli-obk",
           "body": "what happened here? Rebase fallout? I think it should be reverted",
           "created_at": 1747814251000
         },
         {
+          "id": "169fa3a2-cfd6-4349-b4fa-ca9b2d4cf418",
           "author": "davidtwco",
           "body": "Yeah, this was left over from when `add_sizedness_bounds` used to be two functions - one for params/assoc types/opaques and another for supertraits, and `IsAuto` was passed in to the supertrait function. Reverted now.",
           "created_at": 1747917186000
@@ -953,6 +1099,7 @@
       ]
     },
     {
+      "id": "912eebf8-e3fe-4cf3-8aaf-451121ab15d0",
       "file": "tests/ui/sized-hierarchy/elaboration-opt-regions-1.rs",
       "side": "new",
       "range": {
@@ -962,11 +1109,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "8f39fda6-36cc-48ca-b4a1-14585728e796",
           "author": "oli-obk",
           "body": "```suggestion\r\nfn requires_metasized<'a, T: MetaSized>(f: &'a T) {}\r\n```",
           "created_at": 1747818553000
         },
         {
+          "id": "818e7339-8e64-4770-ae9e-2bf0e1285229",
           "author": "davidtwco",
           "body": "Fixed",
           "created_at": 1747917307000
@@ -974,6 +1123,7 @@
       ]
     },
     {
+      "id": "6daad9d0-7ae3-430f-a77f-c21a22f195ed",
       "file": "tests/ui/sized-hierarchy/trait-aliases.rs",
       "side": "new",
       "range": {
@@ -983,11 +1133,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "317cd7b1-26f4-4164-81d1-6c7ba968cf57",
           "author": "oli-obk",
           "body": "How is this test actually testing that?",
           "created_at": 1747818874000
         },
         {
+          "id": "29f311c8-59d1-4efd-995d-0450abd1ce4d",
           "author": "davidtwco",
           "body": "This snippet alone was enough to ICE previously, it was one of the cases discovered through the crater run. I've updated the comment in the test.",
           "created_at": 1747917425000
@@ -995,6 +1147,7 @@
       ]
     },
     {
+      "id": "0832e88f-8cfe-467c-baa4-d2cac0664363",
       "file": "tests/ui/traits/next-solver/cycles/normalizes-to-is-not-productive.stderr",
       "side": "new",
       "range": {
@@ -1004,11 +1157,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "5da8da07-7325-41a4-b69d-9a9c9e98afdf",
           "author": "oli-obk",
           "body": "bogus note, Can be resolved in follow up, but open an issue in that case",
           "created_at": 1747818993000
         },
         {
+          "id": "3ab42393-52b5-403d-a4b5-45f6477e3e4e",
           "author": "davidtwco",
           "body": "Will leave for a follow-up.",
           "created_at": 1747917445000
@@ -1016,6 +1171,7 @@
       ]
     },
     {
+      "id": "28e62673-f3f7-4696-9f67-a474cd98ae11",
       "file": "compiler/rustc_middle/src/ty/print/pretty.rs",
       "side": "new",
       "range": {
@@ -1025,11 +1181,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "d7450d81-ced5-43f1-865b-cab7172168a7",
           "author": "lcnr",
           "body": "please ICE",
           "created_at": 1747905023000
         },
         {
+          "id": "8483ba79-164e-4be6-b37d-cfca5f8e0e26",
           "author": "davidtwco",
           "body": "Fixed",
           "created_at": 1747917457000
@@ -1037,6 +1195,7 @@
       ]
     },
     {
+      "id": "f04a7fe2-2fb8-4d5c-8bae-7adc6e804294",
       "file": "compiler/rustc_next_trait_solver/src/solve/assembly/structural_traits.rs",
       "side": "new",
       "range": {
@@ -1046,11 +1205,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "50e05be3-8946-433c-8819-4cd264b96835",
           "author": "lcnr",
           "body": "when do we want the `PointeeSized` variant of this enum? I feel like pretty much every use site shouldn't consider handling it",
           "created_at": 1747905143000
         },
         {
+          "id": "b9c74e45-f395-4cdb-9d51-4dc5a1bedb3f",
           "author": "davidtwco",
           "body": "Removed that variant of `SizedTraitKind` and removed a bunch of `unreachable` branches.",
           "created_at": 1747917517000
@@ -1058,6 +1219,7 @@
       ]
     },
     {
+      "id": "b5d86ed7-4f7b-4c32-919b-a31a34357622",
       "file": "compiler/rustc_next_trait_solver/src/solve/effect_goals.rs",
       "side": "new",
       "range": {
@@ -1067,11 +1229,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "c5ea77a0-5b1c-4866-bcad-afea198eaaa0",
           "author": "lcnr",
           "body": "```suggestion\r\n        unreachable!(\"Sized/MetaSized is never const\")\r\n```",
           "created_at": 1747905176000
         },
         {
+          "id": "0ea3264f-22c7-47ce-a735-41412691a7d2",
           "author": "davidtwco",
           "body": "Fixed",
           "created_at": 1747917527000
@@ -1079,6 +1243,7 @@
       ]
     },
     {
+      "id": "b55a5d21-eeca-45b0-836b-6d036ef8bfab",
       "file": "compiler/rustc_next_trait_solver/src/solve/normalizes_to/mod.rs",
       "side": "new",
       "range": {
@@ -1088,11 +1253,13 @@
       "resolved": false,
       "comments": [
         {
+          "id": "2ac7fd02-5611-4bc6-862e-5c99db93fe9d",
           "author": "lcnr",
           "body": "```suggestion\r\n        panic!(\"Sized/MetaSized does not have an associated type: {:?}\", goal);\r\n```",
           "created_at": 1747905198000
         },
         {
+          "id": "a0d3f607-1823-4872-82b7-6fdc1c48a1b0",
           "author": "davidtwco",
           "body": "Removed `PointeeSized` here but kept the backticks because the other functions in this file all had them.",
           "created_at": 1747917547000
@@ -1100,6 +1267,7 @@
       ]
     },
     {
+      "id": "f4b3620c-a2bb-404c-b00f-0a36ec46c833",
       "file": "compiler/rustc_type_ir/src/elaborate.rs",
       "side": "new",
       "range": {
@@ -1109,19 +1277,40 @@
       "resolved": false,
       "comments": [
         {
+          "id": "dec55ebb-af00-4e0b-a041-9aef0624fbfb",
           "author": "lcnr",
           "body": "```suggestion\r\n        // elaborated. Candidate assembly and confirmation are modified to lazily\r\n        // check for the `Sized` subtrait when a `MetaSized` obligation is present.\r\n```\r\nemit/omit?",
           "created_at": 1747905832000
         },
         {
+          "id": "f65c5a9f-ff98-4fc6-8456-de20d7661315",
           "author": "lcnr",
           "body": "also, please explicitly match on `Filter` here even if we treat both variants the same for now and add a FIXME that we need to decide this on a per use basis.\r\n\r\nHmm, alternatively add a separate 2 state enum to the `elaborate`\r\n```rust\r\nenum ElaborateSized {\r\n    Yes,\r\n    No,\r\n}\r\n``` \r\n\r\nE.g. the overlap check in coherence uses elaboration and this one should properly elaborate `MetaSized` ",
           "created_at": 1747906226000
         },
         {
+          "id": "0f6116b5-fcff-436b-ba41-93c70841de60",
           "author": "davidtwco",
           "body": "Fixed, added `ElaborateSized`, defaulting it to `ElaborateSized::No` in the `Elaborator`, and then toggling it to `ElaborateSized::Yes` in coherence.",
           "created_at": 1747917604000
+        }
+      ]
+    },
+    {
+      "id": "51623e4a-cef6-4fb3-9d25-0b179998d4ac",
+      "file": "compiler/rustc_hir_analysis/src/collect/item_bounds.rs",
+      "side": "new",
+      "range": {
+        "start": 352,
+        "end": 352
+      },
+      "resolved": false,
+      "comments": [
+        {
+          "id": "fb7184f7-64f1-4160-81ef-207b8aa0f79e",
+          "author": "you",
+          "body": "test",
+          "created_at": 1780539249966
         }
       ]
     }

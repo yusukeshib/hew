@@ -155,16 +155,6 @@ fn build_sidebar_rows(
 
 /// Comment marker for a file: `Some(true)` when it has an unresolved thread,
 /// `Some(false)` when it only has resolved threads, `None` when it has none.
-/// A `width`×`height` rect centered inside `area` (clamped to fit).
-fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
-    Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width: width.min(area.width),
-        height: height.min(area.height),
-    }
-}
-
 fn file_comment_state(comments: &CommentStore, path: &str) -> Option<bool> {
     let p = Path::new(path);
     let mut any = false;
@@ -176,6 +166,16 @@ fn file_comment_state(comments: &CommentStore, path: &str) -> Option<bool> {
         }
     }
     any.then_some(open)
+}
+
+/// A `width`×`height` rect centered inside `area` (clamped to fit).
+fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
+    Rect {
+        x: area.x + area.width.saturating_sub(width) / 2,
+        y: area.y + area.height.saturating_sub(height) / 2,
+        width: width.min(area.width),
+        height: height.min(area.height),
+    }
 }
 
 const SIDEBAR_WIDTH: u16 = 38;
@@ -916,6 +916,10 @@ impl App {
             self.status = "put the cursor on a diff line first".into();
             return;
         };
+        // A drag could be in flight when the composer opens via the keyboard;
+        // clear it so the swallowed mouse-up can't leave us stuck mid-drag.
+        self.resizing = false;
+        self.sb_drag = None;
         self.composer = Some(Composer {
             target: ComposeTarget::NewThread {
                 file_idx,
@@ -933,6 +937,8 @@ impl App {
             self.status = "no comment thread on this line".into();
             return;
         };
+        self.resizing = false;
+        self.sb_drag = None;
         self.composer = Some(Composer {
             target: ComposeTarget::Reply { thread_id: id },
             buf: String::new(),
@@ -985,6 +991,9 @@ impl App {
                 line,
             } => {
                 let Some(file) = self.changeset.files.get(file_idx) else {
+                    // The diff reloaded out from under us (--watch) and the
+                    // anchored file is gone; tell the user their text was lost.
+                    self.status = "comment discarded — that file is no longer in the diff".into();
                     return;
                 };
                 let path = PathBuf::from(file.display_path());
