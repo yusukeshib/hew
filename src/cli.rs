@@ -13,9 +13,4 @@ pub struct Cli {
     /// Load existing review comments from a sidecar JSON file (immutable input).
     #[arg(long, value_name = "FILE")]
     pub comments: Option<PathBuf>,
-
-    /// Reload the patch file when it changes on disk. (The `--comments` base is
-    /// immutable and never reloaded; no effect when the patch is from stdin.)
-    #[arg(long)]
-    pub watch: bool,
 }

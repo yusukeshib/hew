@@ -58,23 +58,12 @@ the same base.
 > that omits `id` gets fresh random ids at load, so its `resolve`/`reply`/`delete`
 > actions won't match the on-disk base — fine for ad-hoc viewing, not for replay.
 
-Reload automatically when the patch file changes on disk:
-
-```sh
-hew change.patch --watch
-```
-
-`--watch` reloads the **patch** when it changes on disk (regenerate it in another
-window and the view refreshes). The `--comments` base is immutable and is never
-reloaded; watching has no effect when the patch is read from stdin.
-
 ### Options
 
 | Flag | Meaning |
 |---|---|
 | `FILE` (positional) | Patch file to review. Omit or use `-` for stdin. |
 | `--comments <FILE>` | Sidecar JSON of existing review comments to load (immutable). |
-| `--watch` | Reload the patch file when it changes on disk (the `--comments` base is never reloaded). |
 
 ## Keys
 
@@ -168,7 +157,7 @@ integration, no patch apply/edit/merge, no structural (AST) diff, and no "save"
 compacted action log to stdout on exit. It offers unified and split layouts,
 in-app authoring (compose/reply/resolve/delete), syntax highlighting (syntect +
 two-face's bat syntax set for broad language coverage, Monokai Extended Bright
-theme, pure-Rust fancy-regex), sidecar comment threads, and `--watch` reload.
+theme, pure-Rust fancy-regex), and sidecar comment threads.
 
 Planned: a tree-sitter highlighting backend, theme selection, and example
 `gh` wrappers that turn the action log into GitHub review actions. A live

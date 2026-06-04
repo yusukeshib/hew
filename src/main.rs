@@ -21,20 +21,7 @@ fn main() -> Result<()> {
         None => comments::CommentStore::default(),
     };
 
-    // --watch reloads the patch when it changes on disk. The --comments base is
-    // immutable, so it is never watched; a stdin patch can't be re-read either,
-    // so there's nothing to watch in that case.
-    let watch = if args.watch {
-        args.file
-            .as_ref()
-            .filter(|p| p.as_os_str() != "-")
-            .cloned()
-            .map(|patch| ui::WatchPaths { patch: Some(patch) })
-    } else {
-        None
-    };
-
-    let final_comments = ui::run(changeset, base.clone(), watch)?;
+    let final_comments = ui::run(changeset, base.clone())?;
 
     // Output is a compacted action log: the minimal review actions that turn
     // the immutable base into the final state. Always to stdout; an empty
