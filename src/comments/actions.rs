@@ -19,11 +19,16 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 #[serde(tag = "action", rename_all = "snake_case")]
 pub enum Action {
-    /// A new thread's root comment, anchored to a diff line.
+    /// A new thread's root comment, anchored to a diff line range. `line` is the
+    /// thread's last line (GitHub's anchor); `start_line` is present only for a
+    /// multi-line range, matching GitHub's `start_line`/`line` review-comment
+    /// shape. A single-line thread omits `start_line` (then `line` is that line).
     AddComment {
         thread_id: Uuid,
         file: PathBuf,
         side: Side,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        start_line: Option<u32>,
         line: u32,
         body: String,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -48,11 +53,13 @@ pub enum Action {
 fn added_thread_actions(t: &Thread, out: &mut Vec<Action>) {
     let mut comments = t.comments.iter();
     if let Some(root) = comments.next() {
+        let start_line = (t.range.start != t.range.end).then_some(t.range.start);
         out.push(Action::AddComment {
             thread_id: t.id,
             file: t.file.clone(),
             side: t.side,
-            line: t.range.start,
+            start_line,
+            line: t.range.end,
             body: root.body.clone(),
             author: root.author.clone(),
         });
@@ -140,8 +147,37 @@ mod tests {
 
         let actions = diff(&base, &cur);
         assert_eq!(actions.len(), 2);
-        assert!(matches!(&actions[0], Action::AddComment { line: 5, .. }));
+        assert!(matches!(
+            &actions[0],
+            Action::AddComment {
+                start_line: None,
+                line: 5,
+                ..
+            }
+        ));
         assert!(matches!(&actions[1], Action::Reply { .. }));
+    }
+
+    #[test]
+    fn multi_line_add_carries_start_line() {
+        let base = store();
+        let mut cur = store();
+        cur.add_thread(
+            "a.rs".into(),
+            Side::New,
+            LineRange { start: 10, end: 14 },
+            None,
+            "spans".into(),
+        );
+        let actions = diff(&base, &cur);
+        assert!(matches!(
+            &actions[0],
+            Action::AddComment {
+                start_line: Some(10),
+                line: 14,
+                ..
+            }
+        ));
     }
 
     #[test]
