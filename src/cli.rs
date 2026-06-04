@@ -14,10 +14,6 @@ pub struct Cli {
     #[arg(long, value_name = "FILE")]
     pub comments: Option<PathBuf>,
 
-    /// Print the parsed changeset as JSON and exit (no TUI).
-    #[arg(long)]
-    pub json: bool,
-
     /// Reload the patch file when it changes on disk. (The `--comments` base is
     /// immutable and never reloaded; no effect when the patch is from stdin.)
     #[arg(long)]
