@@ -106,15 +106,24 @@ lands here first and Phase 4's socket rides on it.
 
 ## Phase 4 — Live editing over a socket (AI joins the discussion)
 
-- [ ] On TUI start, register a session: create
-      `$XDG_RUNTIME_DIR/hew/<id>.sock` (+ `<id>.json` metadata: pid, cwd, repo,
-      target ref, files[], thread count). Fall back to `/tmp/hew-$UID/`.
-- [ ] Listen on the socket; on connect, accept one line of command, apply to the
-      in-memory store, trigger a re-render.
-- [ ] Clean up socket + metadata on exit; sweep stale sockets (unconnectable
-      `.sock`) on startup.
+**Slice 1 (read path) ✅**
+
+- [x] On TUI start, register a session: create
+      `$XDG_RUNTIME_DIR/hew/<id>.sock` (+ `<id>.json` metadata: id, pid, cwd,
+      name, files[]). Fall back to `/tmp/hew-$UID/`.
+- [x] Listen on the socket on a daemon thread; forward each request to the main
+      loop over an `mpsc` channel (keeps the TUI the sole store writer — no
+      shared lock in the render path).
+- [x] Clean up socket + metadata on exit (`Session` drop); sweep stale entries
+      (dead pid via `kill(pid, 0)`) on startup.
+- [x] `hew comment list [--session <id>]` → dump the store as JSON.
+- [x] Target resolution: `--session` (id/name) → only-live-session → error.
+- [x] Socket round-trip + discovery + cleanup integration-tested.
+
+**Slice 2 (write path)**
+
+- [ ] Forward writes through the same channel and re-render after applying:
 - [ ] `hew comment add --file <p> --line <n> [--side old|new] --body <s> [--reply-to <id>]`
-- [ ] `hew comment list` → dump current store as JSON (so an AI can read state).
 - [ ] `hew comment remove <comment-id|thread-id>`
 - [ ] `hew comment resolve <thread-id>` / `hew comment unresolve <thread-id>`
       (so an AI can close out a thread once addressed).
