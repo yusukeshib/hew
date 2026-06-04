@@ -353,8 +353,10 @@ impl App {
         }
         for m in msgs {
             let resp = match m.req {
+                // Always reply with valid JSON, even on serialization failure
+                // (the error text is escaped via serde, not string-formatted).
                 IpcRequest::List => serde_json::to_string(&self.comments)
-                    .unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}")),
+                    .unwrap_or_else(|e| serde_json::json!({ "error": e.to_string() }).to_string()),
             };
             let _ = m.reply.send(resp);
         }

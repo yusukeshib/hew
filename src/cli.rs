@@ -8,7 +8,7 @@ use std::path::PathBuf;
 // When a subcommand is used, the viewer args are not (and vice versa).
 #[command(args_conflicts_with_subcommands = true)]
 pub struct Cli {
-    /// Talk to a running hew session (`hew comment …`, `hew sessions`).
+    /// Talk to a running hew session (`hew comment …`).
     #[command(subcommand)]
     pub command: Option<Command>,
 

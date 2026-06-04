@@ -13,11 +13,19 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::fs::Permissions;
 use std::io::{BufRead, BufReader, Read, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
+use std::time::Duration;
+
+/// Cap on a single request line, so a flood can't exhaust memory.
+const MAX_REQUEST_BYTES: u64 = 64 * 1024;
+/// How long the listener waits for a client to send its request line.
+const READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// A request decoded from the wire and handed to the main loop.
 pub enum IpcRequest {
@@ -64,18 +72,38 @@ pub fn registry_dir() -> Result<PathBuf> {
         None => std::env::temp_dir().join(format!("hew-{}", unsafe { libc::getuid() })),
     };
     std::fs::create_dir_all(&dir).with_context(|| format!("creating {}", dir.display()))?;
+    // Keep the registry private: the sockets here expose live review data, so
+    // other users must not be able to traverse or read it.
+    std::fs::set_permissions(&dir, Permissions::from_mode(0o700))
+        .with_context(|| format!("chmod 0700 {}", dir.display()))?;
     Ok(dir)
 }
 
 /// True when a process with `pid` is still alive.
 fn pid_alive(pid: u32) -> bool {
     // SAFETY: kill with signal 0 performs only an existence/permission check.
-    unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+        return true;
+    }
+    // EPERM means the process exists but we lack permission to signal it —
+    // still alive, so don't sweep it as stale.
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EPERM)
 }
 
 /// A short, filesystem-safe session id.
 fn short_id() -> String {
     uuid::Uuid::new_v4().simple().to_string()[..8].to_string()
+}
+
+/// Reject names that aren't safe as a single path component, so `--name` can't
+/// escape the registry directory or produce an unbindable socket path.
+fn valid_id(s: &str) -> bool {
+    !s.is_empty()
+        && s != "."
+        && s != ".."
+        && s.len() <= 64
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
 }
 
 /// Remove socket+metadata pairs whose owning process is gone.
@@ -137,6 +165,13 @@ pub fn discover() -> Result<Vec<Found>> {
 pub fn start(name: Option<String>, files: Vec<String>) -> Result<(Session, Receiver<IpcMessage>)> {
     let dir = registry_dir()?;
     sweep_stale(&dir);
+    if let Some(n) = &name {
+        if !valid_id(n) {
+            anyhow::bail!(
+                "invalid --name '{n}': use only letters, digits, '-', '_', '.' (≤64 chars)"
+            );
+        }
+    }
     let id = name.clone().unwrap_or_else(short_id);
     let sock_path = dir.join(format!("{id}.sock"));
     let meta_path = dir.join(format!("{id}.json"));
@@ -144,6 +179,10 @@ pub fn start(name: Option<String>, files: Vec<String>) -> Result<(Session, Recei
     let _ = std::fs::remove_file(&sock_path);
     let listener = UnixListener::bind(&sock_path)
         .with_context(|| format!("binding {}", sock_path.display()))?;
+    // Restrict the socket to the owner so other users can't connect and read
+    // the live comment store.
+    std::fs::set_permissions(&sock_path, Permissions::from_mode(0o600))
+        .with_context(|| format!("chmod 0600 {}", sock_path.display()))?;
 
     let cwd = std::env::current_dir()
         .map(|p| p.display().to_string())
@@ -181,9 +220,11 @@ fn serve(listener: UnixListener, tx: Sender<IpcMessage>) {
 
 /// Read one request line, ask the main loop, write the reply back.
 fn handle_conn(mut stream: UnixStream, tx: &Sender<IpcMessage>) -> Result<()> {
+    // A silent or oversized client must not wedge the (serial) accept loop.
+    stream.set_read_timeout(Some(READ_TIMEOUT)).ok();
     let mut line = String::new();
     {
-        let mut reader = BufReader::new(&stream);
+        let mut reader = BufReader::new(&stream).take(MAX_REQUEST_BYTES);
         reader.read_line(&mut line)?;
     }
     let resp = match parse_wire(line.trim()) {
@@ -212,7 +253,7 @@ fn parse_wire(line: &str) -> Option<IpcRequest> {
     }
 }
 
-// ---- client side (`hew comment` / `hew sessions`) -------------------------
+// ---- client side (`hew comment`) ------------------------------------------
 
 /// Connect to a session socket, send one wire request, return the reply.
 pub fn query(sock: &Path, wire: &str) -> Result<String> {
@@ -238,7 +279,7 @@ pub fn resolve_target(selector: Option<&str>) -> Result<Found> {
         {
             return Ok(sessions.swap_remove(pos));
         }
-        anyhow::bail!("no hew session named '{sel}'");
+        anyhow::bail!("no hew session matching '{sel}' (id or name)");
     }
     match sessions.len() {
         0 => anyhow::bail!("no running hew session"),
@@ -256,7 +297,7 @@ pub fn resolve_target(selector: Option<&str>) -> Result<Found> {
                 })
                 .collect::<Vec<_>>()
                 .join("\n");
-            anyhow::bail!("multiple hew sessions; pass --session <id>:\n{list}")
+            anyhow::bail!("multiple hew sessions; pass --session <id|name>:\n{list}")
         }
     }
 }
@@ -265,12 +306,45 @@ pub fn resolve_target(selector: Option<&str>) -> Result<Found> {
 mod tests {
     use super::*;
 
+    /// Restore a process-global env var on drop so tests don't leak state.
+    struct EnvGuard {
+        key: &'static str,
+        prev: Option<std::ffi::OsString>,
+    }
+    impl EnvGuard {
+        fn set(key: &'static str, val: &Path) -> Self {
+            let prev = std::env::var_os(key);
+            std::env::set_var(key, val);
+            EnvGuard { key, prev }
+        }
+    }
+    impl Drop for EnvGuard {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(v) => std::env::set_var(self.key, v),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
+
+    #[test]
+    fn rejects_unsafe_names() {
+        assert!(valid_id("pr-42"));
+        assert!(valid_id("feature_x.v2"));
+        assert!(!valid_id(""));
+        assert!(!valid_id("."));
+        assert!(!valid_id(".."));
+        assert!(!valid_id("a/b"));
+        assert!(!valid_id("../escape"));
+        assert!(!valid_id("has space"));
+    }
+
     #[test]
     fn socket_roundtrip_discovery_and_cleanup() {
         // Isolate the registry to a unique temp dir for this process.
         let tmp = std::env::temp_dir().join(format!("hew-ipc-test-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&tmp);
-        std::env::set_var("XDG_RUNTIME_DIR", &tmp);
+        let _env = EnvGuard::set("XDG_RUNTIME_DIR", &tmp);
 
         let (session, rx) = start(Some("unit".into()), vec!["a.rs".into()]).unwrap();
 
