@@ -27,6 +27,27 @@ pub fn load_comments(path: &Path) -> Result<CommentStore> {
     Ok(CommentStore { threads })
 }
 
+/// Load comments when the file exists, or start from an empty store when it
+/// doesn't. `--comments <file>` names the review document hew opens *and*
+/// saves to, so a missing file just means "start a fresh review here".
+pub fn load_comments_or_default(path: &Path) -> Result<CommentStore> {
+    if path.exists() {
+        load_comments(path)
+    } else {
+        Ok(CommentStore::default())
+    }
+}
+
+/// Flush the in-memory review store to `path` as canonical pretty JSON
+/// (`{ "threads": [...] }`). This is the save half of the `--comments`
+/// round-trip.
+pub fn save_comments(path: &Path, store: &CommentStore) -> Result<()> {
+    let json = serde_json::to_string_pretty(store).context("serializing review comments")?;
+    std::fs::write(path, json)
+        .with_context(|| format!("writing comments file {}", path.display()))?;
+    Ok(())
+}
+
 fn read_patch(path: Option<&Path>) -> Result<String> {
     match path {
         Some(p) if p.as_os_str() != "-" => {
@@ -71,5 +92,46 @@ mod tests {
         assert_eq!(t.comments.len(), 2);
         assert!(!t.resolved); // default
         let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn save_then_load_roundtrips() {
+        use crate::comments::model::{Comment, LineRange, Thread};
+        use crate::diff::model::Side;
+
+        let store = CommentStore {
+            threads: vec![Thread {
+                id: uuid::Uuid::new_v4(),
+                file: "src/main.rs".into(),
+                side: Side::New,
+                range: LineRange { start: 3, end: 5 },
+                resolved: true,
+                comments: vec![Comment {
+                    id: uuid::Uuid::new_v4(),
+                    author: Some("agent".into()),
+                    body: "looks good".into(),
+                    created_at: std::time::SystemTime::now(),
+                }],
+            }],
+        };
+        let path = std::env::temp_dir().join("hew_test_roundtrip.json");
+        save_comments(&path, &store).unwrap();
+        let loaded = load_comments_or_default(&path).unwrap();
+        assert_eq!(loaded.threads.len(), 1);
+        let t = &loaded.threads[0];
+        assert_eq!(t.range.start, 3);
+        assert_eq!(t.range.end, 5);
+        assert!(t.resolved);
+        assert_eq!(t.comments.len(), 1);
+        assert_eq!(t.comments[0].body, "looks good");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn load_or_default_is_empty_when_missing() {
+        let path = std::env::temp_dir().join("hew_test_does_not_exist_xyz.json");
+        let _ = std::fs::remove_file(&path);
+        let store = load_comments_or_default(&path).unwrap();
+        assert!(store.threads.is_empty());
     }
 }

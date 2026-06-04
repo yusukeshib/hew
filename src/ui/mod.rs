@@ -71,12 +71,16 @@ fn reattach_stdin_to_tty() -> Result<()> {
 
 /// Set up the terminal, run the app, and restore the terminal afterwards.
 /// When `watch` is `Some`, the listed files are reloaded on change.
-pub fn run(changeset: Changeset, comments: CommentStore, watch: Option<WatchPaths>) -> Result<()> {
+pub fn run(
+    changeset: Changeset,
+    comments: CommentStore,
+    watch: Option<WatchPaths>,
+) -> Result<CommentStore> {
     // With nothing to watch, an empty changeset has nothing to show.
     if changeset.is_empty() && watch.is_none() {
         // Diagnostic goes to stderr; stdout stays clean for the review JSON.
         eprintln!("hew: no changes to review");
-        return Ok(());
+        return Ok(comments);
     }
 
     // The patch usually arrives on stdin (`git diff | hew`), which leaves fd 0
@@ -108,5 +112,6 @@ pub fn run(changeset: Changeset, comments: CommentStore, watch: Option<WatchPath
         DisableMouseCapture
     )?;
     terminal.show_cursor()?;
-    result
+    // Hand the final in-memory store back so the caller can flush it.
+    result.map(|()| app.into_comments())
 }
