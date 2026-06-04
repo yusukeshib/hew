@@ -16,6 +16,8 @@ pub use app::WatchPaths;
 
 use crate::comments::model::CommentStore;
 use crate::diff::model::Changeset;
+use crate::session::IpcMessage;
+use std::sync::mpsc::Receiver;
 
 /// When stdin isn't a TTY (e.g. `git diff | hew`), point fd 0 at a real
 /// terminal so crossterm's raw-mode and event reader have something to read
@@ -75,6 +77,7 @@ pub fn run(
     changeset: Changeset,
     comments: CommentStore,
     watch: Option<WatchPaths>,
+    ipc: Option<Receiver<IpcMessage>>,
 ) -> Result<CommentStore> {
     // With nothing to watch, an empty changeset has nothing to show.
     if changeset.is_empty() && watch.is_none() {
@@ -102,6 +105,9 @@ pub fn run(
     let mut app = app::App::with_comments(changeset, comments);
     if let Some(w) = watch {
         app = app.watching(w);
+    }
+    if let Some(rx) = ipc {
+        app = app.listening(rx);
     }
     let result = app.run(&mut terminal);
 

@@ -55,8 +55,23 @@ applies to file inputs — a stdin patch can't be re-read.
 |---|---|
 | `FILE` (positional) | Patch file to review. Omit or use `-` for stdin. |
 | `--comments <FILE>` | Sidecar JSON of review comments to load. |
+| `--name <NAME>` | Name this session in the registry (defaults to a short id). |
 | `--json` | Print the parsed changeset as JSON and exit (no TUI). |
 | `--watch` | Reload the patch/comments files when they change on disk. |
+
+### Talking to a running session
+
+While a `hew` TUI is open it advertises itself on a Unix socket under
+`$XDG_RUNTIME_DIR/hew/` (or `/tmp/hew-$UID/`), so another process — you or an
+AI agent — can read the live review:
+
+```sh
+hew comment list                 # the only running session
+hew comment list --session pr-42  # by --name (or id) when several are open
+```
+
+`hew comment list` prints the session's current review store as JSON. (Writing
+comments over the socket — `hew comment add/remove/resolve` — is coming next.)
 
 ## Keys
 
