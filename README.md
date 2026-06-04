@@ -45,9 +45,9 @@ Reload automatically when the patch or comments file changes on disk:
 hew change.patch --comments review.json --watch
 ```
 
-Since hew is read-only, `--watch` *is* the editing workflow: edit
-`review.json` (or regenerate the patch) in another window and the view
-refreshes. Watching only applies to file inputs — a stdin patch can't be re-read.
+`--watch` reloads file inputs when they change on disk: edit `review.json` (or
+regenerate the patch) in another window and the view refreshes. Watching only
+applies to file inputs — a stdin patch can't be re-read.
 
 ### Options
 
@@ -99,8 +99,9 @@ Unified stacks `-`/`+` lines; split shows old on the left and new on the right
 (like `git delta --side-by-side`), pairing changed lines across a divider.
 Toggling keeps the cursor on the same line.
 
-hew is a read-only viewer: comments are loaded from a sidecar and displayed
-(gutter markers + popup), never edited.
+Comments are loaded from a sidecar and displayed (gutter markers + inline
+popup). You can resolve/delete threads in-app (`R`/`D`); the review store is
+flushed back to the sidecar (or stdout) on exit.
 
 ## Comment sidecar format
 
@@ -141,11 +142,13 @@ See [examples/README.md](examples/README.md) for how to fetch more.
 
 ## Design & roadmap
 
-`hew` is intentionally a **read-only viewer**: no persistence, no GitHub/network
-integration, no patch apply/edit/merge, no structural (AST) diff. It offers
-unified and split layouts, syntax highlighting (syntect + two-face's bat syntax
-set for broad language coverage, Monokai Extended Bright theme, pure-Rust
-fancy-regex), sidecar comment threads, and `--watch` reload.
+`hew` stays intentionally small: no GitHub/network integration, no patch
+apply/edit/merge, no structural (AST) diff. It loads a unified patch plus
+sidecar review threads, lets you resolve/delete threads in-app, and flushes the
+review back to JSON (or stdout) on exit. It offers unified and split layouts,
+syntax highlighting (syntect + two-face's bat syntax set for broad language
+coverage, Monokai Extended Bright theme, pure-Rust fancy-regex), sidecar comment
+threads, and `--watch` reload.
 
 Planned: a tree-sitter highlighting backend, theme selection, and a loopback
 session server so an agent/CLI can drive a running TUI.

@@ -1,5 +1,7 @@
-//! Read-only PR-style review comments, loaded from a sidecar JSON file.
-//! hew never mutates these in-app: to change them, edit the JSON (and reload).
+//! PR-style review comments, loaded from a sidecar JSON file and edited in
+//! place. The store is the single in-memory source of truth: the TUI (and,
+//! later, the `hew comment` socket client) mutate it through the methods on
+//! [`CommentStore`], and it is flushed back to JSON on exit.
 
 use crate::diff::model::Side;
 use serde::{Deserialize, Serialize};

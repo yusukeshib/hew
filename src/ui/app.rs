@@ -254,8 +254,9 @@ fn elide_left(s: &str, w: usize) -> String {
     format!("…{tail}")
 }
 
-/// Read-only diff/comment viewer state. Comments are loaded from a sidecar and
-/// only displayed/navigated — hew never mutates them.
+/// Diff/review TUI state. Comments are loaded from a sidecar, displayed and
+/// navigated inline, and mutated in place (resolve/delete); the store is
+/// flushed back on exit.
 pub struct App {
     changeset: Changeset,
     rows: Vec<Row>,

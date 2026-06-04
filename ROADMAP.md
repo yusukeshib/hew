@@ -79,8 +79,8 @@ in Phase 3; this phase just wires load+flush so authored comments survive.)
 
 ## Phase 3 — In-app comment authoring (TUI becomes writable)
 
-Today hew is read-only (`model.rs`: "hew never mutates these in-app"). Both the
-TUI and the socket mutate **one** in-memory `CommentStore`, so the mutation API
+hew started life read-only. This phase makes the store writable: the TUI and
+(later) the socket mutate **one** in-memory `CommentStore`, so the mutation API
 lands here first and Phase 4's socket rides on it.
 
 - [x] Add mutation methods to `CommentStore` (`add_thread`, `reply`,
