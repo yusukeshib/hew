@@ -23,8 +23,9 @@ section); the turn-based flow above covers the v1 workflows without it.
 ## Design invariants (do not break — these are what keep hew *not* fat)
 
 - [ ] **hew never talks to GitHub.** It eats a patch + a comment JSON, nothing
-      else. GitHub round-trip is external `gh` wrappers (shipped only as
-      `examples/`, never a dependency).
+      else. The GitHub round-trip lives entirely outside the binary: an agent
+      that knows the documented JSON schema is the bridge (any `gh` wrappers are
+      shipped only as `examples/`, never a dependency).
 - [ ] **hew is a pure filter — no "save".** All inputs are immutable: the patch
       (stdin) and the `--comments` base JSON are read, never written. There is
       no save/flush/autosave/document concept.
@@ -108,21 +109,29 @@ mutate **one** in-memory `CommentStore` through a single shared write path.
 - [ ] Visually distinguish resolved threads beyond the header flag (dim /
       collapsed / filterable).
 
-## Phase 4 — GitHub bridge (examples only, never in the binary)
+## Phase 4 — Agent-friendly contract (the "bridge" is the schema)
 
-The v1 workflow is turn-based and needs no socket: an agent writes its review to
-a base JSON, opens `hew --comments base.json` for the human, and reads the
-action log from stdout on exit to drive `gh`. This phase is just the example
-wrappers.
+The GitHub round-trip needs **no code in (or shipped with) hew**. hew is a pure
+filter with a documented JSON contract; an agent that understands the schema *is*
+the bridge — it reads `gh api` PR threads into a base sidecar, opens
+`hew --comments base.json` for the human, then replays the action log through
+`gh`. So this phase is about making that contract legible to an agent, not about
+writing wrapper scripts.
 
-- [ ] Shape `Thread`/`Comment` JSON close to a GitHub review-thread structure so
-      translation stays trivial (path/side/line/resolved/body/author/created_at,
-      stable thread id for re-post matching).
-- [ ] `examples/gh-to-hew` — `gh api` PR threads → hew comment JSON.
-- [ ] `examples/hew-to-gh` — hew JSON → posted GitHub review/thread drafts.
-- [ ] Handle line anchoring (GitHub `(path, line, side, commit)` ↔ hew
-      `(file, LineRange, side)`) inside the bridge, not in hew.
-- [ ] README example of the full PR review loop.
+- [x] Document the **input** sidecar schema and the **output** action-log schema
+      (the five actions, `thread_id` reuse, `author` omission, `[]`, automatic
+      compaction) in the README, framed for an agent consumer.
+- [x] Make `hew --help` self-describing for agents: channel contract
+      (stdin=patch, stdout=action log, stderr/tty=render), the turn-based
+      workflow, and the input/output schemas inline — so `hew --help` alone is
+      enough to drive it (`-h` stays terse via clap's `long_about`).
+- [ ] Keep `Thread`/`Comment`/`Action` JSON shaped close to a GitHub
+      review-thread structure (path/side/line/resolved/body/author/created_at,
+      **stable thread id** for re-post matching) so an agent's translation stays
+      trivial. Decide whether `add_comment` should carry the full `range` or stay
+      single-`line` (today it drops `range.end`).
+- [ ] (Optional) Ship thin `gh` one-liner examples in `examples/` as a
+      convenience — never a dependency, never in the binary.
 
 ## Deferred — live socket co-review (post-v1)
 

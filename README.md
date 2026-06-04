@@ -138,6 +138,38 @@ prints the compacted action log to stdout (the inputs are never written).
 
 A bare `[ ...threads... ]` array is also accepted.
 
+## Action log format (output)
+
+On exit hew prints a JSON **array of actions** to stdout — the minimal delta that
+turns the `--comments` base into the reviewed state. This is the program's
+result: an agent reads it to drive `gh` (post comments, resolve threads), feeds
+it into the next step, or audits it. No action types beyond these five are ever
+emitted:
+
+```json
+[
+  { "action": "add_comment", "thread_id": "<uuid>", "file": "src/main.rs",
+    "side": "new", "line": 18, "body": "This arm is unreachable.", "author": "you" },
+  { "action": "reply",     "thread_id": "<uuid>", "body": "Good catch.", "author": "you" },
+  { "action": "resolve",   "thread_id": "<uuid>" },
+  { "action": "unresolve", "thread_id": "<uuid>" },
+  { "action": "delete",    "thread_id": "<uuid>" }
+]
+```
+
+- `add_comment` is a new thread's root, anchored to `(file, side, line)`; its
+  `thread_id` is reused by any `reply` to the same thread within the log.
+- `reply` / `resolve` / `unresolve` / `delete` reference an existing thread by
+  `thread_id` (a base thread, or one `add_comment`-ed earlier in the same log).
+- `author` is omitted when unset.
+- An untouched session prints `[]`.
+- Compaction is automatic: add-then-delete and resolve-then-unresolve cancel.
+
+There is **no GitHub-specific code in hew** — the binary only speaks this JSON.
+The "bridge" to GitHub is whoever consumes the log: an agent that knows this
+schema can read `gh api` PR threads into a base sidecar and replay the action
+log back through `gh`, with no wrapper binary required.
+
 ## Examples
 
 Real `{patch + comments}` from public PRs live in [`examples/`](examples/):
@@ -159,9 +191,15 @@ in-app authoring (compose/reply/resolve/delete), syntax highlighting (syntect +
 two-face's bat syntax set for broad language coverage, Monokai Extended Bright
 theme, pure-Rust fancy-regex), and sidecar comment threads.
 
-Planned: a tree-sitter highlighting backend, theme selection, and example
-`gh` wrappers that turn the action log into GitHub review actions. A live
-socket for in-session AI co-review is deferred (see `ROADMAP.md`).
+Because hew is a pure filter with a documented JSON contract (see *Comment
+sidecar format* and *Action log format* above), the GitHub round-trip needs no
+code in the binary: an agent that understands the schema is the bridge — it
+prepares the base sidecar from `gh api` and replays the action log through `gh`.
+
+Planned: a tree-sitter highlighting backend and theme selection. Optional `gh`
+wrapper examples may ship under `examples/`, but they are conveniences, not a
+dependency. A live socket for in-session AI co-review is deferred (see
+`ROADMAP.md`).
 
 Note: `hew` parses **plain unified diffs**, not git `format-patch` mailbox output
 (`gh pr diff --patch`). Use a `.diff`/`git diff` stream instead.
