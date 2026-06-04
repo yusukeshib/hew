@@ -18,9 +18,6 @@ Each example is a pair:
 ```sh
 hew examples/misskey-ja.patch   --comments examples/misskey-ja.comments.json
 hew examples/rust-long-en.patch --comments examples/rust-long-en.comments.json
-
-# headless: just print the parsed changeset
-hew examples/misskey-ja.patch --json
 ```
 
 ## Regenerate / add more

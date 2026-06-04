@@ -29,8 +29,6 @@ git diff HEAD | hew              # review the working tree (piped)
 git show <rev> | hew             # review a commit
 git diff <a> <b> | hew           # compare two refs
 hew - < change.patch             # explicit stdin
-
-hew change.patch --json          # print the parsed changeset as JSON, no TUI
 ```
 
 Load existing review comments from a sidecar JSON file. This file is an
@@ -76,7 +74,6 @@ reloaded; watching has no effect when the patch is read from stdin.
 |---|---|
 | `FILE` (positional) | Patch file to review. Omit or use `-` for stdin. |
 | `--comments <FILE>` | Sidecar JSON of existing review comments to load (immutable). |
-| `--json` | Print the parsed changeset as JSON and exit (no TUI). |
 | `--watch` | Reload the patch file when it changes on disk (the `--comments` base is never reloaded). |
 
 ## Keys

@@ -13,11 +13,6 @@ fn main() -> Result<()> {
 
     let changeset = loader::load_patch(args.file.as_deref())?;
 
-    if args.json {
-        println!("{}", serde_json::to_string_pretty(&changeset)?);
-        return Ok(());
-    }
-
     // `--comments <file>` is an immutable input: hew loads it as the review's
     // starting point and never writes back to it. A missing file just starts
     // from an empty base.
