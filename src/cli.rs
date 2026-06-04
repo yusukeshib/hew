@@ -28,8 +28,8 @@ pub struct Cli {
     #[arg(long)]
     pub json: bool,
 
-    /// Reload the patch file and/or comments sidecar when they change on disk.
-    /// (Has no effect when the patch is read from stdin.)
+    /// Reload the patch file when it changes on disk. (The `--comments` base is
+    /// immutable and never reloaded; no effect when the patch is from stdin.)
     #[arg(long)]
     pub watch: bool,
 }

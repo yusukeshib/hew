@@ -54,15 +54,21 @@ created then deleted, or a resolve toggled back, cancels out. An untouched
 session prints `[]`. A consumer (e.g. a GitHub bridge) replays the log against
 the same base.
 
-Reload automatically when the patch or comments file changes on disk:
+> **Replay needs stable thread ids.** Actions reference threads by `id`. For the
+> log to be replayable against `base.json`, that base must carry stable `id`
+> values (a producer like a GitHub bridge writes them). A handwritten sidecar
+> that omits `id` gets fresh random ids at load, so its `resolve`/`reply`/`delete`
+> actions won't match the on-disk base — fine for ad-hoc viewing, not for replay.
+
+Reload automatically when the patch file changes on disk:
 
 ```sh
-hew change.patch --comments review.json --watch
+hew change.patch --watch
 ```
 
-`--watch` reloads file inputs when they change on disk: edit `review.json` (or
-regenerate the patch) in another window and the view refreshes. Watching only
-applies to file inputs — a stdin patch can't be re-read.
+`--watch` reloads the **patch** when it changes on disk (regenerate it in another
+window and the view refreshes). The `--comments` base is immutable and is never
+reloaded; watching has no effect when the patch is read from stdin.
 
 ### Options
 
@@ -72,7 +78,7 @@ applies to file inputs — a stdin patch can't be re-read.
 | `--comments <FILE>` | Sidecar JSON of review comments to load. |
 | `--name <NAME>` | Name this session in the registry (defaults to a short id). |
 | `--json` | Print the parsed changeset as JSON and exit (no TUI). |
-| `--watch` | Reload the patch/comments files when they change on disk. |
+| `--watch` | Reload the patch file when it changes on disk (the `--comments` base is never reloaded). |
 
 ### Talking to a running session
 

@@ -70,6 +70,14 @@ fn added_thread_actions(t: &Thread, out: &mut Vec<Action>) {
 }
 
 /// The minimal action log transforming `base` into `cur`.
+///
+/// Threads are matched by `Thread.id`. For the log to be **replayable by an
+/// external consumer against the base file**, that base must carry stable thread
+/// ids: actions reference the ids hew saw at load. A base sidecar that omits
+/// `id` gets fresh random ids at load time (see `model`'s serde defaults), so
+/// its `resolve`/`reply`/`delete` actions won't match anything in the on-disk
+/// base. Producers that care about replay (e.g. a GitHub bridge) must write
+/// stable ids; ad-hoc viewing without replay is unaffected.
 pub fn diff(base: &CommentStore, cur: &CommentStore) -> Vec<Action> {
     let base_by_id: HashMap<Uuid, &Thread> = base.threads.iter().map(|t| (t.id, t)).collect();
     let cur_ids: HashSet<Uuid> = cur.threads.iter().map(|t| t.id).collect();

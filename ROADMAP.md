@@ -32,6 +32,9 @@ git diff | hew --comments review.json
 - [ ] **Output is a compacted action log**, not the comment store. On exit hew
       emits `diff(base, final)` as a minimal action array to **stdout** (a
       thread created then deleted, or a resolve toggled back, cancels out).
+      Replaying the log against the base requires the base to carry **stable
+      thread ids**; an id-less sidecar gets random ids at load and isn't
+      replayable (fine for ad-hoc viewing).
 - [ ] **Channels stay separated:** stdin = patch, stderr/tty = render,
       stdout = action-log result.
 - [ ] Resist new flags. Behaviour should be implicit (always listen, auto-watch),

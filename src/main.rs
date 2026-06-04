@@ -32,19 +32,15 @@ fn main() -> Result<()> {
         None => comments::CommentStore::default(),
     };
 
-    // --watch reloads file inputs; a stdin patch can't be re-read, so only
-    // watch when there is at least one real file to poll.
+    // --watch reloads the patch when it changes on disk. The --comments base is
+    // immutable, so it is never watched; a stdin patch can't be re-read either,
+    // so there's nothing to watch in that case.
     let watch = if args.watch {
-        let patch = args.file.as_ref().filter(|p| p.as_os_str() != "-").cloned();
-        let comments_path = args.comments.clone();
-        if patch.is_some() || comments_path.is_some() {
-            Some(ui::WatchPaths {
-                patch,
-                comments: comments_path,
-            })
-        } else {
-            None
-        }
+        args.file
+            .as_ref()
+            .filter(|p| p.as_os_str() != "-")
+            .cloned()
+            .map(|patch| ui::WatchPaths { patch: Some(patch) })
     } else {
         None
     };
