@@ -1338,14 +1338,20 @@ impl App {
     /// view if it would fall outside (less/vim Ctrl-E / Ctrl-Y behavior).
     fn scroll_view(&mut self, delta: isize) {
         let (start, end) = self.file_range();
-        let max_top = end.saturating_sub(1).max(start) as isize;
+        // Use an effective viewport height of at least 1 so scroll math stays
+        // valid even when the bordered diff panel's inner height is 0.
+        let height = self.height.max(1);
+        // Cap at the last full screen so the wheel can't scroll past the final
+        // line into empty space (which would drag the selection along with it).
+        // Mirrors the scrollbar's `total - height` maximum.
+        let max_top = end.saturating_sub(height).max(start) as isize;
         self.scroll = (self.scroll as isize + delta).clamp(start as isize, max_top) as usize;
         if self.selected < self.scroll {
             if let Some(i) = self.nearest_selectable(self.scroll, 1) {
                 self.selected = i;
             }
-        } else if self.selected >= self.scroll + self.height {
-            let last = self.scroll + self.height.saturating_sub(1);
+        } else if self.selected >= self.scroll + height {
+            let last = self.scroll + height - 1;
             if let Some(i) = self.nearest_selectable(last, -1) {
                 self.selected = i;
             }
@@ -1367,13 +1373,17 @@ impl App {
 
     fn ensure_visible(&mut self) {
         let (start, end) = self.file_range();
+        let height = self.height.max(1);
         if self.selected < self.scroll {
             self.scroll = self.selected;
-        } else if self.selected >= self.scroll + self.height {
-            self.scroll = self.selected + 1 - self.height;
+        } else if self.selected >= self.scroll + height {
+            self.scroll = self.selected + 1 - height;
         }
-        // Never scroll outside the current file's slice.
-        self.scroll = self.scroll.clamp(start, end.saturating_sub(1).max(start));
+        // Never scroll outside the current file's slice, and never past the
+        // last full screen of content.
+        self.scroll = self
+            .scroll
+            .clamp(start, end.saturating_sub(height).max(start));
     }
 
     fn jump_comment(&mut self, dir: isize) {
@@ -1800,12 +1810,29 @@ impl App {
                 ));
                 Line::from(spans)
             }
-            SplitRowKind::Comment(cl) => {
-                // In split view, comments live under the new (right) side only.
-                let pad = side_w + divider.chars().count();
-                let mut spans = vec![Span::styled(" ".repeat(pad), Style::default())];
-                spans.extend(self.comment_line_to_line(cl, side_w).spans);
-                Line::from(spans)
+            SplitRowKind::Comment { side, line: cl } => {
+                // Render the thread under the column it is anchored to: old
+                // (deletion) comments on the left, new (addition) comments on
+                // the right. The opposite column is left blank.
+                let body = self.comment_line_to_line(cl, side_w).spans;
+                match side {
+                    Side::Old => {
+                        let mut spans = body;
+                        // Pad out to the divider + right column so the row
+                        // fills its width.
+                        spans.push(Span::styled(
+                            " ".repeat(divider.chars().count() + side_w),
+                            Style::default(),
+                        ));
+                        Line::from(spans)
+                    }
+                    Side::New => {
+                        let pad = side_w + divider.chars().count();
+                        let mut spans = vec![Span::styled(" ".repeat(pad), Style::default())];
+                        spans.extend(body);
+                        Line::from(spans)
+                    }
+                }
             }
         }
     }
