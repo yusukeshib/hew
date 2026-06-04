@@ -1346,16 +1346,8 @@ impl App {
         // Mirrors the scrollbar's `total - height` maximum.
         let max_top = end.saturating_sub(height).max(start) as isize;
         self.scroll = (self.scroll as isize + delta).clamp(start as isize, max_top) as usize;
-        if self.selected < self.scroll {
-            if let Some(i) = self.nearest_selectable(self.scroll, 1) {
-                self.selected = i;
-            }
-        } else if self.selected >= self.scroll + height {
-            let last = self.scroll + height - 1;
-            if let Some(i) = self.nearest_selectable(last, -1) {
-                self.selected = i;
-            }
-        }
+        // Scrolling the pane is independent of the selected line: the cursor
+        // stays put (and simply scrolls out of view) until the user moves it.
     }
 
     /// First selectable row at/beyond `from` scanning in `dir`, within the file.
