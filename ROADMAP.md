@@ -108,45 +108,17 @@ lands here first and Phase 4's socket rides on it.
 - [ ] Multi-line comment bodies (composer is single-line; `enter` submits).
 - [ ] Visually distinguish resolved threads beyond the header flag (dim /
       collapsed / filterable).
-- [ ] Mark the store dirty so Phase 4 flush knows there is something to save.
 
-## Phase 4 — Live editing over a socket (AI joins the discussion)
+## Phase 4 — GitHub bridge (examples only, never in the binary)
 
-**Slice 1 (read path) ✅**
+The v1 workflow is turn-based and needs no socket: an agent writes its review to
+a base JSON, opens `hew --comments base.json` for the human, and reads the
+action log from stdout on exit to drive `gh`. This phase is just the example
+wrappers.
 
-- [x] On TUI start, register a session: create
-      `$XDG_RUNTIME_DIR/hew/<id>.sock` (+ `<id>.json` metadata: id, pid, cwd,
-      name, files[]). Fall back to `/tmp/hew-$UID/`.
-- [x] Listen on the socket on a daemon thread; forward each request to the main
-      loop over an `mpsc` channel (keeps the TUI the sole store writer — no
-      shared lock in the render path).
-- [x] Clean up socket + metadata on exit (`Session` drop); sweep stale entries
-      (dead pid via `kill(pid, 0)`) on startup.
-- [x] `hew comment list [--session <id>]` → dump the store as JSON.
-- [x] Target resolution: `--session` (id/name) → only-live-session → error.
-- [x] Socket round-trip + discovery + cleanup integration-tested.
-
-**Slice 2 (write path)**
-
-- [ ] Forward writes through the same channel and re-render after applying:
-- [ ] `hew comment add --file <p> --line <n> [--side old|new] --body <s> [--reply-to <id>]`
-- [ ] `hew comment remove <comment-id|thread-id>`
-- [ ] `hew comment resolve <thread-id>` / `hew comment unresolve <thread-id>`
-      (so an AI can close out a thread once addressed).
-- [ ] Re-render the TUI promptly when a socket write lands (event wakeup).
-
-## Phase 5 — Multi-session addressing
-
-- [ ] `hew sessions [--json]` → enumerate the registry (name, cwd, repo, ref,
-      files, thread count).
-- [ ] Client target resolution order:
-      1. [ ] `--session <name>` explicit
-      2. [ ] exactly one live session → auto
-      3. [ ] multiple, but only one contains the `--file` → auto-route via metadata
-      4. [ ] otherwise → error listing candidates, require `--session`
-- [ ] Friendly error output when the target is ambiguous.
-
-## Phase 6 — GitHub bridge (examples only, never in the binary)
+- [ ] Shape `Thread`/`Comment` JSON close to a GitHub review-thread structure so
+      translation stays trivial (path/side/line/resolved/body/author/created_at,
+      stable thread id for re-post matching).
 
 - [ ] Shape `Thread`/`Comment` JSON close to a GitHub review-thread structure so
       translation stays trivial (path/side/line/resolved/body/author/created_at,
@@ -156,6 +128,21 @@ lands here first and Phase 4's socket rides on it.
 - [ ] Handle line anchoring (GitHub `(path, line, side, commit)` ↔ hew
       `(file, LineRange, side)`) inside the bridge, not in hew.
 - [ ] README example of the full PR review loop.
+
+## Deferred — live socket co-review (post-v1)
+
+A running TUI advertising a Unix socket so an agent can inject comments and read
+responses **live**, without closing hew. Implemented once (session registry +
+`hew comment list` over an mpsc-forwarded socket, PR #7) then **removed to keep
+v1 lean** — the turn-based flow (base JSON in, action log out) covers the
+intended "review before PR" and "review PR #N" workflows without it. Revisit only
+if live, multi-turn co-review in a single session becomes a real need; it also
+requires solving anchor-drift when the patch reloads mid-session.
+
+- [ ] Session registry + socket listener (recover from PR #7 history).
+- [ ] `hew comment add/remove/resolve/list` client subcommands over the socket.
+- [ ] `hew sessions` enumeration + multi-session target resolution.
+- [ ] Anchor re-mapping when the patch reloads under a live session.
 
 ## Open questions
 

@@ -2,7 +2,6 @@
 
 use crate::comments::model::{CommentStore, LineRange};
 use crate::diff::model::{Changeset, DiffFile, LineKind, Side};
-use crate::session::{IpcMessage, IpcRequest};
 use crate::ui::highlight::Highlighter;
 use crate::ui::render_rows::{
     build_rows, build_split_rows, CommentLine, Row, RowKind, SideCell, SplitRow, SplitRowKind,
@@ -21,7 +20,6 @@ use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
-use std::sync::mpsc::Receiver;
 use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
@@ -323,42 +321,14 @@ pub struct App {
     /// (file_idx, line text) -> highlighted runs. Viewport-only, grows lazily.
     hl_cache: RefCell<HashMap<HlKey, LineRuns>>,
     composer: Option<Composer>,
-    /// IPC requests from the `hew comment` socket client, if listening.
-    ipc_rx: Option<Receiver<IpcMessage>>,
     quit: bool,
 }
 
 impl App {
     /// Consume the app and return the final in-memory review store, so the
-    /// caller can flush it on exit (the save half of the `--comments`
-    /// round-trip).
+    /// caller can diff it against the immutable base to produce the action log.
     pub fn into_comments(self) -> CommentStore {
         self.comments
-    }
-
-    /// Listen for `hew comment` IPC requests on `rx` (from the session socket).
-    pub fn listening(mut self, rx: Receiver<IpcMessage>) -> Self {
-        self.ipc_rx = Some(rx);
-        self
-    }
-
-    /// Apply any queued IPC requests from the socket client.
-    fn drain_ipc(&mut self) {
-        let mut msgs = Vec::new();
-        if let Some(rx) = &self.ipc_rx {
-            while let Ok(m) = rx.try_recv() {
-                msgs.push(m);
-            }
-        }
-        for m in msgs {
-            let resp = match m.req {
-                // Always reply with valid JSON, even on serialization failure
-                // (the error text is escaped via serde, not string-formatted).
-                IpcRequest::List => serde_json::to_string(&self.comments)
-                    .unwrap_or_else(|e| serde_json::json!({ "error": e.to_string() }).to_string()),
-            };
-            let _ = m.reply.send(resp);
-        }
     }
 
     /// Construct with a pre-loaded comment store (e.g. from a sidecar JSON).
@@ -409,7 +379,6 @@ impl App {
             highlighter: Highlighter::new(),
             hl_cache: RefCell::new(HashMap::new()),
             composer: None,
-            ipc_rx: None,
             quit: false,
         };
         app.selected = app.first_selectable().unwrap_or(0);
@@ -526,7 +495,6 @@ impl App {
                 let _ = out.flush();
             }
             self.poll_reload();
-            self.drain_ipc();
         }
         Ok(())
     }
