@@ -26,10 +26,14 @@ git diff | hew --comments review.json
       sockets + tiny JSON metadata. Each process registers itself and cleans up.
 - [ ] **Sessions never talk to each other.** Cross-session is the *client's* job
       (read the registry). Each hew is autonomous.
-- [ ] **load target == flush target.** `--comments file` opens *and* saves to the
-      same file (like opening a file in an editor).
+- [ ] **hew is a pure filter — no "save".** All inputs are immutable: the patch
+      (stdin) and the `--comments` base JSON are read, never written. There is
+      no save/flush/autosave/document concept.
+- [ ] **Output is a compacted action log**, not the comment store. On exit hew
+      emits `diff(base, final)` as a minimal action array to **stdout** (a
+      thread created then deleted, or a resolve toggled back, cancels out).
 - [ ] **Channels stay separated:** stdin = patch, stderr/tty = render,
-      stdout = JSON result.
+      stdout = action-log result.
 - [ ] Resist new flags. Behaviour should be implicit (always listen, auto-watch),
       not opt-in. `--name` is the only genuinely new flag.
 
@@ -40,9 +44,8 @@ git diff | hew --comments review.json
 - [ ] Decide patch reload: make patch auto-reload default-on for file inputs
       (mirror of "always listen"), dropping the `--watch` flag entirely.
 - [ ] Drop `--listen` idea — listening is always-on for any TUI session.
-- [ ] Promote `--comments` from "read-only sidecar" to "edited review document"
-      (load if present, else start empty; flush to it on exit). Consider rename
-      to `--review` (or keep `--comments` for familiarity — TBD).
+- [x] `--comments` is an **immutable input** (load-only, the review's starting
+      base). hew never writes back to it; output is the action log on stdout.
 - [ ] Add `--name <id>` (optional) to label a session in the registry.
 
 ---
@@ -61,21 +64,21 @@ Frees stdout so the review JSON can be the program's result, fzf-style.
 - [ ] Manual check: `git diff | hew > out.json` renders to the terminal (not the
       file) and leaves the terminal clean on exit.
 
-## Phase 2 — Persistence round-trip (`--comments` as a document) ✅
+## Phase 2 — Output model: compacted action log ✅
 
-Output is dead unless it can be re-loaded; this closes the loop. (Authoring lands
-in Phase 3; this phase just wires load+flush so authored comments survive.)
+hew is a filter: immutable inputs in, an action log out. (Originally drafted as a
+"persistence round-trip" that wrote back to `--comments`; that was wrong — it
+broke input immutability and smuggled in an editor-style "save" concept. Now the
+output is a delta, never a write-back.)
 
-- [x] On exit, flush the in-memory `CommentStore` as JSON:
-      - [x] to `--comments <file>` when given (same file it loaded from)
-      - [x] to **stdout** when `--comments` is omitted
-- [x] `--comments <file>` loads existing state when the file exists, starts empty
-      when it doesn't (`load_comments_or_default`).
-- [x] Omitted-`--comments` exit: stdout **only when the store is non-empty**, so a
-      plain `git diff | hew` view never prints an empty `{ "threads": [] }`. No
-      auto-`.hew/` file — kept explicit.
-- [x] Round-trip test (`save_then_load_roundtrips`) + missing-file test. (The
-      full open→author→quit→reopen loop completes once Phase 3 adds authoring.)
+- [x] `--comments <file>` loads the **immutable** base (empty when absent);
+      hew never writes to it.
+- [x] On exit, emit `comments::diff(base, final)` — the minimal action array
+      (`add_comment` / `reply` / `resolve` / `unresolve` / `delete`) — to
+      **stdout**, always (an untouched session prints `[]`).
+- [x] Compaction falls out of diffing: add-then-delete and resolve-then-unresolve
+      cancel; redundant toggles collapse to net effect. Unit-tested + missing-file
+      load test.
 
 ## Phase 3 — In-app comment authoring (TUI becomes writable)
 
