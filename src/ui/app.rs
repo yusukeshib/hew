@@ -1338,17 +1338,20 @@ impl App {
     /// view if it would fall outside (less/vim Ctrl-E / Ctrl-Y behavior).
     fn scroll_view(&mut self, delta: isize) {
         let (start, end) = self.file_range();
+        // Use an effective viewport height of at least 1 so scroll math stays
+        // valid even when the bordered diff panel's inner height is 0.
+        let height = self.height.max(1);
         // Cap at the last full screen so the wheel can't scroll past the final
         // line into empty space (which would drag the selection along with it).
         // Mirrors the scrollbar's `total - height` maximum.
-        let max_top = end.saturating_sub(self.height).max(start) as isize;
+        let max_top = end.saturating_sub(height).max(start) as isize;
         self.scroll = (self.scroll as isize + delta).clamp(start as isize, max_top) as usize;
         if self.selected < self.scroll {
             if let Some(i) = self.nearest_selectable(self.scroll, 1) {
                 self.selected = i;
             }
-        } else if self.selected >= self.scroll + self.height {
-            let last = self.scroll + self.height.saturating_sub(1);
+        } else if self.selected >= self.scroll + height {
+            let last = self.scroll + height - 1;
             if let Some(i) = self.nearest_selectable(last, -1) {
                 self.selected = i;
             }
@@ -1370,16 +1373,17 @@ impl App {
 
     fn ensure_visible(&mut self) {
         let (start, end) = self.file_range();
+        let height = self.height.max(1);
         if self.selected < self.scroll {
             self.scroll = self.selected;
-        } else if self.selected >= self.scroll + self.height {
-            self.scroll = self.selected + 1 - self.height;
+        } else if self.selected >= self.scroll + height {
+            self.scroll = self.selected + 1 - height;
         }
         // Never scroll outside the current file's slice, and never past the
         // last full screen of content.
         self.scroll = self
             .scroll
-            .clamp(start, end.saturating_sub(self.height).max(start));
+            .clamp(start, end.saturating_sub(height).max(start));
     }
 
     fn jump_comment(&mut self, dir: isize) {
