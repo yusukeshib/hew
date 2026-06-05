@@ -12,8 +12,7 @@ use crossterm::event::{
 };
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
-    LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::prelude::*;
 use std::io::stderr;
@@ -131,16 +130,20 @@ pub fn run(changeset: Changeset, comments: CommentStore) -> Result<CommentStore>
     enable_raw_mode()?;
     let mut out = stderr();
     execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
-    // Enable the keyboard-enhancement protocol where supported (kitty/ghostty/
-    // wezterm/foot/…) so the composer can distinguish Shift+Enter (submit) from
-    // a bare Enter (newline). Terminals without it fall back to Ctrl-S. The
-    // matching pop happens in `restore_terminal`.
-    if matches!(supports_keyboard_enhancement(), Ok(true)) {
-        let _ = execute!(
-            out,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
-        );
-    }
+    // Enable the keyboard-enhancement protocol so the composer can distinguish
+    // Shift+Enter (submit) from a bare Enter (newline) on terminals that
+    // support it (kitty/ghostty/wezterm/foot/…). We push it *unconditionally to
+    // stderr* — where the TUI renders — rather than gating on
+    // `supports_keyboard_enhancement()`, whose probe writes to stdout. stdout
+    // is reserved for the action-log JSON (and is often redirected to a file),
+    // so the probe never reaches the terminal and would wrongly report "no
+    // support". Terminals that don't implement the protocol simply ignore the
+    // escape sequence, and Ctrl-S remains as a fallback. The matching pop
+    // happens in `restore_terminal`.
+    let _ = execute!(
+        out,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    );
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
 
