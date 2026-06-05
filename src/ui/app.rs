@@ -43,6 +43,10 @@ enum Focus {
 const SIDEBAR_WIDTH: u16 = 38;
 const MIN_SIDEBAR: u16 = 14;
 const MIN_DIFF: u16 = 20;
+/// The column separator drawn between the two halves of the split view. Shared
+/// by `render_split` and `sync_comment_wrap` so the comment-wrap math can't
+/// desync from the rendered layout if the literal ever changes.
+const SPLIT_DIVIDER: &str = " │ ";
 
 /// Per-file (additions, deletions) counts for the sidebar.
 fn file_stats(changeset: &Changeset) -> Vec<(usize, usize)> {
@@ -1620,15 +1624,30 @@ impl App {
         }
     }
 
-    /// Extend the line selection by one row (Shift+Up/Down). Starts a selection
-    /// anchored at the current line if none is active, then moves the cursor —
-    /// the same persistent-anchor behavior as visual mode, without a mode flag.
+    /// Extend the line selection by one row (Shift+Up/Down). Moves only across
+    /// selectable *diff lines* (skipping comment/collapsed rows): a line
+    /// selection must stay anchored on diff lines, or `selection_range()` —
+    /// which reads `anchor_at(selected)` — would return `None` and `i` (new
+    /// thread) would have nothing to anchor to. A no-op when there is no diff
+    /// line in that direction, so it never enters visual mode pointlessly.
     fn extend_selection(&mut self, dir: isize) {
+        let (start, end) = self.file_range();
+        let mut i = self.selected as isize + dir;
+        let target = loop {
+            if i < start as isize || i as usize >= end {
+                return;
+            }
+            if self.is_selectable_at(i as usize) {
+                break i as usize;
+            }
+            i += dir;
+        };
         if !self.visual {
             self.visual = true;
             self.sel_anchor = Some(self.selected);
         }
-        self.move_by(dir, 1);
+        self.selected = target;
+        self.ensure_visible();
         self.status = "visual — shift+↑/↓ to extend, i to comment, esc to cancel".into();
     }
 
@@ -1780,13 +1799,12 @@ impl App {
             View::Unified => inner.saturating_sub(8),
             // Split: the box lives inside one half-column, so wrapping to the
             // full width would clip every line on the right. Mirror
-            // `render_split`'s `side_w = (area - divider.len()) / 2` for the
-            // worst case (a scrollbar present trims the area by 1), where
-            // `divider.len()` is 5 bytes (" │ ", `│` is 3 UTF-8 bytes). Then
+            // `render_split`'s `side_w = (area - SPLIT_DIVIDER.len()) / 2` for
+            // the worst case (a scrollbar present trims the area by 1), then
             // reserve the box chrome (2-col margin + 2 borders + 3-col indent
             // = 7).
             View::Split => {
-                let side = inner.saturating_sub(1 + 5) / 2;
+                let side = inner.saturating_sub(1 + SPLIT_DIVIDER.len()) / 2;
                 side.saturating_sub(7)
             }
         };
@@ -2064,7 +2082,7 @@ impl App {
 
     fn render_split(&self, f: &mut Frame, area: Rect) {
         let total = area.width as usize;
-        let divider = " │ ";
+        let divider = SPLIT_DIVIDER;
         let side_w = total.saturating_sub(divider.len()) / 2;
         let (start, file_end) = self.file_range();
         let top = self.scroll.max(start);
@@ -2575,6 +2593,34 @@ mod tests {
             app.selection_range().unwrap(),
             (app.current_file, Side::New, 2, 3)
         );
+    }
+
+    #[test]
+    fn shift_arrows_skip_comment_rows_and_keep_a_valid_line_range() {
+        // Regression: extend_selection used to step to the next *stop*, which
+        // includes comment/collapsed rows — landing the cursor off a diff line
+        // so selection_range() went None. It must skip over an inline thread's
+        // rows and keep selecting diff lines.
+        let (mut app, _tid, _reply) = app_with_thread(3);
+        goto(&mut app, Side::New, 2);
+
+        // Walk down across the line-3 thread's inline rows; every step must stay
+        // on a diff line with a valid line range.
+        for _ in 0..3 {
+            app.on_key_diff(KeyCode::Down, false, true);
+            assert!(
+                app.is_selectable_at(app.selected),
+                "cursor landed on a non-diff row"
+            );
+            assert!(
+                app.selection_range().is_some(),
+                "selection range went None mid-extend"
+            );
+        }
+        // The range spans diff lines (start stays at the anchor, end advanced).
+        let (_, side, lo, hi) = app.selection_range().unwrap();
+        assert_eq!((side, lo), (Side::New, 2));
+        assert!(hi > lo, "selection should have grown past the anchor line");
     }
 
     #[test]
