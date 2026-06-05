@@ -549,12 +549,6 @@ impl App {
         }
     }
 
-    /// Is the sidebar row at `idx` a landing spot for the cursor? Every tree
-    /// row (dir, file, thread) is selectable.
-    fn sb_selectable(&self, idx: usize) -> bool {
-        idx < self.sidebar_rows.len()
-    }
-
     /// Rebuild the sidebar tree from the current collapse set.
     fn rebuild_sidebar(&mut self) {
         let (sr, map) = build_sidebar_rows(&self.changeset, &self.collapsed);
@@ -660,35 +654,26 @@ impl App {
         }
     }
 
-    /// Move the sidebar cursor to the next/prev selectable row and act on it.
+    /// Move the sidebar cursor to the next/prev row and act on it. Every tree
+    /// row (dir, file) is a valid landing spot, so this is a simple clamped step.
     fn move_sidebar(&mut self, dir: isize) {
         let n = self.sidebar_rows.len();
-        let mut i = self.sidebar_sel as isize;
-        loop {
-            i += dir;
-            if i < 0 || i as usize >= n {
-                return;
-            }
-            if self.sb_selectable(i as usize) {
-                self.sidebar_sel = i as usize;
-                self.activate_sidebar();
-                return;
-            }
+        let next = self.sidebar_sel as isize + dir;
+        if next < 0 || next as usize >= n {
+            return;
         }
+        self.sidebar_sel = next as usize;
+        self.activate_sidebar();
     }
 
-    /// Jump the sidebar cursor to the first/last selectable row.
+    /// Jump the sidebar cursor to the first/last row.
     fn sidebar_edge(&mut self, last: bool) {
         let n = self.sidebar_rows.len();
-        let found = if last {
-            (0..n).rev().find(|&i| self.sb_selectable(i))
-        } else {
-            (0..n).find(|&i| self.sb_selectable(i))
-        };
-        if let Some(i) = found {
-            self.sidebar_sel = i;
-            self.activate_sidebar();
+        if n == 0 {
+            return;
         }
+        self.sidebar_sel = if last { n - 1 } else { 0 };
+        self.activate_sidebar();
     }
 
     /// Apply the row under the sidebar cursor: switch file or jump to thread.
@@ -1796,19 +1781,12 @@ impl App {
                     .add_modifier(Modifier::ITALIC),
             )),
             SplitRowKind::Pair { left, right } => {
-                let mut spans =
-                    self.side_spans(left.as_ref(), Side::Old, row.file_idx, side_w, selected);
+                let mut spans = self.side_spans(left.as_ref(), row.file_idx, side_w, selected);
                 spans.push(Span::styled(
                     divider.to_string(),
                     Style::default().fg(THEME.subtle),
                 ));
-                spans.extend(self.side_spans(
-                    right.as_ref(),
-                    Side::New,
-                    row.file_idx,
-                    side_w,
-                    selected,
-                ));
+                spans.extend(self.side_spans(right.as_ref(), row.file_idx, side_w, selected));
                 Line::from(spans)
             }
             SplitRowKind::Comment { side, line: cl } => {
@@ -1842,7 +1820,6 @@ impl App {
     fn side_spans(
         &self,
         cell: Option<&SideCell>,
-        _side: Side,
         file_idx: usize,
         width: usize,
         selected: bool,
