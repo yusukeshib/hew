@@ -6,10 +6,14 @@ pub mod sidebar;
 pub mod theme;
 
 use anyhow::{Context, Result};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
 use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+    disable_raw_mode, enable_raw_mode, supports_keyboard_enhancement, EnterAlternateScreen,
+    LeaveAlternateScreen,
 };
 use ratatui::prelude::*;
 use std::io::stderr;
@@ -75,6 +79,9 @@ fn reattach_stdin_to_tty() -> Result<()> {
 /// from a panic hook, so every exit path (normal, error, panic) lands the user
 /// back on a clean prompt. Errors are ignored — we're tearing down regardless.
 fn restore_terminal() {
+    // Pop the keyboard-enhancement flags first (best-effort; terminals that
+    // never received a push simply ignore the pop), then tear down the rest.
+    let _ = execute!(stderr(), PopKeyboardEnhancementFlags);
     let _ = disable_raw_mode();
     let _ = execute!(stderr(), LeaveAlternateScreen, DisableMouseCapture);
 }
@@ -124,6 +131,16 @@ pub fn run(changeset: Changeset, comments: CommentStore) -> Result<CommentStore>
     enable_raw_mode()?;
     let mut out = stderr();
     execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
+    // Enable the keyboard-enhancement protocol where supported (kitty/ghostty/
+    // wezterm/foot/…) so the composer can distinguish Shift+Enter (submit) from
+    // a bare Enter (newline). Terminals without it fall back to Ctrl-S. The
+    // matching pop happens in `restore_terminal`.
+    if matches!(supports_keyboard_enhancement(), Ok(true)) {
+        let _ = execute!(
+            out,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        );
+    }
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
 

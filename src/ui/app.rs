@@ -873,7 +873,8 @@ impl App {
             },
             buf: String::new(),
         });
-        self.status = "new comment — enter for newline, ctrl-s to submit, esc to cancel".into();
+        self.status =
+            "new comment — enter for newline, shift+enter to submit, esc to cancel".into();
         self.rebuild_rows();
         self.ensure_composer_visible();
     }
@@ -893,7 +894,7 @@ impl App {
         // A reply renders under its thread, so make sure that thread is
         // expanded (collapsed threads emit no rows to attach the box to).
         self.expanded.insert(id);
-        self.status = "reply — type, enter to submit, esc to cancel".into();
+        self.status = "reply — enter for newline, shift+enter to submit, esc to cancel".into();
         self.rebuild_rows();
         self.ensure_composer_visible();
     }
@@ -915,7 +916,11 @@ impl App {
                 self.sel_anchor = None;
                 self.status = "cancelled".into();
             }
-            // Ctrl-S submits; Enter inserts a newline (bodies are multi-line).
+            // Shift+Enter submits; a bare Enter inserts a newline (bodies are
+            // multi-line). Ctrl-S is kept as a fallback for terminals without
+            // the keyboard-enhancement protocol, where Shift+Enter is
+            // indistinguishable from Enter.
+            KeyCode::Enter if mods.contains(KeyModifiers::SHIFT) => self.submit_compose(),
             KeyCode::Char('s') if ctrl => self.submit_compose(),
             KeyCode::Enter => {
                 if let Some(c) = self.composer.as_mut() {
@@ -2120,7 +2125,7 @@ impl App {
                 margin,
                 Span::styled("│".to_string(), bstyle),
                 Span::styled(
-                    fit(" enter: newline · ctrl-s: submit · esc: cancel"),
+                    fit(" shift+enter: submit · enter: newline · esc: cancel"),
                     Style::default().fg(THEME.muted),
                 ),
                 Span::styled("│".to_string(), bstyle),
