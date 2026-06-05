@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use unicode_width::UnicodeWidthChar;
+use uuid::Uuid;
 
 /// Terminal display width of a string in cells (wide/CJK glyphs count as 2,
 /// zero-width/control as 0). The whole TUI lays text out in fixed cells, so
@@ -165,15 +166,20 @@ pub fn thread_lines(t: &Thread, width: usize) -> Vec<CommentLine> {
 /// whose anchor matches one of the row's `(side, line)` anchors.
 fn comment_rows_for(
     comments: &CommentStore,
-    expanded: &HashSet<usize>,
-    emitted: &mut HashSet<usize>,
+    expanded: &HashSet<Uuid>,
+    emitted: &mut HashSet<Uuid>,
     path: &str,
     anchors: &[(Side, u32)],
     width: usize,
 ) -> Vec<(Side, CommentLine)> {
     let mut out = Vec::new();
-    for (i, t) in comments.threads.iter().enumerate() {
-        if !expanded.contains(&i) || emitted.contains(&i) || t.file.as_path() != Path::new(path) {
+    for t in comments.threads.iter() {
+        // Identity is the thread's stable id, not its position: adding or
+        // removing a thread must not change which others are expanded.
+        if !expanded.contains(&t.id)
+            || emitted.contains(&t.id)
+            || t.file.as_path() != Path::new(path)
+        {
             continue;
         }
         // Emit once per thread, at the first line of its range present in the
@@ -182,7 +188,7 @@ fn comment_rows_for(
             .iter()
             .any(|(s, l)| *s == t.side && t.range.contains(*l))
         {
-            emitted.insert(i);
+            emitted.insert(t.id);
             out.extend(thread_lines(t, width).into_iter().map(|cl| (t.side, cl)));
         }
     }
@@ -354,11 +360,11 @@ fn hunk_header(hunk: &crate::diff::model::Hunk) -> String {
 pub fn build_split_rows(
     changeset: &Changeset,
     comments: &CommentStore,
-    expanded: &HashSet<usize>,
+    expanded: &HashSet<Uuid>,
     width: usize,
 ) -> Vec<SplitRow> {
     let mut rows = Vec::new();
-    let mut emitted = HashSet::new();
+    let mut emitted: HashSet<Uuid> = HashSet::new();
     for (fi, file) in changeset.files.iter().enumerate() {
         let path = file.display_path();
         rows.push(SplitRow {
@@ -466,8 +472,8 @@ fn flush_pairs(
     adds: &mut Vec<SideCell>,
     rows: &mut Vec<SplitRow>,
     comments: &CommentStore,
-    expanded: &HashSet<usize>,
-    emitted: &mut HashSet<usize>,
+    expanded: &HashSet<Uuid>,
+    emitted: &mut HashSet<Uuid>,
     path: &str,
     width: usize,
 ) {
@@ -503,11 +509,11 @@ fn flush_pairs(
 pub fn build_rows(
     changeset: &Changeset,
     comments: &CommentStore,
-    expanded: &HashSet<usize>,
+    expanded: &HashSet<Uuid>,
     width: usize,
 ) -> Vec<Row> {
     let mut rows = Vec::new();
-    let mut emitted = HashSet::new();
+    let mut emitted: HashSet<Uuid> = HashSet::new();
     for (fi, file) in changeset.files.iter().enumerate() {
         let path = file.display_path();
         rows.push(Row {
@@ -590,6 +596,11 @@ mod tests {
  c
 ";
 
+    /// Every thread id in `store`, i.e. "expand all threads".
+    fn expand_all(store: &CommentStore) -> HashSet<Uuid> {
+        store.threads.iter().map(|t| t.id).collect()
+    }
+
     fn store_with(side: Side, line: u32) -> CommentStore {
         let mut store = CommentStore::default();
         store.add_thread(
@@ -608,10 +619,10 @@ mod tests {
     #[test]
     fn split_comment_renders_under_anchored_side() {
         let cs = parse_unified(SIMPLE_DIFF);
-        let all: HashSet<usize> = [0].into_iter().collect();
 
         // Old-side thread (anchored to the deleted line 2) is tagged Old.
         let old = store_with(Side::Old, 2);
+        let all = expand_all(&old);
         let rows = build_split_rows(&cs, &old, &all, 80);
         assert!(
             rows.iter().any(|r| matches!(
@@ -636,6 +647,7 @@ mod tests {
 
         // New-side thread (anchored to the added line 2) is tagged New.
         let new = store_with(Side::New, 2);
+        let all = expand_all(&new);
         let rows = build_split_rows(&cs, &new, &all, 80);
         assert!(
             rows.iter().any(|r| matches!(
@@ -700,7 +712,7 @@ mod tests {
         let cs = load_patch(Some(Path::new("examples/rust-long-en.patch"))).unwrap();
         let comments = load_comments(Path::new("examples/rust-long-en.comments.json")).unwrap();
         let none = HashSet::new();
-        let all: HashSet<usize> = (0..comments.threads.len()).collect();
+        let all = expand_all(&comments);
         let base = build_rows(&cs, &comments, &none, 80);
         let rows = build_rows(&cs, &comments, &all, 80);
         // Expanding threads injects extra rows.

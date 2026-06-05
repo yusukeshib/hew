@@ -200,7 +200,7 @@ pub struct App {
     sidebar_width: u16,
     sidebar_scroll: usize, // top file row of the sidebar (independent of selection)
     sidebar_sel: usize,    // cursor row in the sidebar (a File or Thread row)
-    expanded: HashSet<usize>, // thread indices expanded inline in the diff
+    expanded: HashSet<Uuid>, // thread ids expanded inline in the diff
     collapsed: HashSet<String>, // directory paths collapsed in the sidebar tree
     comment_wrap: usize,   // width used to wrap inline comment bodies
     resizing: bool,        // dragging the sidebar/diff divider
@@ -237,7 +237,7 @@ impl App {
     /// Construct with a pre-loaded comment store (e.g. from a sidecar JSON).
     pub fn with_comments(changeset: Changeset, comments: CommentStore) -> Self {
         // Show every comment thread inline by default; `o`/Enter collapse them.
-        let expanded: HashSet<usize> = (0..comments.threads.len()).collect();
+        let expanded: HashSet<Uuid> = comments.threads.iter().map(|t| t.id).collect();
         let rows = build_rows(&changeset, &comments, &expanded, 0);
         let split_rows = build_split_rows(&changeset, &comments, &expanded, 0);
         let stats = file_stats(&changeset);
@@ -769,27 +769,26 @@ impl App {
             return;
         };
         let path = Path::new(file.display_path());
-        let here: Vec<usize> = self
+        let here: Vec<Uuid> = self
             .comments
             .threads
             .iter()
-            .enumerate()
-            .filter(|(_, t)| t.file.as_path() == path && t.side == side && t.range.contains(line))
-            .map(|(i, _)| i)
+            .filter(|t| t.file.as_path() == path && t.side == side && t.range.contains(line))
+            .map(|t| t.id)
             .collect();
         if here.is_empty() {
             self.status = "no comments on this line".into();
             return;
         }
         // Collapse if all are open; otherwise expand the rest.
-        if here.iter().all(|i| self.expanded.contains(i)) {
-            for i in &here {
-                self.expanded.remove(i);
+        if here.iter().all(|id| self.expanded.contains(id)) {
+            for id in &here {
+                self.expanded.remove(id);
             }
             self.status = "collapsed thread".into();
         } else {
-            for i in here {
-                self.expanded.insert(i);
+            for id in here {
+                self.expanded.insert(id);
             }
             self.status = "expanded thread".into();
         }
@@ -897,7 +896,7 @@ impl App {
                     return;
                 };
                 let path = PathBuf::from(file.display_path());
-                self.comments.add_thread(
+                let id = self.comments.add_thread(
                     path,
                     side,
                     LineRange { start, end },
@@ -907,9 +906,9 @@ impl App {
                 // Leaving the composer also leaves visual mode.
                 self.visual = false;
                 self.sel_anchor = None;
-                // Thread indices shifted; reset the positional expand set and
-                // show every thread so the new one is visible.
-                self.expanded = (0..self.comments.threads.len()).collect();
+                // Expand just the new thread (ids are stable, so existing
+                // collapse state is preserved).
+                self.expanded.insert(id);
                 self.status = "added comment".into();
             }
             ComposeTarget::Reply { thread_id } => {
@@ -956,9 +955,9 @@ impl App {
             return;
         };
         if self.comments.remove_thread(id) {
-            // `expanded` holds positional thread indices; removing a thread
-            // shifts them, so reset to "all expanded" before rebuilding.
-            self.expanded = (0..self.comments.threads.len()).collect();
+            // Drop the gone thread's expand entry; every other thread keeps its
+            // state (ids are stable, so no positional shift to compensate for).
+            self.expanded.remove(&id);
             self.status = "deleted thread".into();
             self.rebuild_rows();
         }
