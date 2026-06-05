@@ -77,11 +77,17 @@ pub enum CommentKind {
 }
 
 /// One visual line of a thread box, tagged with the thread's `resolved` state
-/// so the renderer can dim the whole box (not just the header) when resolved.
+/// so the renderer can dim the whole box (not just the header) when resolved,
+/// plus identity so the line can be selected/focused. `comment_id` is the
+/// owning message for content lines (`Author`/`Body`/`Gap`) and `None` for
+/// thread chrome (`Top`/`Head`/`Bottom`) — selection keys off it, so a message
+/// (author + its body lines) forms one selectable unit.
 #[derive(Debug, Clone)]
 pub struct CommentLine {
     pub kind: CommentKind,
     pub resolved: bool,
+    pub thread_id: Uuid,
+    pub comment_id: Option<Uuid>,
 }
 
 /// Where an open inline composer attaches in the row stream.
@@ -238,36 +244,49 @@ fn wrap_text(s: &str, width: usize) -> Vec<String> {
 
 /// Expand a thread into wrapped visual lines.
 pub fn thread_lines(t: &Thread, width: usize) -> Vec<CommentLine> {
-    let tag = |kind: CommentKind| CommentLine {
+    // Chrome lines (Top/Head/Bottom) carry no message id; content lines carry
+    // their owning message's id so author + body + trailing gap select as one.
+    let chrome = |kind: CommentKind| CommentLine {
         kind,
         resolved: t.resolved,
+        thread_id: t.id,
+        comment_id: None,
+    };
+    let content = |kind: CommentKind, cid: Uuid| CommentLine {
+        kind,
+        resolved: t.resolved,
+        thread_id: t.id,
+        comment_id: Some(cid),
     };
     let mut out = vec![
-        tag(CommentKind::Top),
-        tag(CommentKind::Head {
+        chrome(CommentKind::Top),
+        chrome(CommentKind::Head {
             replies: t.comments.len(),
         }),
     ];
     for (i, c) in t.comments.iter().enumerate() {
-        out.push(tag(CommentKind::Author {
-            name: c.author.clone().unwrap_or_else(|| "?".into()),
-            date: fmt_date(c.created_at),
-        }));
+        out.push(content(
+            CommentKind::Author {
+                name: c.author.clone().unwrap_or_else(|| "?".into()),
+                date: fmt_date(c.created_at),
+            },
+            c.id,
+        ));
         for raw in c.body.split('\n') {
             let s = sanitize_line(raw);
             if s.is_empty() {
-                out.push(tag(CommentKind::Body(String::new())));
+                out.push(content(CommentKind::Body(String::new()), c.id));
             } else {
                 for wl in wrap_text(&s, width) {
-                    out.push(tag(CommentKind::Body(wl)));
+                    out.push(content(CommentKind::Body(wl), c.id));
                 }
             }
         }
         if i + 1 < t.comments.len() {
-            out.push(tag(CommentKind::Gap));
+            out.push(content(CommentKind::Gap, c.id));
         }
     }
-    out.push(tag(CommentKind::Bottom));
+    out.push(chrome(CommentKind::Bottom));
     out
 }
 
