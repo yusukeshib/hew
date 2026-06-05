@@ -1349,7 +1349,10 @@ impl App {
 
     fn jump_comment(&mut self, dir: isize) {
         self.sel_anchor = None;
-        // Collect rows in the current file that carry a thread anchor.
+        // Collect the *head* row of each thread in the current file. Navigation
+        // (`n`/`N`) deliberately stops once per thread, at its first line
+        // (`range.start`) — unlike the act-on-thread operations (reply/resolve/
+        // delete), which match anywhere in the range via `range.contains`.
         let (start, end) = self.file_range();
         let mut targets: Vec<usize> = Vec::new();
         for i in start..end {
@@ -1569,8 +1572,8 @@ impl App {
         }
     }
 
-    /// Left-hand collapsible file tree: directories, files (with a one-letter
-    /// change status), and comment threads, indented by depth.
+    /// Left-hand collapsible file tree: directories and files (with a one-letter
+    /// change status and a comment-state dot), indented by depth.
     fn render_sidebar(&self, f: &mut Frame, area: Rect) {
         let focused = self.effective_focus() == Focus::Sidebar;
         // No border on the sidebar: the floating diff panel's rounded left
