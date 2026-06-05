@@ -29,11 +29,11 @@ fn fmt_date(t: SystemTime) -> String {
 
 /// One visual line of an inline-expanded comment thread.
 #[derive(Debug, Clone)]
-pub enum CommentLine {
+pub enum CommentKind {
     /// Top rounded border of the thread box.
     Top,
-    /// Thread header: resolved state + message count.
-    Head { resolved: bool, replies: usize },
+    /// Thread header: message count (resolved state lives on `CommentLine`).
+    Head { replies: usize },
     /// A message author line (`@name`) with its formatted date.
     Author { name: String, date: String },
     /// A (pre-wrapped) body line.
@@ -42,6 +42,14 @@ pub enum CommentLine {
     Gap,
     /// Bottom rounded border of the thread box.
     Bottom,
+}
+
+/// One visual line of a thread box, tagged with the thread's `resolved` state
+/// so the renderer can dim the whole box (not just the header) when resolved.
+#[derive(Debug, Clone)]
+pub struct CommentLine {
+    pub kind: CommentKind,
+    pub resolved: bool,
 }
 
 /// Greedy word-wrap to `width` columns, hard-splitting over-long words.
@@ -102,33 +110,36 @@ fn wrap_text(s: &str, width: usize) -> Vec<String> {
 
 /// Expand a thread into wrapped visual lines.
 pub fn thread_lines(t: &Thread, width: usize) -> Vec<CommentLine> {
+    let tag = |kind: CommentKind| CommentLine {
+        kind,
+        resolved: t.resolved,
+    };
     let mut out = vec![
-        CommentLine::Top,
-        CommentLine::Head {
-            resolved: t.resolved,
+        tag(CommentKind::Top),
+        tag(CommentKind::Head {
             replies: t.comments.len(),
-        },
+        }),
     ];
     for (i, c) in t.comments.iter().enumerate() {
-        out.push(CommentLine::Author {
+        out.push(tag(CommentKind::Author {
             name: c.author.clone().unwrap_or_else(|| "?".into()),
             date: fmt_date(c.created_at),
-        });
+        }));
         for raw in c.body.split('\n') {
             let s = sanitize_line(raw);
             if s.is_empty() {
-                out.push(CommentLine::Body(String::new()));
+                out.push(tag(CommentKind::Body(String::new())));
             } else {
                 for wl in wrap_text(&s, width) {
-                    out.push(CommentLine::Body(wl));
+                    out.push(tag(CommentKind::Body(wl)));
                 }
             }
         }
         if i + 1 < t.comments.len() {
-            out.push(CommentLine::Gap);
+            out.push(tag(CommentKind::Gap));
         }
     }
-    out.push(CommentLine::Bottom);
+    out.push(tag(CommentKind::Bottom));
     out
 }
 
@@ -650,7 +661,15 @@ mod tests {
         // anchor ranges (no per-line duplication).
         let heads = rows
             .iter()
-            .filter(|r| matches!(r.kind, RowKind::Comment(CommentLine::Head { .. })))
+            .filter(|r| {
+                matches!(
+                    &r.kind,
+                    RowKind::Comment(CommentLine {
+                        kind: CommentKind::Head { .. },
+                        ..
+                    })
+                )
+            })
             .count();
         assert_eq!(heads, comments.threads.len());
         assert!(rows.iter().all(|r| !matches!(r.kind, RowKind::Comment(_))

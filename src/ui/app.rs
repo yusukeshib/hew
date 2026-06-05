@@ -4,8 +4,8 @@ use crate::comments::model::{CommentStore, LineRange};
 use crate::diff::model::{Changeset, DiffFile, LineKind, Side};
 use crate::ui::highlight::Highlighter;
 use crate::ui::render_rows::{
-    build_rows, build_split_rows, sanitize_line, CommentLine, Row, RowKind, SideCell, SplitRow,
-    SplitRowKind,
+    build_rows, build_split_rows, sanitize_line, CommentKind, CommentLine, Row, RowKind, SideCell,
+    SplitRow, SplitRowKind,
 };
 use crate::ui::theme::THEME;
 use anyhow::Result;
@@ -316,11 +316,13 @@ fn elide_left(s: &str, w: usize) -> String {
 
 /// What an open composer will write on submit.
 enum ComposeTarget {
-    /// A brand-new thread anchored to a diff line.
+    /// A brand-new thread anchored to a diff line range (`start == end` for a
+    /// single line; a wider span comes from visual line-select mode).
     NewThread {
         file_idx: usize,
         side: Side,
-        line: u32,
+        start: u32,
+        end: u32,
     },
     /// A reply appended to an existing thread.
     Reply { thread_id: Uuid },
@@ -380,6 +382,9 @@ pub struct App {
     /// entries for files that fall out of this window are evicted.
     warmed_recent: Vec<usize>,
     composer: Option<Composer>,
+    /// Visual line-select mode: movement keeps `sel_anchor` so the user can
+    /// grow a multi-line selection (then `i` anchors a comment to the range).
+    visual: bool,
     quit: bool,
 }
 
@@ -443,6 +448,7 @@ impl App {
             warmed_file: None,
             warmed_recent: Vec::new(),
             composer: None,
+            visual: false,
             quit: false,
         };
         app.selected = app.first_selectable().unwrap_or(0);
@@ -995,9 +1001,11 @@ impl App {
         self.rebuild_rows();
     }
 
-    /// Open the composer for a new thread on the selected diff line.
+    /// Open the composer for a new thread anchored to the current selection —
+    /// the cursor line, or a multi-line range from visual mode (`v`) or a mouse
+    /// drag (see [`Self::selection_range`]).
     fn open_new_thread(&mut self) {
-        let Some((file_idx, side, line)) = self.anchor_at(self.selected) else {
+        let Some((file_idx, side, start, end)) = self.selection_range() else {
             self.status = "put the cursor on a diff line first".into();
             return;
         };
@@ -1009,11 +1017,12 @@ impl App {
             target: ComposeTarget::NewThread {
                 file_idx,
                 side,
-                line,
+                start,
+                end,
             },
             buf: String::new(),
         });
-        self.status = "new comment — type, enter to submit, esc to cancel".into();
+        self.status = "new comment — enter for newline, ctrl-s to submit, esc to cancel".into();
     }
 
     /// Open the composer to reply to the thread on the selected line.
@@ -1038,13 +1047,23 @@ impl App {
             // Esc or Ctrl-C/D cancels without saving.
             KeyCode::Esc => {
                 self.composer = None;
+                self.visual = false;
+                self.sel_anchor = None;
                 self.status = "cancelled".into();
             }
             KeyCode::Char('c') | KeyCode::Char('d') if ctrl => {
                 self.composer = None;
+                self.visual = false;
+                self.sel_anchor = None;
                 self.status = "cancelled".into();
             }
-            KeyCode::Enter => self.submit_compose(),
+            // Ctrl-S submits; Enter inserts a newline (bodies are multi-line).
+            KeyCode::Char('s') if ctrl => self.submit_compose(),
+            KeyCode::Enter => {
+                if let Some(c) = self.composer.as_mut() {
+                    c.buf.push('\n');
+                }
+            }
             KeyCode::Backspace => {
                 if let Some(c) = self.composer.as_mut() {
                     c.buf.pop();
@@ -1073,7 +1092,8 @@ impl App {
             ComposeTarget::NewThread {
                 file_idx,
                 side,
-                line,
+                start,
+                end,
             } => {
                 let Some(file) = self.changeset.files.get(file_idx) else {
                     // Defensive: the anchor's file index should always be valid
@@ -1085,13 +1105,13 @@ impl App {
                 self.comments.add_thread(
                     path,
                     side,
-                    LineRange {
-                        start: line,
-                        end: line,
-                    },
+                    LineRange { start, end },
                     Some("you".into()),
                     body,
                 );
+                // Leaving the composer also leaves visual mode.
+                self.visual = false;
+                self.sel_anchor = None;
                 // Thread indices shifted; reset the positional expand set and
                 // show every thread so the new one is visible.
                 self.expanded = (0..self.comments.threads.len()).collect();
@@ -1263,6 +1283,7 @@ impl App {
     /// Toggle between unified and split, keeping the cursor on the same line.
     fn toggle_view(&mut self) {
         self.sel_anchor = None;
+        self.visual = false;
         let anchor = self.anchor_at(self.selected);
         self.view = match self.view {
             View::Unified => View::Split,
@@ -1379,12 +1400,16 @@ impl App {
 
             // Top / bottom.
             KeyCode::Char('g') | KeyCode::Home => {
-                self.sel_anchor = None;
+                if !self.visual {
+                    self.sel_anchor = None;
+                }
                 self.selected = self.first_selectable().unwrap_or(0);
                 self.ensure_visible();
             }
             KeyCode::Char('G') | KeyCode::End => {
-                self.sel_anchor = None;
+                if !self.visual {
+                    self.sel_anchor = None;
+                }
                 self.selected = self.last_selectable().unwrap_or(0);
                 self.ensure_visible();
             }
@@ -1395,6 +1420,9 @@ impl App {
 
             // Toggle the inline comment thread on the current line.
             KeyCode::Enter | KeyCode::Char('o') => self.toggle_comment(),
+
+            // Visual line-select: anchor a comment to a multi-line range.
+            KeyCode::Char('v') => self.toggle_visual(),
 
             // Compose a new thread (i) or reply to the thread here (r).
             KeyCode::Char('i') => self.open_new_thread(),
@@ -1414,7 +1442,11 @@ impl App {
             // (never quits).
             KeyCode::Esc => {
                 self.sel_anchor = None;
-                if self.sidebar_available() {
+                if self.visual {
+                    // First Esc just leaves visual mode (keeps focus here).
+                    self.visual = false;
+                    self.status = "visual off".into();
+                } else if self.sidebar_available() {
                     self.focus = Focus::Sidebar;
                 }
             }
@@ -1422,8 +1454,44 @@ impl App {
         }
     }
 
+    /// Enter/leave visual line-select mode. Entering anchors the selection at
+    /// the cursor; leaving drops it.
+    fn toggle_visual(&mut self) {
+        if self.visual {
+            self.visual = false;
+            self.sel_anchor = None;
+            self.status = "visual off".into();
+        } else {
+            self.visual = true;
+            self.sel_anchor = Some(self.selected);
+            self.status = "visual — j/k to extend, i to comment, esc to cancel".into();
+        }
+    }
+
+    /// The (file, side, line-range) covered by the current selection, matching
+    /// the cursor line's file+side. Falls back to the single cursor line when
+    /// there's no active selection. Lines on a different side/file than the
+    /// cursor are ignored (a comment anchors to one side).
+    fn selection_range(&self) -> Option<(usize, Side, u32, u32)> {
+        let (fi, side, cur) = self.anchor_at(self.selected)?;
+        let anchor = self.sel_anchor.unwrap_or(self.selected);
+        let (lo, hi) = (anchor.min(self.selected), anchor.max(self.selected));
+        let (mut start, mut end) = (cur, cur);
+        for i in lo..=hi {
+            if let Some((f, s, l)) = self.anchor_at(i) {
+                if f == fi && s == side {
+                    start = start.min(l);
+                    end = end.max(l);
+                }
+            }
+        }
+        Some((fi, side, start, end))
+    }
+
     fn move_selection(&mut self, delta: isize) {
-        self.sel_anchor = None;
+        if !self.visual {
+            self.sel_anchor = None;
+        }
         let (start, end) = self.file_range();
         let mut i = self.selected as isize;
         loop {
@@ -1647,14 +1715,23 @@ impl App {
             return;
         };
         let title = match &c.target {
-            ComposeTarget::NewThread { file_idx, line, .. } => {
+            ComposeTarget::NewThread {
+                file_idx,
+                start,
+                end,
+                ..
+            } => {
                 let path = self
                     .changeset
                     .files
                     .get(*file_idx)
                     .map(|f| f.display_path())
                     .unwrap_or("?");
-                format!(" new comment — {path}:{line} ")
+                if start == end {
+                    format!(" new comment — {path}:{start} ")
+                } else {
+                    format!(" new comment — {path}:{start}-{end} ")
+                }
             }
             ComposeTarget::Reply { .. } => " reply ".into(),
         };
@@ -1693,7 +1770,8 @@ impl App {
                 ..inner
             };
             f.render_widget(
-                Paragraph::new("enter submit · esc cancel").style(Style::default().fg(THEME.muted)),
+                Paragraph::new("enter newline · ctrl-s submit · esc cancel")
+                    .style(Style::default().fg(THEME.muted)),
                 hint,
             );
         }
@@ -2065,7 +2143,13 @@ impl App {
     /// (2-column left margin + `╭─╮`/`│ │`/`╰─╯` frame).
     fn comment_line_to_line(&self, cl: &CommentLine, width: usize) -> Line<'static> {
         const MARGIN: usize = 2;
-        let border_col = THEME.text_strong;
+        // Resolved threads dim the entire box (border + body), not just the
+        // header flag, so a reviewer can skim past settled discussion.
+        let border_col = if cl.resolved {
+            THEME.muted
+        } else {
+            THEME.text_strong
+        };
         let bstyle = Style::default().fg(border_col);
         // Box occupies cols [MARGIN, width); inner_w is the span between borders.
         let inner_w = width.saturating_sub(MARGIN + 2);
@@ -2073,22 +2157,23 @@ impl App {
             return Line::from(Span::raw(" ".repeat(width)));
         }
         let margin = Span::raw(" ".repeat(MARGIN));
-        match cl {
-            CommentLine::Top => Line::from(vec![
+        match &cl.kind {
+            CommentKind::Top => Line::from(vec![
                 margin,
                 Span::styled(format!("╭{}╮", "─".repeat(inner_w)), bstyle),
             ]),
-            CommentLine::Bottom => Line::from(vec![
+            CommentKind::Bottom => Line::from(vec![
                 margin,
                 Span::styled(format!("╰{}╯", "─".repeat(inner_w)), bstyle),
             ]),
-            CommentLine::Author { name, date } => {
+            CommentKind::Author { name, date } => {
                 // Name on the left, date flush right (1-col gutter before the
                 // border). Spans below total exactly `inner_w`.
                 let left = format!(" @{name}");
                 let llen = left.chars().count();
                 let dlen = date.chars().count();
-                let name_style = Style::default().fg(THEME.warn).add_modifier(Modifier::BOLD);
+                let name_col = if cl.resolved { THEME.muted } else { THEME.warn };
+                let name_style = Style::default().fg(name_col).add_modifier(Modifier::BOLD);
                 let inner = if llen + dlen + 2 <= inner_w {
                     vec![
                         Span::styled(left, name_style),
@@ -2107,18 +2192,26 @@ impl App {
                 Line::from(spans)
             }
             _ => {
-                let (content, color, bold) = match cl {
-                    CommentLine::Head { resolved, replies } => (
+                let (content, color, bold) = match &cl.kind {
+                    CommentKind::Head { replies } => (
                         format!(
                             " {} · {} message{}",
-                            if *resolved { "resolved" } else { "open" },
+                            if cl.resolved { "resolved" } else { "open" },
                             replies,
                             if *replies == 1 { "" } else { "s" }
                         ),
-                        if *resolved { THEME.muted } else { THEME.accent },
+                        if cl.resolved {
+                            THEME.muted
+                        } else {
+                            THEME.accent
+                        },
                         true,
                     ),
-                    CommentLine::Body(b) => (format!("   {b}"), THEME.text, false),
+                    CommentKind::Body(b) => (
+                        format!("   {b}"),
+                        if cl.resolved { THEME.muted } else { THEME.text },
+                        false,
+                    ),
                     _ => (String::new(), THEME.text, false), // Gap
                 };
                 let mut cstyle = Style::default().fg(color);

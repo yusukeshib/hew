@@ -17,8 +17,8 @@ git diff | hew --comments base.json > actions.json
 agent applies actions.json  (post to GitHub / fix code / …)
 ```
 
-Live in-session AI co-review over a socket is **deferred** (see the Deferred
-section); the turn-based flow above covers the v1 workflows without it.
+Live in-session AI co-review over a socket is out of scope for v1; the
+turn-based flow above covers the v1 workflows without it.
 
 ## Design invariants (do not break — these are what keep hew *not* fat)
 
@@ -102,12 +102,14 @@ mutate **one** in-memory `CommentStore` through a single shared write path.
 - [x] Comment composer in the TUI (`i`): modal input box, write a body, submit
       → new thread on the current line (author `you`).
 - [x] Reply to an existing thread from the TUI (`r`).
-- [ ] Visual line-select mode (`v`) to anchor a comment to a multi-line
-      `(file, side, range)` (composer currently anchors to the single cursor
-      line).
-- [ ] Multi-line comment bodies (composer is single-line; `enter` submits).
-- [ ] Visually distinguish resolved threads beyond the header flag (dim /
-      collapsed / filterable).
+- [x] Visual line-select mode (`v`) to anchor a comment to a multi-line
+      `(file, side, range)`. Extend the selection with `j`/`k` (or a mouse
+      drag), then `i` anchors the new thread to the spanned range; the range
+      surfaces in the action log's `start_line`/`line`.
+- [x] Multi-line comment bodies: `enter` inserts a newline, `ctrl-s` submits.
+      Bodies round-trip through `\n` and render across multiple box lines.
+- [x] Visually distinguish resolved threads beyond the header flag: the whole
+      thread box (border + author + body) dims to `muted` when resolved.
 
 ## Phase 4 — Agent-friendly contract (the "bridge" is the schema)
 
@@ -125,32 +127,22 @@ writing wrapper scripts.
       (stdin=patch, stdout=action log, stderr/tty=render), the turn-based
       workflow, and the input/output schemas inline — so `hew --help` alone is
       enough to drive it (`-h` stays terse via clap's `long_about`).
-- [ ] Keep `Thread`/`Comment`/`Action` JSON shaped close to a GitHub
+- [x] Keep `Thread`/`Comment`/`Action` JSON shaped close to a GitHub
       review-thread structure (path/side/line/resolved/body/author/created_at,
       **stable thread id** for re-post matching) so an agent's translation stays
-      trivial. Decide whether `add_comment` should carry the full `range` or stay
-      single-`line` (today it drops `range.end`).
-- [ ] (Optional) Ship thin `gh` one-liner examples in `examples/` as a
+      trivial. Decided: `add_comment` carries the full range as GitHub's
+      `start_line`/`line` pair — `line` is the thread's last line, `start_line`
+      appears only for a multi-line range (omitted for single line). No longer
+      drops `range.end`.
+- [x] (Optional) Ship thin `gh` one-liner examples in `examples/` as a
       convenience — never a dependency, never in the binary.
-
-## Deferred — live socket co-review (post-v1)
-
-A running TUI advertising a Unix socket so an agent can inject comments and read
-responses **live**, without closing hew. Implemented once (session registry +
-`hew comment list` over an mpsc-forwarded socket, PR #7) then **removed to keep
-v1 lean** — the turn-based flow (base JSON in, action log out) covers the
-intended "review before PR" and "review PR #N" workflows without it. Revisit only
-if live, multi-turn co-review in a single session becomes a real need; it also
-requires solving anchor-drift when the patch reloads mid-session.
-
-- [ ] Session registry + socket listener (recover from PR #7 history).
-- [ ] `hew comment add/remove/resolve/list` client subcommands over the socket.
-- [ ] `hew sessions` enumeration + multi-session target resolution.
-- [ ] Anchor re-mapping when the patch reloads under a live session.
+      `examples/fetch_pr.sh` prepares the base sidecar from a PR;
+      `examples/apply_actions.sh` replays the action log's `add_comment`s via
+      `gh` (reply/resolve/delete need the consumer's id mapping).
 
 ## Open questions
 
 - [ ] `--comments` vs `--review` naming.
 - [ ] Anchor remapping when the patch changes is **moot in v1**: the patch is
       fixed for the session (no `--watch`). It only resurfaces if live patch
-      reload (Deferred) is ever added.
+      reload is ever added.

@@ -54,11 +54,13 @@ INPUT — comment sidecar (--comments), an immutable base:
 
 OUTPUT — action log (stdout), the minimal delta turning base into reviewed:
   [{\"action\":\"add_comment\",\"thread_id\":\"<uuid>\",\"file\":\"src/x.rs\",
-    \"side\":\"new\",\"line\":10,\"body\":\"...\",\"author\":\"you\"},
+    \"side\":\"new\",\"start_line\":10,\"line\":12,\"body\":\"...\",\"author\":\"you\"},
    {\"action\":\"reply\",\"thread_id\":\"<uuid>\",\"body\":\"...\"},
    {\"action\":\"resolve\",\"thread_id\":\"<uuid>\"},
    {\"action\":\"unresolve\",\"thread_id\":\"<uuid>\"},
    {\"action\":\"delete\",\"thread_id\":\"<uuid>\"}]
+  - add_comment's `line` is the thread's last line; `start_line` appears only
+    for a multi-line range (omitted for a single line) — GitHub's shape.
   - reply/resolve/unresolve/delete reference a thread by thread_id (a base
     thread, or one add_comment-ed earlier in the same log).
   - Compaction is automatic: add-then-delete and resolve-then-unresolve cancel.

@@ -77,7 +77,8 @@ the same base.
 | `[` / `]` | Jump to previous / next file |
 | `n` / `N` | Jump to next / previous comment |
 | `Enter` / `o` | Toggle the comment thread on the current line |
-| `i` | Write a new comment on the current line |
+| `v` | Visual line-select: extend with `j`/`k`, then `i` anchors a comment to the range |
+| `i` | Write a new comment on the current line (or the visual/drag selection) |
 | `r` | Reply to the thread on the current line |
 | `R` | Resolve / unresolve the thread on the current line |
 | `D` | Delete the thread on the current line |
@@ -85,7 +86,7 @@ the same base.
 | `Ctrl-B` | Toggle the file list sidebar |
 | `Tab` / `s` | Toggle unified ↔ split (side-by-side) layout |
 | `y` | Copy the selected line(s) to the clipboard |
-| `Esc` | Clear the line selection |
+| `Esc` | Leave visual mode / clear the line selection |
 | `Ctrl-L` | Force a full repaint |
 | `q` | Quit |
 
@@ -149,7 +150,7 @@ emitted:
 ```json
 [
   { "action": "add_comment", "thread_id": "<uuid>", "file": "src/main.rs",
-    "side": "new", "line": 18, "body": "This arm is unreachable.", "author": "you" },
+    "side": "new", "start_line": 18, "line": 22, "body": "This arm is unreachable.", "author": "you" },
   { "action": "reply",     "thread_id": "<uuid>", "body": "Good catch.", "author": "you" },
   { "action": "resolve",   "thread_id": "<uuid>" },
   { "action": "unresolve", "thread_id": "<uuid>" },
@@ -157,8 +158,11 @@ emitted:
 ]
 ```
 
-- `add_comment` is a new thread's root, anchored to `(file, side, line)`; its
-  `thread_id` is reused by any `reply` to the same thread within the log.
+- `add_comment` is a new thread's root, anchored to `(file, side, line)`. `line`
+  is the thread's last line (GitHub's anchor); `start_line` is present only for a
+  multi-line range and omitted for a single line (matching GitHub's
+  `start_line`/`line` review-comment shape). Its `thread_id` is reused by any
+  `reply` to the same thread within the log.
 - `reply` / `resolve` / `unresolve` / `delete` reference an existing thread by
   `thread_id` (a base thread, or one `add_comment`-ed earlier in the same log).
 - `author` is omitted when unset.
@@ -168,7 +172,10 @@ emitted:
 There is **no GitHub-specific code in hew** — the binary only speaks this JSON.
 The "bridge" to GitHub is whoever consumes the log: an agent that knows this
 schema can read `gh api` PR threads into a base sidecar and replay the action
-log back through `gh`, with no wrapper binary required.
+log back through `gh`, with no wrapper binary required. Thin, convenience-only
+examples of both directions ship in `examples/`: `fetch_pr.sh` prepares the base
+sidecar from a PR, and `apply_actions.sh` replays the log's `add_comment`s via
+`gh` (reply/resolve/delete need the consumer's `thread_id`→GitHub-id mapping).
 
 ## Examples
 
