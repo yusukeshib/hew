@@ -959,7 +959,7 @@ impl App {
             },
             buf: String::new(),
         });
-        self.status = "new comment — enter for newline, ctrl+enter to submit, esc to cancel".into();
+        self.status = "new comment — enter for newline, ctrl+s to submit, esc to cancel".into();
         self.rebuild_rows();
         self.ensure_composer_visible();
     }
@@ -980,7 +980,7 @@ impl App {
         // A reply renders under its thread, so make sure that thread is
         // expanded (collapsed threads emit no rows to attach the box to).
         self.expanded.insert(id);
-        self.status = "reply — enter for newline, ctrl+enter to submit, esc to cancel".into();
+        self.status = "reply — enter for newline, ctrl+s to submit, esc to cancel".into();
         self.rebuild_rows();
         self.ensure_composer_visible();
     }
@@ -1002,12 +1002,17 @@ impl App {
                 self.sel_anchor = None;
                 self.status = "cancelled".into();
             }
-            // Ctrl+Enter submits (GitHub-style); a bare Enter inserts a newline
-            // (bodies are multi-line). We use Ctrl rather than Shift because the
-            // kitty keyboard-enhancement protocol's DISAMBIGUATE_ESCAPE_CODES
-            // flag (enabled in `run`) reports ctrl+key as a distinct event but
-            // NOT plain shift+key — so Shift+Enter is indistinguishable from a
-            // bare Enter and could never be detected.
+            // Ctrl+S is the primary submit: it's a C0 control byte, so it
+            // survives tmux/SSH without any keyboard-protocol negotiation
+            // (raw mode clears IXON, so there's no XOFF freeze). Ctrl+Enter is
+            // kept as a GitHub-style alias for terminals that forward the kitty
+            // keyboard-enhancement protocol (DISAMBIGUATE_ESCAPE_CODES, enabled
+            // in `run`); under tmux that protocol is usually swallowed, which is
+            // why a protocol-free fallback exists at all. A bare Enter inserts a
+            // newline (bodies are multi-line). Shift+Enter is intentionally not
+            // used: the protocol reports ctrl+key but not plain shift+key, so it
+            // would be indistinguishable from a bare Enter.
+            KeyCode::Char('s') if ctrl => self.submit_compose(),
             KeyCode::Enter if ctrl => self.submit_compose(),
             KeyCode::Enter => {
                 if let Some(c) = self.composer.as_mut() {
@@ -1342,11 +1347,17 @@ impl App {
         }
     }
 
-    /// Toggle between unified and split, keeping the cursor on the same line.
+    /// Toggle between unified and split, keeping the cursor on the same line
+    /// (and preserving any multi-line visual selection across the switch).
     fn toggle_view(&mut self) {
-        self.sel_anchor = None;
-        self.visual = false;
         let key = self.sel_key();
+        // Remember the selection anchor by its line identity so a multi-line
+        // visual/drag selection survives the layout switch instead of
+        // collapsing to the cursor line. The anchor is always a diff line.
+        let anchor_key = self
+            .sel_anchor
+            .and_then(|a| self.anchor_at(a))
+            .map(|(f, s, l)| SelKey::Line(f, s, l));
         self.view = match self.view {
             View::Unified => View::Split,
             View::Split => View::Unified,
@@ -1360,6 +1371,13 @@ impl App {
             .or_else(|| self.first_selectable())
             .unwrap_or(0)
             .min(self.active_len().saturating_sub(1));
+        // Remap the anchor into the new layout. If it can't be found (e.g. the
+        // anchored line has no counterpart in this view), drop the selection
+        // rather than leave a stale row index dangling.
+        self.sel_anchor = anchor_key.as_ref().and_then(|k| self.find_sel_key(k));
+        if self.sel_anchor.is_none() {
+            self.visual = false;
+        }
         // Stay on the same file across the layout switch.
         self.current_file = self
             .row_file_idx(self.selected)
@@ -1376,7 +1394,7 @@ impl App {
 
     /// Is the file sidebar an actual pane the user can focus?
     fn sidebar_available(&self) -> bool {
-        self.show_sidebar && self.changeset.files.len() > 1
+        self.show_sidebar && !self.changeset.files.is_empty()
     }
 
     /// Focus clamped to reality (never Sidebar when there's no sidebar).
@@ -1696,7 +1714,7 @@ impl App {
 
         // Body: optional file sidebar on the left, diff on the right.
         let body = chunks[0];
-        let sidebar = self.show_sidebar && self.changeset.files.len() > 1 && body.width >= 60;
+        let sidebar = self.show_sidebar && !self.changeset.files.is_empty() && body.width >= 60;
         let (diff_outer, sidebar_area) = if sidebar {
             let cols = Layout::default()
                 .direction(Direction::Horizontal)
@@ -2299,7 +2317,7 @@ impl App {
                 margin,
                 Span::styled("│".to_string(), bstyle),
                 Span::styled(
-                    fit(" ctrl+enter: submit · enter: newline · esc: cancel"),
+                    fit(" ctrl+s: submit · enter: newline · esc: cancel"),
                     Style::default().fg(THEME.muted),
                 ),
                 Span::styled("│".to_string(), bstyle),
@@ -2404,6 +2422,35 @@ mod tests {
         // Leaving visual drops the anchor.
         app.toggle_visual();
         assert!(!app.visual && app.sel_anchor.is_none());
+    }
+
+    #[test]
+    fn toggling_view_preserves_a_multi_line_selection() {
+        // Regression: switching unified<->split used to collapse a visual
+        // selection down to the cursor line. The whole range must survive.
+        let mut app = app_with(DIFF);
+        goto(&mut app, Side::New, 2);
+        app.toggle_visual();
+        goto(&mut app, Side::New, 5);
+        assert_eq!(
+            app.selection_range().unwrap(),
+            (app.current_file, Side::New, 2, 5)
+        );
+
+        app.toggle_view(); // -> split
+        assert!(app.visual && app.sel_anchor.is_some());
+        assert_eq!(
+            app.selection_range().unwrap(),
+            (app.current_file, Side::New, 2, 5),
+            "selection collapsed after toggling to split"
+        );
+
+        app.toggle_view(); // -> back to unified
+        assert_eq!(
+            app.selection_range().unwrap(),
+            (app.current_file, Side::New, 2, 5),
+            "selection collapsed after toggling back to unified"
+        );
     }
 
     #[test]
@@ -2547,6 +2594,22 @@ mod tests {
         app.on_key_compose(KeyCode::Enter, KeyModifiers::CONTROL);
         // Ctrl+Enter submits: composer closes and a new thread is recorded.
         assert!(app.composer.is_none(), "Ctrl+Enter should submit");
+        assert_eq!(app.comments.threads.len(), before + 1);
+    }
+
+    #[test]
+    fn ctrl_s_submits_the_composer() {
+        // The protocol-free primary submit: a C0 control byte that survives
+        // tmux/SSH even when the kitty keyboard protocol (and thus Ctrl+Enter)
+        // is not forwarded.
+        let (mut app, _tid, _reply) = app_with_thread(3);
+        let before = app.comments.threads.len();
+        goto(&mut app, Side::New, 1);
+        app.open_new_thread();
+        app.on_key_compose(KeyCode::Char('h'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Char('i'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Char('s'), KeyModifiers::CONTROL);
+        assert!(app.composer.is_none(), "Ctrl+S should submit");
         assert_eq!(app.comments.threads.len(), before + 1);
     }
 
