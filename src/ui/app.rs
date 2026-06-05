@@ -353,6 +353,7 @@ impl App {
                     self.on_key(key.code, key.modifiers);
                 }
                 Event::Mouse(me) => self.on_mouse(me),
+                Event::Paste(text) => self.on_paste(text),
                 _ => {}
             }
             while event::poll(Duration::from_millis(0))? {
@@ -361,6 +362,7 @@ impl App {
                         self.on_key(key.code, key.modifiers);
                     }
                     Event::Mouse(me) => self.on_mouse(me),
+                    Event::Paste(text) => self.on_paste(text),
                     _ => {}
                 }
             }
@@ -791,39 +793,54 @@ impl App {
         })
     }
 
+    /// Expand or collapse thread `id`, dropping the cursor back onto the diff
+    /// line it anchors to so focus doesn't jump when the box appears/disappears.
+    fn set_thread_fold(&mut self, id: Uuid, expand: bool) {
+        if expand {
+            self.expanded.insert(id);
+        } else {
+            self.expanded.remove(&id);
+        }
+        let anchor = self
+            .comments
+            .threads
+            .iter()
+            .find(|t| t.id == id)
+            .map(|t| (t.file.clone(), t.side, t.range.start))
+            .and_then(|(path, side, line)| {
+                let fi = self
+                    .changeset
+                    .files
+                    .iter()
+                    .position(|f| Path::new(f.display_path()) == path)?;
+                Some((fi, side, line))
+            });
+        self.rebuild_rows();
+        if let Some((fi, side, line)) = anchor {
+            if let Some(i) = self.find_sel_key(&SelKey::Line(fi, side, line)) {
+                self.selected = i;
+                self.ensure_visible();
+            }
+        }
+        self.status = if expand {
+            "expanded thread".into()
+        } else {
+            "collapsed thread".into()
+        };
+    }
+
+    /// Flip thread `id` between expanded and collapsed.
+    fn toggle_thread_fold(&mut self, id: Uuid) {
+        self.set_thread_fold(id, !self.expanded.contains(&id));
+    }
+
     /// Toggle inline expansion of the comment thread(s) on the selected line.
-    /// When a comment is focused there's nothing to expand, so collapse its
-    /// thread and drop the cursor back onto the thread's anchor line.
+    /// A focused comment (or a collapsed-thread row) toggles that one thread;
+    /// a diff line toggles every thread anchored to it.
     fn toggle_comment(&mut self) {
         if let Some(cl) = self.comment_at(self.selected) {
             let id = cl.thread_id;
-            self.expanded.remove(&id);
-            // Re-anchor onto the diff line the thread points at, so the cursor
-            // doesn't jump elsewhere when the box disappears.
-            if let Some((fi, side, line)) = self
-                .comments
-                .threads
-                .iter()
-                .find(|t| t.id == id)
-                .map(|t| (t.file.clone(), t.side, t.range.start))
-                .and_then(|(path, side, line)| {
-                    let fi = self
-                        .changeset
-                        .files
-                        .iter()
-                        .position(|f| Path::new(f.display_path()) == path)?;
-                    Some((fi, side, line))
-                })
-            {
-                self.rebuild_rows();
-                if let Some(i) = self.find_sel_key(&SelKey::Line(fi, side, line)) {
-                    self.selected = i;
-                    self.ensure_visible();
-                }
-            } else {
-                self.rebuild_rows();
-            }
-            self.status = "collapsed thread".into();
+            self.toggle_thread_fold(id);
             return;
         }
         let Some((fi, side, line)) = self.anchor_at(self.selected) else {
@@ -985,6 +1002,21 @@ impl App {
         self.ensure_composer_visible();
     }
 
+    /// Insert pasted text in one shot (bracketed paste). Only meaningful while
+    /// the composer is open; elsewhere a paste is ignored rather than being
+    /// replayed as commands. A single rebuild keeps a multi-paragraph paste from
+    /// triggering one full row rebuild per character.
+    fn on_paste(&mut self, text: String) {
+        let Some(c) = self.composer.as_mut() else {
+            return;
+        };
+        // Normalize newlines; the row builder splits the body on `\n`.
+        c.buf
+            .push_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
+        self.rebuild_rows();
+        self.ensure_composer_visible();
+    }
+
     /// Keystrokes while the composer modal is open.
     fn on_key_compose(&mut self, code: KeyCode, mods: KeyModifiers) {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
@@ -1133,6 +1165,18 @@ impl App {
         }
     }
 
+    /// The thread whose header sits at row `i`, if any. Clicking that area
+    /// toggles the thread folded/unfolded. The header is the box's title rows
+    /// (top border / `Head`) or a collapsed thread's single summary row.
+    fn comment_header_thread_at(&self, i: usize) -> Option<Uuid> {
+        let cl = self.comment_at(i)?;
+        matches!(
+            cl.kind,
+            CommentKind::Top | CommentKind::Head { .. } | CommentKind::Collapsed { .. }
+        )
+        .then_some(cl.thread_id)
+    }
+
     /// Place the cursor at the clicked diff row. `anchor` starts a new
     /// selection there; otherwise the existing anchor is kept (drag extend).
     fn click_diff(&mut self, row: u16, anchor: bool) {
@@ -1141,6 +1185,16 @@ impl App {
         let top = self.scroll.max(start);
         let idx = (top + row.saturating_sub(self.diff_area.y) as usize)
             .clamp(start, end.saturating_sub(1).max(start));
+        // A click on a thread's title area (top border / header line, or a
+        // collapsed thread's summary row) toggles it folded/unfolded, mirroring
+        // the keyboard `o`/Enter toggle. Only on an initial press (`anchor`),
+        // never mid-drag, so dragging a selection past a box doesn't fold it.
+        if anchor {
+            if let Some(id) = self.comment_header_thread_at(idx) {
+                self.toggle_thread_fold(id);
+                return;
+            }
+        }
         if let Some(i) = self.stop_for(idx) {
             self.selected = i;
             // A drag-range only makes sense between diff lines; landing on a
@@ -1193,10 +1247,17 @@ impl App {
         Some((cl.thread_id, cl.comment_id?))
     }
 
-    /// A "stop" is a place the cursor can land: a diff line, or the *first* row
-    /// of a comment message (so a multi-line message is a single stop).
+    /// A "stop" is a place the cursor can land: a diff line, the *first* row of
+    /// a comment message (so a multi-line message is a single stop), or a
+    /// collapsed thread's single summary row.
     fn is_stop_at(&self, i: usize) -> bool {
         if self.is_selectable_at(i) {
+            return true;
+        }
+        if matches!(
+            self.comment_at(i).map(|cl| &cl.kind),
+            Some(CommentKind::Collapsed { .. })
+        ) {
             return true;
         }
         match self.comment_unit_at(i) {
@@ -1439,7 +1500,7 @@ impl App {
         }
         match self.effective_focus() {
             Focus::Sidebar => self.on_key_sidebar(code),
-            Focus::Diff => self.on_key_diff(code, ctrl),
+            Focus::Diff => self.on_key_diff(code, ctrl, mods.contains(KeyModifiers::SHIFT)),
         }
     }
 
@@ -1461,9 +1522,19 @@ impl App {
     }
 
     /// Navigation when the diff pane is focused.
-    fn on_key_diff(&mut self, code: KeyCode, ctrl: bool) {
+    fn on_key_diff(&mut self, code: KeyCode, ctrl: bool, shift: bool) {
         let page = self.height.max(1);
         let half = (self.height / 2).max(1);
+        // Shift+Up/Down extends a line selection (an alternative to `v` visual
+        // mode). Modified arrow keys ride the standard CSI cursor encoding, so
+        // they survive tmux/SSH without the kitty protocol — unlike Shift+Enter.
+        if shift {
+            match code {
+                KeyCode::Down => return self.extend_selection(1),
+                KeyCode::Up => return self.extend_selection(-1),
+                _ => {}
+            }
+        }
         match code {
             KeyCode::Char('j') | KeyCode::Down => self.move_by(1, 1),
             KeyCode::Char('k') | KeyCode::Up => self.move_by(-1, 1),
@@ -1547,6 +1618,18 @@ impl App {
             self.sel_anchor = Some(self.selected);
             self.status = "visual — j/k to extend, i to comment, esc to cancel".into();
         }
+    }
+
+    /// Extend the line selection by one row (Shift+Up/Down). Starts a selection
+    /// anchored at the current line if none is active, then moves the cursor —
+    /// the same persistent-anchor behavior as visual mode, without a mode flag.
+    fn extend_selection(&mut self, dir: isize) {
+        if !self.visual {
+            self.visual = true;
+            self.sel_anchor = Some(self.selected);
+        }
+        self.move_by(dir, 1);
+        self.status = "visual — shift+↑/↓ to extend, i to comment, esc to cancel".into();
     }
 
     /// The (file, side, line-range) covered by the current selection, matching
@@ -1690,7 +1773,23 @@ impl App {
     /// wrap is frozen — the next draw after release picks up the final width and
     /// rebuilds exactly once instead of on every drag event.
     fn sync_comment_wrap(&mut self, diff_inner_width: u16) {
-        let cw = (diff_inner_width as usize).saturating_sub(8);
+        let inner = diff_inner_width as usize;
+        let cw = match self.view {
+            // Unified: the box spans the full inner width. Reserve a 2-col
+            // margin + 2 borders + 3-col body indent + 1 scrollbar column = 8.
+            View::Unified => inner.saturating_sub(8),
+            // Split: the box lives inside one half-column, so wrapping to the
+            // full width would clip every line on the right. Mirror
+            // `render_split`'s `side_w = (area - divider.len()) / 2` for the
+            // worst case (a scrollbar present trims the area by 1), where
+            // `divider.len()` is 5 bytes (" │ ", `│` is 3 UTF-8 bytes). Then
+            // reserve the box chrome (2-col margin + 2 borders + 3-col indent
+            // = 7).
+            View::Split => {
+                let side = inner.saturating_sub(1 + 5) / 2;
+                side.saturating_sub(7)
+            }
+        };
         if cw != self.comment_wrap && !self.resizing {
             self.comment_wrap = cw;
             // Re-wrap when there are inline boxes to re-wrap: expanded threads
@@ -2175,11 +2274,14 @@ impl App {
     fn comment_line_to_line(&self, cl: &CommentLine, focused: bool, width: usize) -> Line<'static> {
         const MARGIN: usize = 2;
         // Border brightness signals focus: the focused message keeps the bright
-        // (theme) border, others dim. Resolved threads always read as settled.
-        let border_col = if cl.resolved {
-            THEME.muted
-        } else if focused {
+        // (theme) border so the cursor is visible even on a resolved thread
+        // (whose box is otherwise dimmed). Only an *unfocused* resolved thread
+        // reads as fully settled. Without the focus check first, landing on a
+        // resolved comment gave no visual feedback at all.
+        let border_col = if focused {
             THEME.border_focus
+        } else if cl.resolved {
+            THEME.muted
         } else {
             THEME.border_unfocus
         };
@@ -2191,6 +2293,33 @@ impl App {
         }
         let margin = Span::raw(" ".repeat(MARGIN));
         match &cl.kind {
+            CommentKind::Collapsed { replies } => {
+                // A single rounded-pill row: `▸ N messages` (dim when resolved).
+                let label = format!(
+                    " ▸ {} · {} message{}",
+                    if cl.resolved { "resolved" } else { "open" },
+                    replies,
+                    if *replies == 1 { "" } else { "s" }
+                );
+                let fg = if cl.resolved {
+                    THEME.muted
+                } else {
+                    THEME.accent
+                };
+                let lstyle = Style::default().fg(fg).add_modifier(Modifier::BOLD);
+                let clen = str_width(&label);
+                let label = if clen > inner_w {
+                    take_width(&label, inner_w).0
+                } else {
+                    format!("{label}{}", " ".repeat(inner_w - clen))
+                };
+                Line::from(vec![
+                    margin,
+                    Span::styled("│".to_string(), bstyle),
+                    Span::styled(label, lstyle),
+                    Span::styled("│".to_string(), bstyle),
+                ])
+            }
             CommentKind::Top => Line::from(vec![
                 margin,
                 Span::styled(format!("╭{}╮", "─".repeat(inner_w)), bstyle),
@@ -2228,7 +2357,7 @@ impl App {
                 let (content, color, bold) = match &cl.kind {
                     CommentKind::Head { replies } => (
                         format!(
-                            " {} · {} message{}",
+                            " ▾ {} · {} message{}",
                             if cl.resolved { "resolved" } else { "open" },
                             replies,
                             if *replies == 1 { "" } else { "s" }
@@ -2425,6 +2554,30 @@ mod tests {
     }
 
     #[test]
+    fn shift_arrows_extend_a_line_selection() {
+        // Shift+Down/Up builds a multi-line selection without entering `v`
+        // visual mode first, anchoring at the starting line.
+        let mut app = app_with(DIFF);
+        goto(&mut app, Side::New, 2);
+        assert!(!app.visual && app.sel_anchor.is_none());
+
+        app.on_key_diff(KeyCode::Down, false, true);
+        app.on_key_diff(KeyCode::Down, false, true);
+        assert!(app.visual && app.sel_anchor.is_some());
+        assert_eq!(
+            app.selection_range().unwrap(),
+            (app.current_file, Side::New, 2, 4)
+        );
+
+        // Shrinking back up narrows the range.
+        app.on_key_diff(KeyCode::Up, false, true);
+        assert_eq!(
+            app.selection_range().unwrap(),
+            (app.current_file, Side::New, 2, 3)
+        );
+    }
+
+    #[test]
     fn toggling_view_preserves_a_multi_line_selection() {
         // Regression: switching unified<->split used to collapse a visual
         // selection down to the cursor line. The whole range must survive.
@@ -2527,6 +2680,157 @@ mod tests {
         // And the reply message is reachable as its own stop.
         let head = comment_head(&app, reply_id);
         assert!(app.is_stop_at(head));
+    }
+
+    #[test]
+    fn paste_inserts_into_composer_and_is_ignored_otherwise() {
+        // Outside the composer a paste is a no-op (not replayed as commands).
+        let mut app = app_with(DIFF);
+        app.on_paste("qqq deletes nothing".into());
+        assert!(!app.quit);
+        assert!(app.composer.is_none());
+
+        // Inside the composer the whole multi-line paste lands in one shot,
+        // with CRLF/CR normalized to `\n`.
+        open_composer(&mut app);
+        app.on_paste("first line\r\nsecond line\rthird".into());
+        assert_eq!(
+            app.composer.as_ref().unwrap().buf,
+            "first line\nsecond line\nthird"
+        );
+        assert!(app.composer.is_some(), "paste must not submit");
+    }
+
+    #[test]
+    fn clicking_thread_title_collapses_it() {
+        let (mut app, tid, _reply) = app_with_thread(3);
+        assert!(app.expanded.contains(&tid), "thread starts expanded");
+
+        // The top border and the title (Head) line both register as the header.
+        let top_row = (0..app.active_len())
+            .find(|&i| matches!(app.comment_at(i).map(|cl| &cl.kind), Some(CommentKind::Top)))
+            .expect("top border row");
+        assert_eq!(app.comment_header_thread_at(top_row), Some(tid));
+
+        // Simulate a left-press on that row: scroll/area set so row maps to idx.
+        let (start, _) = app.file_range();
+        app.scroll = start;
+        app.diff_area = ratatui::layout::Rect::new(0, 0, 80, 40);
+        let click_row = (top_row - start) as u16;
+        app.click_diff(click_row, true);
+
+        assert!(
+            !app.expanded.contains(&tid),
+            "clicking the title should collapse the thread"
+        );
+        // A collapsed thread renders a single clickable summary row that is a
+        // navigation stop — and clicking it re-expands (true round-trip toggle).
+        let collapsed_row = (0..app.active_len())
+            .find(|&i| {
+                matches!(
+                    app.comment_at(i).map(|cl| &cl.kind),
+                    Some(CommentKind::Collapsed { .. })
+                )
+            })
+            .expect("collapsed summary row");
+        assert!(
+            app.is_stop_at(collapsed_row),
+            "collapsed row must be a stop"
+        );
+        assert_eq!(app.comment_header_thread_at(collapsed_row), Some(tid));
+        app.scroll = app.file_range().0;
+        app.click_diff((collapsed_row - app.file_range().0) as u16, true);
+        assert!(
+            app.expanded.contains(&tid),
+            "clicking the collapsed row should re-expand the thread"
+        );
+
+        // A body row (not a header) still just selects — no fold toggle.
+        let (mut app, tid, reply_id) = app_with_thread(3);
+        let body_row = comment_head(&app, reply_id);
+        assert_eq!(app.comment_header_thread_at(body_row), None);
+        app.scroll = app.file_range().0;
+        app.diff_area = ratatui::layout::Rect::new(0, 0, 80, 40);
+        app.click_diff((body_row - app.file_range().0) as u16, true);
+        assert!(app.expanded.contains(&tid), "body click must not collapse");
+    }
+
+    #[test]
+    fn resolved_thread_comment_shows_focus_border() {
+        // Regression: a resolved thread's box was always drawn with the muted
+        // border, even when the cursor was on it — so an individual comment in a
+        // resolved thread gave no visual "selected" feedback. Focus must win.
+        let (mut app, tid, reply_id) = app_with_thread(3);
+        app.comments.toggle_resolved(tid);
+        app.rebuild_rows();
+        assert!(app.comments.threads[0].resolved);
+
+        // The reply's individual comment is still a reachable stop...
+        let head = comment_head(&app, reply_id);
+        assert!(app.is_stop_at(head));
+
+        // ...and when focused, its box border is the focus color, not muted.
+        let cl = app.comment_at(head).unwrap().clone();
+        let focused = app.comment_line_to_line(&cl, true, 40);
+        let unfocused = app.comment_line_to_line(&cl, false, 40);
+        let border_fg = |line: &ratatui::text::Line| {
+            // The box border span (`╭`/`│`/`╰`) carries the border color.
+            line.spans
+                .iter()
+                .find(|s| s.content.chars().any(|c| "╭╮╰╯│".contains(c)))
+                .and_then(|s| s.style.fg)
+        };
+        assert_eq!(border_fg(&focused), Some(THEME.border_focus));
+        assert_eq!(border_fg(&unfocused), Some(THEME.muted));
+    }
+
+    #[test]
+    fn split_view_wraps_comment_body_into_the_half_column() {
+        // Regression: comment bodies were wrapped to the full diff width but
+        // rendered into a half-width column in split view, so every line got
+        // clipped on the right. `sync_comment_wrap` must wrap to the split
+        // column width.
+        let cs = parse_report(DIFF).0;
+        let mut store = CommentStore::default();
+        store.add_thread(
+            "f.rs".into(),
+            Side::New,
+            LineRange { start: 2, end: 2 },
+            Some("you".into()),
+            "The labor market has shifted into a higher gear, powering through \
+             an energy shock and immigration restrictions to pull more people."
+                .into(),
+        );
+        let mut app = App::with_comments(cs, store);
+        app.view = View::Split;
+
+        // Mirror render_split's column math for a known inner width.
+        let inner: u16 = 90;
+        app.sync_comment_wrap(inner);
+        // Worst case (scrollbar present) side column, as render computes it.
+        let side_w = (inner as usize).saturating_sub(1 + " │ ".len()) / 2;
+        let inner_w = side_w - 2; // borders
+        let indent = 3; // the "   " body indent
+
+        // Every wrapped body fragment must fit the rendered half-column with its
+        // indent — i.e. it is never clipped by `take_width`.
+        let mut body_rows = 0;
+        for i in 0..app.split_rows.len() {
+            if let SplitRowKind::Comment { line, .. } = &app.split_rows[i].kind {
+                if let CommentKind::Body(b) = &line.kind {
+                    body_rows += 1;
+                    assert!(
+                        str_width(b) + indent <= inner_w,
+                        "body fragment {:?} ({}+{}) exceeds split inner width {}",
+                        b,
+                        str_width(b),
+                        indent,
+                        inner_w
+                    );
+                }
+            }
+        }
+        assert!(body_rows >= 2, "long body should wrap to several rows");
     }
 
     #[test]

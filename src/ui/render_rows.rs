@@ -74,6 +74,11 @@ pub enum CommentKind {
     Gap,
     /// Bottom rounded border of the thread box.
     Bottom,
+    /// A collapsed thread shown as a single clickable line (`replies` is the
+    /// message count). Clicking or pressing `o`/Enter re-expands it. Without
+    /// this, a collapsed thread emitted no rows and vanished with no way to
+    /// reopen it by mouse.
+    Collapsed { replies: usize },
 }
 
 /// One visual line of a thread box, tagged with the thread's `resolved` state
@@ -243,6 +248,24 @@ fn wrap_text(s: &str, width: usize) -> Vec<String> {
     out
 }
 
+/// The rows a collapsed thread renders as: a rounded box (same border as an
+/// expanded thread) wrapping a single clickable summary line.
+pub fn collapsed_lines(t: &Thread) -> Vec<CommentLine> {
+    let chrome = |kind: CommentKind| CommentLine {
+        kind,
+        resolved: t.resolved,
+        thread_id: t.id,
+        comment_id: None,
+    };
+    vec![
+        chrome(CommentKind::Top),
+        chrome(CommentKind::Collapsed {
+            replies: t.comments.len(),
+        }),
+        chrome(CommentKind::Bottom),
+    ]
+}
+
 /// Expand a thread into wrapped visual lines.
 pub fn thread_lines(t: &Thread, width: usize) -> Vec<CommentLine> {
     // Chrome lines (Top/Head/Bottom) carry no message id; content lines carry
@@ -323,18 +346,29 @@ fn comment_rows_for(
     };
     for &i in indices {
         let t = &comments.threads[i];
-        // Identity is the thread's stable id, not its position: adding or
-        // removing a thread must not change which others are expanded.
-        if !expanded.contains(&t.id) || emitted.contains(&t.id) {
+        // Emit each thread once, at the first line of its range present in the
+        // diff (anchor ranges can span several lines). `emitted` dedups across
+        // multiple matching anchor lines.
+        if emitted.contains(&t.id) {
             continue;
         }
-        // Emit once per thread, at the first line of its range present in the
-        // diff (anchor ranges can span several lines).
         if anchors
             .iter()
             .any(|(s, l)| *s == t.side && t.range.contains(*l))
         {
             emitted.insert(t.id);
+            // A collapsed thread renders as a compact rounded box (same border
+            // as expanded) wrapping a clickable summary line, so it stays
+            // visible and re-openable by mouse. Identity is the thread's stable
+            // id, not its position.
+            if !expanded.contains(&t.id) {
+                out.extend(
+                    collapsed_lines(t)
+                        .into_iter()
+                        .map(|cl| (t.side, Injected::Comment(cl))),
+                );
+                continue;
+            }
             out.extend(
                 thread_lines(t, width)
                     .into_iter()

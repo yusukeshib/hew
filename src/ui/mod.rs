@@ -7,8 +7,8 @@ pub mod theme;
 
 use anyhow::{Context, Result};
 use crossterm::event::{
-    DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, EnableMouseCapture,
+    KeyboardEnhancementFlags, PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use crossterm::execute;
 use crossterm::terminal::{
@@ -82,7 +82,12 @@ fn restore_terminal() {
     // never received a push simply ignore the pop), then tear down the rest.
     let _ = execute!(stderr(), PopKeyboardEnhancementFlags);
     let _ = disable_raw_mode();
-    let _ = execute!(stderr(), LeaveAlternateScreen, DisableMouseCapture);
+    let _ = execute!(
+        stderr(),
+        DisableBracketedPaste,
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    );
 }
 
 /// Install (once) a panic hook that restores the terminal *before* the default
@@ -129,7 +134,17 @@ pub fn run(changeset: Changeset, comments: CommentStore) -> Result<CommentStore>
     // to the file while the TUI still draws on the inherited terminal (fzf-style).
     enable_raw_mode()?;
     let mut out = stderr();
-    execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
+    // Bracketed paste: the terminal wraps pasted text in markers and delivers
+    // it as a single `Event::Paste(String)` instead of a storm of individual
+    // key events. Without it, pasting a few paragraphs both lagged hard (one
+    // full row rebuild per character) and — outside the composer — ran the
+    // pasted text as commands.
+    execute!(
+        out,
+        EnterAlternateScreen,
+        EnableMouseCapture,
+        EnableBracketedPaste
+    )?;
     // Enable the keyboard-enhancement protocol so the composer can distinguish
     // Ctrl+Enter (submit) from a bare Enter (newline) on terminals that
     // support it (kitty/ghostty/wezterm/foot/…). We push it *unconditionally to
