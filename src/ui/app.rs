@@ -2854,7 +2854,7 @@ mod tests {
         let inner: u16 = 90;
         app.sync_comment_wrap(inner);
         // Worst case (scrollbar present) side column, as render computes it.
-        let side_w = (inner as usize).saturating_sub(1 + " │ ".len()) / 2;
+        let side_w = (inner as usize).saturating_sub(1 + SPLIT_DIVIDER.len()) / 2;
         let inner_w = side_w - 2; // borders
         let indent = 3; // the "   " body indent
 
