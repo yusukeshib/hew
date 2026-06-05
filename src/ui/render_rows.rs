@@ -130,8 +130,9 @@ pub struct ComposerLine {
 }
 
 /// A row injected after a code line: an existing comment thread line, or a line
-/// of the live composer box.
-pub enum Injected {
+/// of the live composer box. Internal to row building — not part of the crate
+/// API.
+enum Injected {
     Comment(CommentLine),
     Composer(ComposerLine),
 }
