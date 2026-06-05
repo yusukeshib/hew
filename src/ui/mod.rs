@@ -131,14 +131,14 @@ pub fn run(changeset: Changeset, comments: CommentStore) -> Result<CommentStore>
     let mut out = stderr();
     execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
     // Enable the keyboard-enhancement protocol so the composer can distinguish
-    // Shift+Enter (submit) from a bare Enter (newline) on terminals that
+    // Ctrl+Enter (submit) from a bare Enter (newline) on terminals that
     // support it (kitty/ghostty/wezterm/foot/…). We push it *unconditionally to
     // stderr* — where the TUI renders — rather than gating on
     // `supports_keyboard_enhancement()`, whose probe writes to stdout. stdout
     // is reserved for the action-log JSON (and is often redirected to a file),
     // so the probe never reaches the terminal and would wrongly report "no
     // support". Terminals that don't implement the protocol simply ignore the
-    // escape sequence, and Ctrl-S remains as a fallback. The matching pop
+    // escape sequence (in which case submitting is unavailable). The matching pop
     // happens in `restore_terminal`.
     let _ = execute!(
         out,
