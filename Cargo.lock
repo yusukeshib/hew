@@ -464,6 +464,7 @@ dependencies = [
  "serde_json",
  "syntect",
  "two-face",
+ "unicode-width 0.2.0",
  "uuid",
 ]
 

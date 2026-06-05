@@ -4,8 +4,8 @@ use crate::comments::model::{CommentStore, LineRange};
 use crate::diff::model::{Changeset, LineKind, Side};
 use crate::ui::highlight_cache::HighlightCache;
 use crate::ui::render_rows::{
-    build_rows, build_split_rows, CommentKind, CommentLine, Row, RowKind, SideCell, SplitRow,
-    SplitRowKind,
+    build_rows, build_split_rows, str_width, take_width, CommentKind, CommentLine, Row, RowKind,
+    SideCell, SplitRow, SplitRowKind,
 };
 use crate::ui::sidebar::{
     base_of, build_sidebar_rows, dir_of, file_comment_state, file_status, SbRow,
@@ -124,16 +124,40 @@ fn sb_thumb_pos(track_y: u16, track_h: usize, total: usize, viewport: usize, row
     ((off as f32 / span as f32) * max_top as f32).round() as usize
 }
 
-/// Truncate `s` from the left (keeping the tail) to fit `w` columns.
+/// Right-pad `s` with spaces so its display width is exactly `w` (no-op when it
+/// already meets/exceeds `w`). Use after `elide_left`/`take_width` so a wide
+/// glyph can't push the column past `w`.
+fn pad_width(s: &str, w: usize) -> String {
+    let sw = str_width(s);
+    if sw >= w {
+        s.to_string()
+    } else {
+        format!("{s}{}", " ".repeat(w - sw))
+    }
+}
+
+/// Truncate `s` from the left (keeping the tail) to fit `w` display columns,
+/// prefixing an ellipsis when it doesn't fit.
 fn elide_left(s: &str, w: usize) -> String {
-    let n = s.chars().count();
-    if n <= w {
+    if str_width(s) <= w {
         return s.to_string();
     }
     if w <= 1 {
-        return "…".chars().take(w).collect();
+        return "…".repeat(w);
     }
-    let tail: String = s.chars().skip(n - (w - 1)).collect();
+    // Keep the widest tail that fits in `w - 1` cells (room for the ellipsis).
+    let budget = w - 1;
+    let mut tail: std::collections::VecDeque<char> = std::collections::VecDeque::new();
+    let mut used = 0usize;
+    for c in s.chars().rev() {
+        let cw = str_width(&c.to_string());
+        if used + cw > budget {
+            break;
+        }
+        tail.push_front(c);
+        used += cw;
+    }
+    let tail: String = tail.into_iter().collect();
     format!("…{tail}")
 }
 
@@ -283,11 +307,11 @@ impl App {
             if used >= width {
                 break;
             }
-            let take: String = s.chars().take(width - used).collect();
+            let (take, tw) = take_width(s, width - used);
             if take.is_empty() {
                 continue;
             }
-            used += take.chars().count();
+            used += tw;
             let mut st = Style::default().fg(*c);
             if let Some(b) = bg {
                 st = st.bg(b);
@@ -1601,7 +1625,7 @@ impl App {
                         "▼ "
                     };
                     let avail = w.saturating_sub(indent.chars().count() + 2);
-                    let label = format!("{:<width$}", elide_left(name, avail), width = avail);
+                    let label = pad_width(&elide_left(name, avail), avail);
                     let bg = if is_cursor {
                         Some(THEME.cursor_bg)
                     } else {
@@ -1646,7 +1670,7 @@ impl App {
                         .saturating_sub(indent.chars().count() + 4)
                         .saturating_sub(counts.chars().count());
                     let base = base_of(path);
-                    let name = format!("{:<width$}", elide_left(base, avail), width = avail);
+                    let name = pad_width(&elide_left(base, avail), avail);
                     let bg = if is_cursor {
                         Some(THEME.cursor_bg)
                     } else if is_cur {
@@ -1862,7 +1886,7 @@ impl App {
                     .bg(THEME.file_header_bg)
                     .add_modifier(Modifier::BOLD);
                 let text = format!("▌ {}", row.text);
-                let pad = width.saturating_sub(text.chars().count());
+                let pad = width.saturating_sub(str_width(&text));
                 Line::from(vec![
                     Span::styled(text, st),
                     Span::styled(" ".repeat(pad), st),
@@ -1903,7 +1927,7 @@ impl App {
                     Some(b) => st.bg(b),
                     None => st,
                 };
-                let mut used = num.chars().count() + 1;
+                let mut used = str_width(&num) + 1;
                 let mut spans = vec![
                     Span::styled(num, with_bg(Style::default().fg(THEME.muted))),
                     Span::styled(sign.to_string(), with_bg(Style::default().fg(sign_color))),
@@ -1911,7 +1935,7 @@ impl App {
                 // Highlighted code, with the diff background tint behind it.
                 let hl = self.hl.runs(row.file_idx, code);
                 for (c, s) in hl.iter() {
-                    used += s.chars().count();
+                    used += str_width(s);
                     spans.push(Span::styled(s.clone(), with_bg(Style::default().fg(*c))));
                 }
                 // Fill the rest so the tint / selection spans the whole line.
@@ -1958,8 +1982,8 @@ impl App {
                 // Name on the left, date flush right (1-col gutter before the
                 // border). Spans below total exactly `inner_w`.
                 let left = format!(" @{name}");
-                let llen = left.chars().count();
-                let dlen = date.chars().count();
+                let llen = str_width(&left);
+                let dlen = str_width(date);
                 let name_col = if cl.resolved { THEME.muted } else { THEME.warn };
                 let name_style = Style::default().fg(name_col).add_modifier(Modifier::BOLD);
                 let inner = if llen + dlen + 2 <= inner_w {
@@ -1970,8 +1994,8 @@ impl App {
                         Span::raw(" "),
                     ]
                 } else {
-                    let l: String = left.chars().take(inner_w).collect();
-                    let pad = inner_w - l.chars().count();
+                    let (l, lw) = take_width(&left, inner_w);
+                    let pad = inner_w - lw;
                     vec![Span::styled(l, name_style), Span::raw(" ".repeat(pad))]
                 };
                 let mut spans = vec![margin, Span::styled("│".to_string(), bstyle)];
@@ -2006,9 +2030,9 @@ impl App {
                 if bold {
                     cstyle = cstyle.add_modifier(Modifier::BOLD);
                 }
-                let clen = content.chars().count();
+                let clen = str_width(&content);
                 let content = if clen > inner_w {
-                    content.chars().take(inner_w).collect::<String>()
+                    take_width(&content, inner_w).0
                 } else {
                     format!("{content}{}", " ".repeat(inner_w - clen))
                 };
