@@ -27,6 +27,17 @@ jq -c '.[]' "$src" | while read -r action; do
       line="$(jq -r '.line' <<<"$action")"
       start="$(jq -r '.start_line // empty' <<<"$action")"
       side="$(jq -r 'if .side == "old" then "LEFT" else "RIGHT" end' <<<"$action")"
+      # `gh api -F` reads a value as a file when it starts with `@`, so a
+      # non-numeric `line`/`start_line` from an untrusted actions.json could
+      # exfiltrate a local file. Pass them as numbers only when they really are.
+      case "$line" in ''|*[!0-9]*)
+        echo "skip add_comment: non-numeric line '$line'" >&2; continue;;
+      esac
+      if [ -n "$start" ]; then
+        case "$start" in *[!0-9]*)
+          echo "skip add_comment: non-numeric start_line '$start'" >&2; continue;;
+        esac
+      fi
       args=(-f "body=$body" -f "commit_id=$sha" -f "path=$path" \
             -F "line=$line" -f "side=$side")
       if [ -n "$start" ]; then

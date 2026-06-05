@@ -1001,7 +1001,9 @@ impl App {
         self.rebuild_rows();
     }
 
-    /// Open the composer for a new thread on the selected diff line.
+    /// Open the composer for a new thread anchored to the current selection —
+    /// the cursor line, or a multi-line range from visual mode (`v`) or a mouse
+    /// drag (see [`Self::selection_range`]).
     fn open_new_thread(&mut self) {
         let Some((file_idx, side, start, end)) = self.selection_range() else {
             self.status = "put the cursor on a diff line first".into();
