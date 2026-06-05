@@ -194,6 +194,8 @@ pub struct App {
     sb_drag: Option<Focus>, // which scrollbar is being dragged
     /// Syntax-highlight cache + background warm worker (see [`HighlightCache`]).
     hl: HighlightCache,
+    /// Cached `[start, end)` row span of `current_file` (see `file_range`).
+    file_span: (usize, usize),
     composer: Option<Composer>,
     /// Visual line-select mode: movement keeps `sel_anchor` so the user can
     /// grow a multi-line selection (then `i` anchors a comment to the range).
@@ -255,10 +257,12 @@ impl App {
             sidebar_sb: Rect::default(),
             sb_drag: None,
             hl,
+            file_span: (0, 0),
             composer: None,
             visual: false,
             quit: false,
         };
+        app.recompute_file_span();
         app.selected = app.first_selectable().unwrap_or(0);
         app
     }
@@ -716,6 +720,9 @@ impl App {
             &self.expanded,
             self.comment_wrap,
         );
+        // Rows changed; refresh the cached span (for the current file) before
+        // first_selectable/ensure_visible read it.
+        self.recompute_file_span();
         let target = anchor.and_then(|a| {
             (0..self.active_len())
                 .find(|&i| self.is_selectable_at(i) && self.anchor_at(i) == Some(a))
@@ -725,6 +732,7 @@ impl App {
             .unwrap_or(0)
             .min(self.active_len().saturating_sub(1));
         self.current_file = self.row_file_idx(self.selected).unwrap_or(cur_file);
+        self.recompute_file_span();
         self.ensure_visible();
     }
 
@@ -980,8 +988,18 @@ impl App {
     }
 
     /// `[start, end)` row range of the current file in the active list. Files
-    /// are contiguous, so this is a single slice. Empty `(len, len)` if absent.
+    /// are contiguous, so this is a single slice. Cached (see `file_span`) and
+    /// only recomputed when the file, view, or row lists change — it's read on
+    /// every keystroke and several times per frame, so the O(rows) scan must
+    /// not run on the hot path.
     fn file_range(&self) -> (usize, usize) {
+        self.file_span
+    }
+
+    /// Recompute the cached current-file row span. Call after any change to
+    /// `current_file`, `view`, or the active row list, and before code that
+    /// reads `file_range` (navigation, scrolling, rendering).
+    fn recompute_file_span(&mut self) {
         let len = self.active_len();
         let (mut start, mut end) = (len, len);
         for i in 0..len {
@@ -992,7 +1010,7 @@ impl App {
                 end = i + 1;
             }
         }
-        (start, end)
+        self.file_span = (start, end);
     }
 
     /// Switch the diff pane to the next/prev file.
@@ -1012,6 +1030,7 @@ impl App {
     fn set_current_file(&mut self, file: usize) {
         self.sel_anchor = None;
         self.current_file = file.min(self.changeset.files.len().saturating_sub(1));
+        self.recompute_file_span();
         // A file in a collapsed directory has no visible row; open its ancestors.
         self.reveal_file_in_tree(self.current_file);
         self.sidebar_sel = self
@@ -1052,6 +1071,9 @@ impl App {
             View::Unified => View::Split,
             View::Split => View::Unified,
         };
+        // The active list switched; refresh the cached span before
+        // first_selectable reads it.
+        self.recompute_file_span();
         // Re-find the same (file, side, line) in the other layout.
         let target = anchor.and_then(|a| {
             (0..self.active_len())
@@ -1065,6 +1087,7 @@ impl App {
         self.current_file = self
             .row_file_idx(self.selected)
             .unwrap_or(self.current_file);
+        self.recompute_file_span();
         // Recenter so the cursor is roughly mid-viewport (clamped to the file).
         self.scroll = self.selected.saturating_sub(self.height / 2);
         self.ensure_visible();
