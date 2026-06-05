@@ -90,12 +90,14 @@ fn wrap_text(s: &str, width: usize) -> Vec<String> {
     let mut out = Vec::new();
     let mut line = String::new();
     let mut w = 0usize;
-    // Append `word` (already known to be ≤ width is *not* assumed) to the
-    // current line, hard-splitting it across lines when it overflows.
+    // Append `word` to the current line, hard-splitting it across lines when it
+    // overflows. Only break before a glyph when the current line is non-empty,
+    // so a single glyph wider than `width` (e.g. a CJK char at width 1) lands on
+    // its own line instead of emitting a spurious empty line ahead of it.
     let push_overlong = |word: &str, out: &mut Vec<String>, line: &mut String, w: &mut usize| {
         for ch in word.chars() {
             let cw = char_width(ch);
-            if *w + cw > width {
+            if *w > 0 && *w + cw > width {
                 out.push(std::mem::take(line));
                 *w = 0;
             }
@@ -682,6 +684,15 @@ mod tests {
         let lines = wrap_text("日本語", 4);
         assert!(lines.iter().all(|l| str_width(l) <= 4));
         assert_eq!(lines.concat(), "日本語");
+    }
+
+    #[test]
+    fn wrap_text_no_empty_lines_for_unsplittable_glyphs() {
+        // A glyph wider than the width can't be split; it must land on its own
+        // line with no spurious empty line ahead of it.
+        let lines = wrap_text("日本", 1);
+        assert_eq!(lines, vec!["日".to_string(), "本".to_string()]);
+        assert!(lines.iter().all(|l| !l.is_empty()));
     }
 
     #[test]

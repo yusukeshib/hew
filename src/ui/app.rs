@@ -4,8 +4,8 @@ use crate::comments::model::{CommentStore, LineRange};
 use crate::diff::model::{Changeset, LineKind, Side};
 use crate::ui::highlight_cache::HighlightCache;
 use crate::ui::render_rows::{
-    build_rows, build_split_rows, str_width, take_width, CommentKind, CommentLine, Row, RowKind,
-    SideCell, SplitRow, SplitRowKind,
+    build_rows, build_split_rows, char_width, str_width, take_width, CommentKind, CommentLine, Row,
+    RowKind, SideCell, SplitRow, SplitRowKind,
 };
 use crate::ui::sidebar::{
     base_of, build_sidebar_rows, dir_of, file_comment_state, file_status, SbRow,
@@ -150,7 +150,7 @@ fn elide_left(s: &str, w: usize) -> String {
     let mut tail: std::collections::VecDeque<char> = std::collections::VecDeque::new();
     let mut used = 0usize;
     for c in s.chars().rev() {
-        let cw = str_width(&c.to_string());
+        let cw = char_width(c);
         if used + cw > budget {
             break;
         }
