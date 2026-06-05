@@ -1402,6 +1402,23 @@ impl App {
         }
     }
 
+    /// Re-wrap inline comment bodies to the current diff width, rebuilding the
+    /// row lists when it changes. This is the sole row-affecting side effect of
+    /// drawing: the diff width is only known during layout, yet the wrapped
+    /// rows must be rebuilt before the frame reads them (and before any
+    /// selection mapping). While the sidebar/diff divider is being dragged the
+    /// wrap is frozen — the next draw after release picks up the final width and
+    /// rebuilds exactly once instead of on every drag event.
+    fn sync_comment_wrap(&mut self, diff_inner_width: u16) {
+        let cw = (diff_inner_width as usize).saturating_sub(8);
+        if cw != self.comment_wrap && !self.resizing {
+            self.comment_wrap = cw;
+            if !self.expanded.is_empty() {
+                self.rebuild_rows();
+            }
+        }
+    }
+
     fn draw(&mut self, f: &mut Frame) {
         // Pre-highlight the file in view off the render path so scrolling stays
         // smooth. Catches every path that changes the visible file (nav, jumps,
@@ -1439,18 +1456,10 @@ impl App {
                 THEME.border_unfocus
             }));
         let diff_inner = diff_block.inner(diff_outer);
-        // Re-wrap inline comments to the current diff width before any code
-        // reads the row lists (selection mapping depends on it).
-        // While the divider is being dragged, leave the comment wrap (and the
-        // expensive row rebuild it triggers) alone; the next draw after the
-        // drag releases picks up the final width and rebuilds exactly once.
-        let cw = (diff_inner.width as usize).saturating_sub(8);
-        if cw != self.comment_wrap && !self.resizing {
-            self.comment_wrap = cw;
-            if !self.expanded.is_empty() {
-                self.rebuild_rows();
-            }
-        }
+        // Layout is only known here, so the one row-affecting side effect of
+        // drawing (re-wrapping inline comments to the diff width) is isolated
+        // in this helper and must run before any code reads the row lists.
+        self.sync_comment_wrap(diff_inner.width);
         if sidebar {
             self.render_sidebar(f, sidebar_area);
         }
