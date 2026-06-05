@@ -4,8 +4,9 @@ use crate::comments::model::{CommentStore, LineRange};
 use crate::diff::model::{Changeset, LineKind, Side};
 use crate::ui::highlight_cache::HighlightCache;
 use crate::ui::render_rows::{
-    build_rows, build_split_rows, char_width, str_width, take_width, CommentKind, CommentLine, Row,
-    RowKind, SideCell, SplitRow, SplitRowKind,
+    build_rows, build_split_rows, char_width, str_width, take_width, CommentKind, CommentLine,
+    ComposerAnchor, ComposerKind, ComposerLine, ComposerSpec, Row, RowKind, SideCell, SplitRow,
+    SplitRowKind,
 };
 use crate::ui::sidebar::{
     base_of, build_sidebar_rows, dir_of, file_comment_state, file_status, SbRow,
@@ -17,8 +18,7 @@ use crossterm::event::{
 };
 use ratatui::prelude::*;
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-    Wrap,
+    Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -38,16 +38,6 @@ enum View {
 enum Focus {
     Sidebar,
     Diff,
-}
-
-/// A `width`×`height` rect centered inside `area` (clamped to fit).
-fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
-    Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width: width.min(area.width),
-        height: height.min(area.height),
-    }
 }
 
 const SIDEBAR_WIDTH: u16 = 38;
@@ -238,8 +228,8 @@ impl App {
     pub fn with_comments(changeset: Changeset, comments: CommentStore) -> Self {
         // Show every comment thread inline by default; `o`/Enter collapse them.
         let expanded: HashSet<Uuid> = comments.threads.iter().map(|t| t.id).collect();
-        let rows = build_rows(&changeset, &comments, &expanded, 0);
-        let split_rows = build_split_rows(&changeset, &comments, &expanded, 0);
+        let rows = build_rows(&changeset, &comments, &expanded, 0, None);
+        let split_rows = build_split_rows(&changeset, &comments, &expanded, 0, None);
         let stats = file_stats(&changeset);
         let collapsed = HashSet::new();
         let (sidebar_rows, file_to_sbrow) = build_sidebar_rows(&changeset, &collapsed);
@@ -717,17 +707,20 @@ impl App {
     fn rebuild_rows(&mut self) {
         let anchor = self.anchor_at(self.selected);
         let cur_file = self.current_file;
+        let composer = self.composer_spec();
         self.rows = build_rows(
             &self.changeset,
             &self.comments,
             &self.expanded,
             self.comment_wrap,
+            composer.as_ref(),
         );
         self.split_rows = build_split_rows(
             &self.changeset,
             &self.comments,
             &self.expanded,
             self.comment_wrap,
+            composer.as_ref(),
         );
         // Rows changed; refresh the cached span (for the current file) before
         // first_selectable/ensure_visible read it.
@@ -780,6 +773,82 @@ impl App {
         self.rebuild_rows();
     }
 
+    /// Translate the live composer into a row-stream injection spec (where the
+    /// box renders inline + its title), or `None` when no composer is open.
+    fn composer_spec(&self) -> Option<ComposerSpec> {
+        let c = self.composer.as_ref()?;
+        let (anchor, title) = match &c.target {
+            ComposeTarget::NewThread {
+                file_idx,
+                side,
+                start,
+                end,
+            } => {
+                let path = self
+                    .changeset
+                    .files
+                    .get(*file_idx)
+                    .map(|f| f.display_path())
+                    .unwrap_or("?");
+                let title = if start == end {
+                    format!(" new comment — {path}:{start} ")
+                } else {
+                    format!(" new comment — {path}:{start}-{end} ")
+                };
+                (
+                    ComposerAnchor::NewThread {
+                        file_idx: *file_idx,
+                        side: *side,
+                        line: *start,
+                    },
+                    title,
+                )
+            }
+            ComposeTarget::Reply { thread_id } => {
+                (ComposerAnchor::Reply { thread_id: *thread_id }, " reply ".into())
+            }
+        };
+        Some(ComposerSpec {
+            anchor,
+            title,
+            body: c.buf.clone(),
+        })
+    }
+
+    /// Whether the active row at `i` is a line of the inline composer box.
+    fn is_composer_at(&self, i: usize) -> bool {
+        match self.view {
+            View::Unified => matches!(
+                self.rows.get(i).map(|r| &r.kind),
+                Some(RowKind::Composer(_))
+            ),
+            View::Split => matches!(
+                self.split_rows.get(i).map(|r| &r.kind),
+                Some(SplitRowKind::Composer { .. })
+            ),
+        }
+    }
+
+    /// Scroll so the (contiguous) inline composer box is fully in view, biased
+    /// to keep its top visible when it's taller than the viewport.
+    fn ensure_composer_visible(&mut self) {
+        let (s, e) = self.file_range();
+        let Some(first) = (s..e).find(|&i| self.is_composer_at(i)) else {
+            return;
+        };
+        let last = (first..e)
+            .take_while(|&i| self.is_composer_at(i))
+            .last()
+            .unwrap_or(first);
+        let height = self.height.max(1);
+        if last >= self.scroll + height {
+            self.scroll = (last + 1).saturating_sub(height).max(s);
+        }
+        if first < self.scroll {
+            self.scroll = first.max(s);
+        }
+    }
+
     /// Open the composer for a new thread anchored to the current selection —
     /// the cursor line, or a multi-line range from visual mode (`v`) or a mouse
     /// drag (see [`Self::selection_range`]).
@@ -802,6 +871,8 @@ impl App {
             buf: String::new(),
         });
         self.status = "new comment — enter for newline, ctrl-s to submit, esc to cancel".into();
+        self.rebuild_rows();
+        self.ensure_composer_visible();
     }
 
     /// Open the composer to reply to the thread on the selected line.
@@ -816,7 +887,12 @@ impl App {
             target: ComposeTarget::Reply { thread_id: id },
             buf: String::new(),
         });
+        // A reply renders under its thread, so make sure that thread is
+        // expanded (collapsed threads emit no rows to attach the box to).
+        self.expanded.insert(id);
         self.status = "reply — type, enter to submit, esc to cancel".into();
+        self.rebuild_rows();
+        self.ensure_composer_visible();
     }
 
     /// Keystrokes while the composer modal is open.
@@ -854,6 +930,13 @@ impl App {
                 }
             }
             _ => {}
+        }
+        // The composer is part of the row stream now, so any state change
+        // (typed text, cancel) must rebuild rows to reflect it. `submit_compose`
+        // already rebuilds; a redundant rebuild here is cheap and harmless.
+        self.rebuild_rows();
+        if self.composer.is_some() {
+            self.ensure_composer_visible();
         }
     }
 
@@ -1510,76 +1593,6 @@ impl App {
             chunks[1],
         );
 
-        // Composer modal floats on top of everything when open.
-        self.render_composer(f, area);
-    }
-
-    /// Draw the comment composer modal, centered over the whole frame.
-    fn render_composer(&self, f: &mut Frame, area: Rect) {
-        let Some(c) = &self.composer else {
-            return;
-        };
-        let title = match &c.target {
-            ComposeTarget::NewThread {
-                file_idx,
-                start,
-                end,
-                ..
-            } => {
-                let path = self
-                    .changeset
-                    .files
-                    .get(*file_idx)
-                    .map(|f| f.display_path())
-                    .unwrap_or("?");
-                if start == end {
-                    format!(" new comment — {path}:{start} ")
-                } else {
-                    format!(" new comment — {path}:{start}-{end} ")
-                }
-            }
-            ComposeTarget::Reply { .. } => " reply ".into(),
-        };
-        let width = area.width.saturating_sub(8).clamp(20, 72);
-        let height = 7u16.min(area.height);
-        let rect = centered_rect(width, height, area);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(THEME.border_focus))
-            .title(title);
-        let inner = block.inner(rect);
-        f.render_widget(Clear, rect);
-        f.render_widget(block, rect);
-        if inner.height == 0 {
-            return;
-        }
-        // Body (with a block caret) above a one-line hint.
-        let body_h = inner.height.saturating_sub(1).max(1);
-        let body = Rect {
-            height: body_h,
-            ..inner
-        };
-        let mut text = c.buf.clone();
-        text.push('█');
-        f.render_widget(
-            Paragraph::new(text)
-                .wrap(Wrap { trim: false })
-                .style(Style::default().fg(THEME.text)),
-            body,
-        );
-        if inner.height > 1 {
-            let hint = Rect {
-                y: inner.y + body_h,
-                height: 1,
-                ..inner
-            };
-            f.render_widget(
-                Paragraph::new("enter newline · ctrl-s submit · esc cancel")
-                    .style(Style::default().fg(THEME.muted)),
-                hint,
-            );
-        }
     }
 
     fn render_diff(&self, f: &mut Frame, area: Rect) {
@@ -1822,6 +1835,27 @@ impl App {
                     }
                 }
             }
+            SplitRowKind::Composer { side, line: cl } => {
+                // Same side-aware placement as comment rows: render under the
+                // anchored column, blank the other.
+                let body = self.composer_line_to_line(cl, side_w).spans;
+                match side {
+                    Side::Old => {
+                        let mut spans = body;
+                        spans.push(Span::styled(
+                            " ".repeat(divider.chars().count() + side_w),
+                            Style::default(),
+                        ));
+                        Line::from(spans)
+                    }
+                    Side::New => {
+                        let pad = side_w + divider.chars().count();
+                        let mut spans = vec![Span::styled(" ".repeat(pad), Style::default())];
+                        spans.extend(body);
+                        Line::from(spans)
+                    }
+                }
+            }
         }
     }
 
@@ -1933,6 +1967,7 @@ impl App {
                 Line::from(spans)
             }
             RowKind::Comment(cl) => self.comment_line_to_line(cl, width),
+            RowKind::Composer(cl) => self.composer_line_to_line(cl, width),
         }
     }
 
@@ -2028,6 +2063,64 @@ impl App {
                     Span::styled("│".to_string(), bstyle),
                 ])
             }
+        }
+    }
+
+    /// Render one inline composer line as part of a rounded accent box spanning
+    /// `width` (2-col left margin + framed title / live body / key hint).
+    fn composer_line_to_line(&self, cl: &ComposerLine, width: usize) -> Line<'static> {
+        const MARGIN: usize = 2;
+        let bstyle = Style::default().fg(THEME.accent);
+        let inner_w = width.saturating_sub(MARGIN + 2);
+        if width <= MARGIN + 2 {
+            return Line::from(Span::raw(" ".repeat(width)));
+        }
+        let margin = Span::raw(" ".repeat(MARGIN));
+        // Pad/truncate `s` to exactly `inner_w` display cells.
+        let fit = |s: &str| -> String {
+            let w = str_width(s);
+            if w > inner_w {
+                take_width(s, inner_w).0
+            } else {
+                format!("{s}{}", " ".repeat(inner_w - w))
+            }
+        };
+        match &cl.kind {
+            ComposerKind::Top { title } => {
+                let t = take_width(title, inner_w).0;
+                let dashes = inner_w.saturating_sub(str_width(&t));
+                Line::from(vec![
+                    margin,
+                    Span::styled("╭".to_string(), bstyle),
+                    Span::styled(
+                        t,
+                        Style::default()
+                            .fg(THEME.accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("─".repeat(dashes), bstyle),
+                    Span::styled("╮".to_string(), bstyle),
+                ])
+            }
+            ComposerKind::Bottom => Line::from(vec![
+                margin,
+                Span::styled(format!("╰{}╯", "─".repeat(inner_w)), bstyle),
+            ]),
+            ComposerKind::Body(b) => Line::from(vec![
+                margin,
+                Span::styled("│".to_string(), bstyle),
+                Span::styled(fit(&format!(" {b}")), Style::default().fg(THEME.text)),
+                Span::styled("│".to_string(), bstyle),
+            ]),
+            ComposerKind::Hint => Line::from(vec![
+                margin,
+                Span::styled("│".to_string(), bstyle),
+                Span::styled(
+                    fit(" enter: newline · ctrl-s: submit · esc: cancel"),
+                    Style::default().fg(THEME.muted),
+                ),
+                Span::styled("│".to_string(), bstyle),
+            ]),
         }
     }
 }
