@@ -6,20 +6,43 @@
 
 use crate::diff::model::{Changeset, DiffFile, DiffLine, Hunk, LineKind};
 
-/// Parse a unified diff. Returns an empty changeset if the text is not a
-/// recognizable patch (e.g. an empty diff).
+/// Parse a unified diff into a [`Changeset`], also reporting a human-readable
+/// error when the text *looked* like a unified diff yet failed to parse.
 ///
 /// The `patch` crate handles text hunks but silently skips binary entries
 /// (`Binary files a/x and b/x differ`), so we scan for those separately and
-/// append them as hunk-less binary files. They render as a `Binary file` marker
-/// rather than disappearing.
-pub fn parse_unified(input: &str) -> Changeset {
-    let mut files = match patch::Patch::from_multiple(input) {
-        Ok(patches) => patches.iter().map(convert).collect::<Vec<_>>(),
-        Err(_) => Vec::new(),
+/// append them as hunk-less binary files (rendered as a `Binary file` marker
+/// rather than disappearing).
+///
+/// The `patch` crate returns `Err` even for empty/non-patch input, so a bare
+/// error is not a reliable signal: a clean `git diff` with no changes would
+/// trip it. We therefore only surface an error when (a) parsing failed, (b) no
+/// binary-file markers were recovered, and (c) the input contains a patch-like
+/// marker (`--- `, `diff --git`, or an `@@` hunk header). That keeps a genuinely
+/// empty diff silent while flagging a malformed one instead of showing nothing.
+pub fn parse_report(input: &str) -> (Changeset, Option<String>) {
+    let (text_files, parse_err) = match patch::Patch::from_multiple(input) {
+        Ok(patches) => (patches.iter().map(convert).collect::<Vec<_>>(), None),
+        Err(e) => (Vec::new(), Some(e.to_string())),
     };
-    files.extend(binary_files(input));
-    Changeset { files }
+    let mut files = text_files;
+    let binaries = binary_files(input);
+    let had_binaries = !binaries.is_empty();
+    files.extend(binaries);
+
+    let error = parse_err.filter(|_| !had_binaries && looks_like_patch(input));
+    (Changeset { files }, error)
+}
+
+/// Heuristic: does `input` contain a line that marks it as a unified diff?
+fn looks_like_patch(input: &str) -> bool {
+    // `@@ -` is the real unified-diff hunk-header prefix; a bare `@@` check
+    // would false-positive on non-diff text that merely starts with `@@`
+    // (email quotes, logs), since `patch::from_multiple` errors on any
+    // non-patch input.
+    input
+        .lines()
+        .any(|l| l.starts_with("--- ") || l.starts_with("diff --git ") || l.starts_with("@@ -"))
 }
 
 /// Scan for git's `Binary files a/x and b/y differ` markers and turn each into
@@ -131,7 +154,7 @@ mod tests {
 +B
  c
 ";
-        let cs = parse_unified(input);
+        let cs = parse_report(input).0;
         assert_eq!(cs.files.len(), 1);
         let f = &cs.files[0];
         assert_eq!(f.display_path(), "foo.txt");
@@ -154,7 +177,7 @@ mod tests {
 +hello
 +world
 ";
-        let cs = parse_unified(input);
+        let cs = parse_report(input).0;
         assert_eq!(cs.files.len(), 1);
         assert_eq!(cs.files[0].display_path(), "new.txt");
         assert_eq!(cs.files[0].hunks[0].lines.len(), 2);
@@ -162,7 +185,31 @@ mod tests {
 
     #[test]
     fn empty_input_is_empty() {
-        assert!(parse_unified("").is_empty());
+        assert!(parse_report("").0.is_empty());
+    }
+
+    #[test]
+    fn empty_and_nonpatch_input_report_no_error() {
+        // A clean `git diff` (no changes) and arbitrary non-patch text must
+        // stay silent — no spurious "failed to parse" warning.
+        assert!(parse_report("").1.is_none());
+        assert!(parse_report("   \n\n").1.is_none());
+        assert!(parse_report("hello world\nnot a patch\n").1.is_none());
+    }
+
+    #[test]
+    fn malformed_patch_reports_error() {
+        // Looks like a diff (`---`/`@@`) but the hunk is bogus → surfaced.
+        let (cs, err) = parse_report("--- a/x\n+++ b/x\n@@ bogus @@\n+y\n");
+        assert!(cs.is_empty());
+        assert!(err.is_some(), "malformed patch should report an error");
+    }
+
+    #[test]
+    fn valid_patch_reports_no_error() {
+        let (cs, err) = parse_report("--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n");
+        assert_eq!(cs.files.len(), 1);
+        assert!(err.is_none());
     }
 
     #[test]
@@ -179,7 +226,7 @@ diff --git a/src/main.rs b/src/main.rs
 +new
  ctx
 ";
-        let cs = parse_unified(input);
+        let cs = parse_report(input).0;
         // One text file (with a hunk) + one binary file (hunk-less).
         assert_eq!(cs.files.len(), 2);
         let bin = cs
@@ -195,11 +242,11 @@ diff --git a/src/main.rs b/src/main.rs
 
     #[test]
     fn binary_add_and_delete_resolve_paths() {
-        let added = parse_unified("Binary files /dev/null and b/new.bin differ\n");
+        let added = parse_report("Binary files /dev/null and b/new.bin differ\n").0;
         assert_eq!(added.files.len(), 1);
         assert_eq!(added.files[0].display_path(), "new.bin");
 
-        let deleted = parse_unified("Binary files a/old.bin and /dev/null differ\n");
+        let deleted = parse_report("Binary files a/old.bin and /dev/null differ\n").0;
         assert_eq!(deleted.files.len(), 1);
         assert_eq!(deleted.files[0].display_path(), "old.bin");
     }

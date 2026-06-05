@@ -199,8 +199,8 @@ pub struct App {
     show_sidebar: bool,
     sidebar_width: u16,
     sidebar_scroll: usize, // top file row of the sidebar (independent of selection)
-    sidebar_sel: usize,    // cursor row in the sidebar (a File or Thread row)
-    expanded: HashSet<usize>, // thread indices expanded inline in the diff
+    sidebar_sel: usize,    // cursor row in the sidebar (a Dir or File row)
+    expanded: HashSet<Uuid>, // thread ids expanded inline in the diff
     collapsed: HashSet<String>, // directory paths collapsed in the sidebar tree
     comment_wrap: usize,   // width used to wrap inline comment bodies
     resizing: bool,        // dragging the sidebar/diff divider
@@ -237,7 +237,7 @@ impl App {
     /// Construct with a pre-loaded comment store (e.g. from a sidecar JSON).
     pub fn with_comments(changeset: Changeset, comments: CommentStore) -> Self {
         // Show every comment thread inline by default; `o`/Enter collapse them.
-        let expanded: HashSet<usize> = (0..comments.threads.len()).collect();
+        let expanded: HashSet<Uuid> = comments.threads.iter().map(|t| t.id).collect();
         let rows = build_rows(&changeset, &comments, &expanded, 0);
         let split_rows = build_split_rows(&changeset, &comments, &expanded, 0);
         let stats = file_stats(&changeset);
@@ -549,12 +549,6 @@ impl App {
         }
     }
 
-    /// Is the sidebar row at `idx` a landing spot for the cursor? Every tree
-    /// row (dir, file, thread) is selectable.
-    fn sb_selectable(&self, idx: usize) -> bool {
-        idx < self.sidebar_rows.len()
-    }
-
     /// Rebuild the sidebar tree from the current collapse set.
     fn rebuild_sidebar(&mut self) {
         let (sr, map) = build_sidebar_rows(&self.changeset, &self.collapsed);
@@ -612,14 +606,14 @@ impl App {
         self.reveal_sidebar();
     }
 
-    /// Toggle the directory under the cursor (no-op on file/thread rows).
+    /// Toggle the directory under the cursor (no-op on file rows).
     fn toggle_dir(&mut self, path: String) {
         let collapsed = self.collapsed.contains(&path);
         self.set_dir_collapsed(path, !collapsed);
     }
 
     /// Collapse (`collapse = true`) or expand the directory under the cursor.
-    /// Collapsing while on a file/thread row closes its containing folder and
+    /// Collapsing while on a file row closes its containing folder and
     /// moves the cursor onto that folder.
     fn fold_dir(&mut self, collapse: bool) {
         match self.sidebar_rows.get(self.sidebar_sel) {
@@ -660,38 +654,29 @@ impl App {
         }
     }
 
-    /// Move the sidebar cursor to the next/prev selectable row and act on it.
+    /// Move the sidebar cursor to the next/prev row and act on it. Every tree
+    /// row (dir, file) is a valid landing spot, so this is a simple clamped step.
     fn move_sidebar(&mut self, dir: isize) {
         let n = self.sidebar_rows.len();
-        let mut i = self.sidebar_sel as isize;
-        loop {
-            i += dir;
-            if i < 0 || i as usize >= n {
-                return;
-            }
-            if self.sb_selectable(i as usize) {
-                self.sidebar_sel = i as usize;
-                self.activate_sidebar();
-                return;
-            }
+        let next = self.sidebar_sel as isize + dir;
+        if next < 0 || next as usize >= n {
+            return;
         }
+        self.sidebar_sel = next as usize;
+        self.activate_sidebar();
     }
 
-    /// Jump the sidebar cursor to the first/last selectable row.
+    /// Jump the sidebar cursor to the first/last row.
     fn sidebar_edge(&mut self, last: bool) {
         let n = self.sidebar_rows.len();
-        let found = if last {
-            (0..n).rev().find(|&i| self.sb_selectable(i))
-        } else {
-            (0..n).find(|&i| self.sb_selectable(i))
-        };
-        if let Some(i) = found {
-            self.sidebar_sel = i;
-            self.activate_sidebar();
+        if n == 0 {
+            return;
         }
+        self.sidebar_sel = if last { n - 1 } else { 0 };
+        self.activate_sidebar();
     }
 
-    /// Apply the row under the sidebar cursor: switch file or jump to thread.
+    /// Apply the row under the sidebar cursor: switch to the file it names.
     fn activate_sidebar(&mut self) {
         // Directory rows are just a cursor resting spot during navigation;
         // they toggle only on explicit activation.
@@ -769,27 +754,26 @@ impl App {
             return;
         };
         let path = Path::new(file.display_path());
-        let here: Vec<usize> = self
+        let here: Vec<Uuid> = self
             .comments
             .threads
             .iter()
-            .enumerate()
-            .filter(|(_, t)| t.file.as_path() == path && t.side == side && t.range.contains(line))
-            .map(|(i, _)| i)
+            .filter(|t| t.file.as_path() == path && t.side == side && t.range.contains(line))
+            .map(|t| t.id)
             .collect();
         if here.is_empty() {
             self.status = "no comments on this line".into();
             return;
         }
         // Collapse if all are open; otherwise expand the rest.
-        if here.iter().all(|i| self.expanded.contains(i)) {
-            for i in &here {
-                self.expanded.remove(i);
+        if here.iter().all(|id| self.expanded.contains(id)) {
+            for id in &here {
+                self.expanded.remove(id);
             }
             self.status = "collapsed thread".into();
         } else {
-            for i in here {
-                self.expanded.insert(i);
+            for id in here {
+                self.expanded.insert(id);
             }
             self.status = "expanded thread".into();
         }
@@ -897,7 +881,7 @@ impl App {
                     return;
                 };
                 let path = PathBuf::from(file.display_path());
-                self.comments.add_thread(
+                let id = self.comments.add_thread(
                     path,
                     side,
                     LineRange { start, end },
@@ -907,9 +891,9 @@ impl App {
                 // Leaving the composer also leaves visual mode.
                 self.visual = false;
                 self.sel_anchor = None;
-                // Thread indices shifted; reset the positional expand set and
-                // show every thread so the new one is visible.
-                self.expanded = (0..self.comments.threads.len()).collect();
+                // Expand just the new thread (ids are stable, so existing
+                // collapse state is preserved).
+                self.expanded.insert(id);
                 self.status = "added comment".into();
             }
             ComposeTarget::Reply { thread_id } => {
@@ -956,9 +940,9 @@ impl App {
             return;
         };
         if self.comments.remove_thread(id) {
-            // `expanded` holds positional thread indices; removing a thread
-            // shifts them, so reset to "all expanded" before rebuilding.
-            self.expanded = (0..self.comments.threads.len()).collect();
+            // Drop the gone thread's expand entry; every other thread keeps its
+            // state (ids are stable, so no positional shift to compensate for).
+            self.expanded.remove(&id);
             self.status = "deleted thread".into();
             self.rebuild_rows();
         }
@@ -1418,6 +1402,23 @@ impl App {
         }
     }
 
+    /// Re-wrap inline comment bodies to the current diff width, rebuilding the
+    /// row lists when it changes. This is the sole row-affecting side effect of
+    /// drawing: the diff width is only known during layout, yet the wrapped
+    /// rows must be rebuilt before the frame reads them (and before any
+    /// selection mapping). While the sidebar/diff divider is being dragged the
+    /// wrap is frozen — the next draw after release picks up the final width and
+    /// rebuilds exactly once instead of on every drag event.
+    fn sync_comment_wrap(&mut self, diff_inner_width: u16) {
+        let cw = (diff_inner_width as usize).saturating_sub(8);
+        if cw != self.comment_wrap && !self.resizing {
+            self.comment_wrap = cw;
+            if !self.expanded.is_empty() {
+                self.rebuild_rows();
+            }
+        }
+    }
+
     fn draw(&mut self, f: &mut Frame) {
         // Pre-highlight the file in view off the render path so scrolling stays
         // smooth. Catches every path that changes the visible file (nav, jumps,
@@ -1455,18 +1456,10 @@ impl App {
                 THEME.border_unfocus
             }));
         let diff_inner = diff_block.inner(diff_outer);
-        // Re-wrap inline comments to the current diff width before any code
-        // reads the row lists (selection mapping depends on it).
-        // While the divider is being dragged, leave the comment wrap (and the
-        // expensive row rebuild it triggers) alone; the next draw after the
-        // drag releases picks up the final width and rebuilds exactly once.
-        let cw = (diff_inner.width as usize).saturating_sub(8);
-        if cw != self.comment_wrap && !self.resizing {
-            self.comment_wrap = cw;
-            if !self.expanded.is_empty() {
-                self.rebuild_rows();
-            }
-        }
+        // Layout is only known here, so the one row-affecting side effect of
+        // drawing (re-wrapping inline comments to the diff width) is isolated
+        // in this helper and must run before any code reads the row lists.
+        self.sync_comment_wrap(diff_inner.width);
         if sidebar {
             self.render_sidebar(f, sidebar_area);
         }
@@ -1797,19 +1790,12 @@ impl App {
                     .add_modifier(Modifier::ITALIC),
             )),
             SplitRowKind::Pair { left, right } => {
-                let mut spans =
-                    self.side_spans(left.as_ref(), Side::Old, row.file_idx, side_w, selected);
+                let mut spans = self.side_spans(left.as_ref(), row.file_idx, side_w, selected);
                 spans.push(Span::styled(
                     divider.to_string(),
                     Style::default().fg(THEME.subtle),
                 ));
-                spans.extend(self.side_spans(
-                    right.as_ref(),
-                    Side::New,
-                    row.file_idx,
-                    side_w,
-                    selected,
-                ));
+                spans.extend(self.side_spans(right.as_ref(), row.file_idx, side_w, selected));
                 Line::from(spans)
             }
             SplitRowKind::Comment { side, line: cl } => {
@@ -1843,7 +1829,6 @@ impl App {
     fn side_spans(
         &self,
         cell: Option<&SideCell>,
-        _side: Side,
         file_idx: usize,
         width: usize,
         selected: bool,
@@ -2044,5 +2029,127 @@ impl App {
                 ])
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diff::parse::parse_report;
+
+    // Four additions framed by two context lines, so the new side carries
+    // lines 1..=6 and there are six selectable rows in a known order.
+    const DIFF: &str = "\
+--- a/f.rs
++++ b/f.rs
+@@ -1,2 +1,6 @@
+ a
++b
++c
++d
++e
+ f
+";
+
+    // Two files, to exercise per-file navigation.
+    const TWO_FILES: &str = "\
+--- a/one.rs
++++ b/one.rs
+@@ -1 +1,2 @@
+ x
++y
+--- a/two.rs
++++ b/two.rs
+@@ -1 +1,2 @@
+ p
++q
+";
+
+    fn app_with(diff: &str) -> App {
+        let cs = parse_report(diff).0;
+        let mut app = App::with_comments(cs, CommentStore::default());
+        app.height = 4; // deterministic viewport for scroll math
+        app
+    }
+
+    /// Move the cursor onto the row anchored at `(current_file, side, line)`.
+    fn goto(app: &mut App, side: Side, line: u32) {
+        let (s, e) = app.file_range();
+        for i in s..e {
+            if app.anchor_at(i) == Some((app.current_file, side, line)) {
+                app.selected = i;
+                return;
+            }
+        }
+        panic!("no selectable row for {side:?} line {line}");
+    }
+
+    #[test]
+    fn navigation_clamps_within_the_file() {
+        let mut app = app_with(DIFF);
+        let first = app.first_selectable().unwrap();
+        let last = app.last_selectable().unwrap();
+        app.selected = first;
+
+        // Up past the top is a no-op.
+        app.move_by(-1, 5);
+        assert_eq!(app.selected, first);
+
+        // Down past the bottom clamps to the last selectable row.
+        app.move_by(1, 100);
+        assert_eq!(app.selected, last);
+    }
+
+    #[test]
+    fn ensure_visible_keeps_cursor_in_viewport() {
+        let mut app = app_with(DIFF);
+        let (start, end) = app.file_range();
+        app.selected = app.last_selectable().unwrap();
+        app.ensure_visible();
+        let h = app.height;
+        assert!(app.scroll <= app.selected, "cursor above viewport");
+        assert!(app.selected < app.scroll + h, "cursor below viewport");
+        // Scroll never leaves the file's row slice.
+        assert!(app.scroll >= start && app.scroll < end);
+    }
+
+    #[test]
+    fn visual_selection_spans_a_multi_line_range() {
+        let mut app = app_with(DIFF);
+        goto(&mut app, Side::New, 2);
+        app.toggle_visual();
+        assert!(app.visual && app.sel_anchor.is_some());
+        goto(&mut app, Side::New, 5);
+
+        // The selection covers new-side lines 2..=5 on a single side.
+        let (fi, side, lo, hi) = app.selection_range().unwrap();
+        assert_eq!((fi, side, lo, hi), (app.current_file, Side::New, 2, 5));
+
+        // Leaving visual drops the anchor.
+        app.toggle_visual();
+        assert!(!app.visual && app.sel_anchor.is_none());
+    }
+
+    #[test]
+    fn selection_range_is_single_line_without_an_anchor() {
+        let mut app = app_with(DIFF);
+        goto(&mut app, Side::New, 3);
+        let (_, side, lo, hi) = app.selection_range().unwrap();
+        assert_eq!((side, lo, hi), (Side::New, 3, 3));
+    }
+
+    #[test]
+    fn jumping_files_moves_the_cursor_into_the_new_file() {
+        let mut app = app_with(TWO_FILES);
+        assert_eq!(app.current_file, 0);
+        app.jump_file(1);
+        assert_eq!(app.current_file, 1);
+        // The cursor lands on a selectable row belonging to file 1.
+        assert!(app.is_selectable_at(app.selected));
+        assert_eq!(app.row_file_idx(app.selected), Some(1));
+        // ...and back.
+        app.jump_file(-1);
+        assert_eq!(app.current_file, 0);
+        assert_eq!(app.row_file_idx(app.selected), Some(0));
     }
 }

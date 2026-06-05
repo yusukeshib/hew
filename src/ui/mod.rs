@@ -13,6 +13,7 @@ use crossterm::terminal::{
 };
 use ratatui::prelude::*;
 use std::io::stderr;
+use std::sync::Once;
 
 use crate::comments::model::CommentStore;
 use crate::diff::model::Changeset;
@@ -69,6 +70,30 @@ fn reattach_stdin_to_tty() -> Result<()> {
     Ok(())
 }
 
+/// Best-effort restore of the inherited terminal: leave raw mode, exit the
+/// alternate screen, and stop mouse capture. Safe to call more than once and
+/// from a panic hook, so every exit path (normal, error, panic) lands the user
+/// back on a clean prompt. Errors are ignored — we're tearing down regardless.
+fn restore_terminal() {
+    let _ = disable_raw_mode();
+    let _ = execute!(stderr(), LeaveAlternateScreen, DisableMouseCapture);
+}
+
+/// Install (once) a panic hook that restores the terminal *before* the default
+/// hook prints the panic message. Without this, a panic inside the TUI prints
+/// its backtrace into the alternate screen (then loses it on teardown) and
+/// leaves the user's terminal in raw mode.
+fn install_panic_hook() {
+    static HOOK: Once = Once::new();
+    HOOK.call_once(|| {
+        let original = std::panic::take_hook();
+        std::panic::set_hook(Box::new(move |info| {
+            restore_terminal();
+            original(info);
+        }));
+    });
+}
+
 /// Set up the terminal, run the app, and restore the terminal afterwards.
 pub fn run(changeset: Changeset, comments: CommentStore) -> Result<CommentStore> {
     // An empty changeset has nothing to show.
@@ -85,6 +110,14 @@ pub fn run(changeset: Changeset, comments: CommentStore) -> Result<CommentStore>
     // initialize input reader".
     reattach_stdin_to_tty()?;
 
+    // Install the panic hook *before* we enter raw mode / the alternate screen
+    // below, so a panic at any point after that is guaranteed to restore the
+    // terminal first. The hook covers panics; the explicit `restore_terminal()`
+    // below covers the normal and error paths (note we do *not* use `?` on
+    // teardown — a restore error must not skip the rest of the teardown or
+    // swallow the app's own result).
+    install_panic_hook();
+
     // Render to stderr, not stdout: stdout is reserved for the review JSON we
     // action log on exit, so `git diff | hew > actions.json` writes the result
     // to the file while the TUI still draws on the inherited terminal (fzf-style).
@@ -97,13 +130,8 @@ pub fn run(changeset: Changeset, comments: CommentStore) -> Result<CommentStore>
     let mut app = app::App::with_comments(changeset, comments);
     let result = app.run(&mut terminal);
 
-    disable_raw_mode()?;
-    execute!(
-        terminal.backend_mut(),
-        LeaveAlternateScreen,
-        DisableMouseCapture
-    )?;
-    terminal.show_cursor()?;
+    restore_terminal();
+    let _ = terminal.show_cursor();
     // Hand the final store back so the caller can diff it against the base.
     result.map(|()| app.into_comments())
 }
