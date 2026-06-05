@@ -5,11 +5,20 @@ mod loader;
 mod ui;
 
 use anyhow::Result;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 use cli::Cli;
+use std::io::IsTerminal;
 
 fn main() -> Result<()> {
     let args = Cli::parse();
+
+    // Bare `hew` with no file arg and an interactive stdin has nothing to
+    // review: reading stdin would block on EOF (a Ctrl-D footgun). Show help
+    // and exit non-zero instead. An explicit `-` still means "read stdin".
+    if args.file.is_none() && std::io::stdin().is_terminal() {
+        Cli::command().print_help()?;
+        std::process::exit(2);
+    }
 
     let changeset = loader::load_patch(args.file.as_deref())?;
 
