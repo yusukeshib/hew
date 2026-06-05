@@ -804,9 +804,12 @@ impl App {
                     title,
                 )
             }
-            ComposeTarget::Reply { thread_id } => {
-                (ComposerAnchor::Reply { thread_id: *thread_id }, " reply ".into())
-            }
+            ComposeTarget::Reply { thread_id } => (
+                ComposerAnchor::Reply {
+                    thread_id: *thread_id,
+                },
+                " reply ".into(),
+            ),
         };
         Some(ComposerSpec {
             anchor,
@@ -1592,7 +1595,6 @@ impl App {
             Paragraph::new(self.status.clone()).style(Style::default().fg(THEME.muted)),
             chunks[1],
         );
-
     }
 
     fn render_diff(&self, f: &mut Frame, area: Rect) {

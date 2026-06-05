@@ -781,14 +781,9 @@ pub fn build_rows(
                             text: String::new(),
                         });
                     }
-                    for cl in new_thread_composer(
-                        composer,
-                        &mut composer_emitted,
-                        fi,
-                        side,
-                        ln,
-                        width,
-                    ) {
+                    for cl in
+                        new_thread_composer(composer, &mut composer_emitted, fi, side, ln, width)
+                    {
                         rows.push(Row {
                             file_idx: fi,
                             kind: RowKind::Composer(cl),
@@ -1039,6 +1034,9 @@ mod tests {
             )
         });
         assert!(bottom.is_some() && comp_top.is_some());
-        assert!(comp_top > bottom, "reply composer must sit below its thread");
+        assert!(
+            comp_top > bottom,
+            "reply composer must sit below its thread"
+        );
     }
 }
