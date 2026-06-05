@@ -1,11 +1,14 @@
 //! TUI application state and render loop.
 
 use crate::comments::model::{CommentStore, LineRange};
-use crate::diff::model::{Changeset, DiffFile, LineKind, Side};
-use crate::ui::highlight::Highlighter;
+use crate::diff::model::{Changeset, LineKind, Side};
+use crate::ui::highlight_cache::HighlightCache;
 use crate::ui::render_rows::{
-    build_rows, build_split_rows, sanitize_line, CommentKind, CommentLine, Row, RowKind, SideCell,
-    SplitRow, SplitRowKind,
+    build_rows, build_split_rows, char_width, str_width, take_width, CommentKind, CommentLine, Row,
+    RowKind, SideCell, SplitRow, SplitRowKind,
+};
+use crate::ui::sidebar::{
+    base_of, build_sidebar_rows, dir_of, file_comment_state, file_status, SbRow,
 };
 use crate::ui::theme::THEME;
 use anyhow::Result;
@@ -17,84 +20,11 @@ use ratatui::widgets::{
     Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
     Wrap,
 };
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{self, Sender};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
-
-/// Highlighted runs for one line: `(fg color, text)`. `Arc` (not `Rc`) so the
-/// background pre-warm worker can share entries with the render thread.
-type LineRuns = Arc<Vec<(Color, String)>>;
-/// Cache key: which file + the exact line text.
-type HlKey = (usize, String);
-/// Highlight cache shared between the render thread and the warm worker.
-type SharedCache = Arc<Mutex<HashMap<HlKey, LineRuns>>>;
-
-/// Lock the highlight cache, recovering from a poisoned mutex instead of
-/// panicking. The cached data is just colorized spans — a worker panic mid-
-/// insert can't leave it logically corrupt — so a poisoned lock should never
-/// be allowed to crash the render thread.
-fn lock_cache(cache: &Mutex<HashMap<HlKey, LineRuns>>) -> MutexGuard<'_, HashMap<HlKey, LineRuns>> {
-    cache.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// Spawn the background highlighter. It owns its own `Highlighter`, reads line
-/// text straight from the shared `changeset`, and fills `cache` ahead of the
-/// viewport so scrolling hits warm entries instead of paying syntect's per-
-/// line parse cost (hundreds of µs/line) mid-scroll.
-///
-/// Jobs are just file indices: collecting/sanitizing the lines happens here,
-/// off the render thread. The worker always tracks the freshest job — if the
-/// user switches files while one is still warming, the newer request preempts
-/// the current one so we never burn cycles highlighting a file nobody views.
-fn spawn_warm_worker(cache: SharedCache, changeset: Arc<Changeset>) -> Sender<usize> {
-    let (tx, rx) = mpsc::channel::<usize>();
-    std::thread::spawn(move || {
-        let hl = Highlighter::new();
-        let mut pending: Option<usize> = None;
-        loop {
-            // Take the freshest queued job (collapsing any backlog).
-            let mut file_idx = match pending.take() {
-                Some(i) => i,
-                None => match rx.recv() {
-                    Ok(i) => i,
-                    Err(_) => return, // app dropped the sender; exit.
-                },
-            };
-            while let Ok(newer) = rx.try_recv() {
-                file_idx = newer;
-            }
-            let Some(file) = changeset.files.get(file_idx) else {
-                continue;
-            };
-            let syntax = hl.syntax_for(file.display_path());
-            'lines: for line in file.hunks.iter().flat_map(|h| h.lines.iter()) {
-                // A newer job means this file is stale: stash and restart.
-                match rx.try_recv() {
-                    Ok(newer) => {
-                        pending = Some(newer);
-                        break 'lines;
-                    }
-                    Err(mpsc::TryRecvError::Disconnected) => return,
-                    Err(mpsc::TryRecvError::Empty) => {}
-                }
-                let text = sanitize_line(&line.text);
-                let key = (file_idx, text);
-                if lock_cache(&cache).contains_key(&key) {
-                    continue;
-                }
-                // Highlight outside the lock (it's the expensive part), then
-                // insert without clobbering an entry the render thread may have
-                // added in the meantime.
-                let runs = Arc::new(hl.line(syntax, &key.1));
-                lock_cache(&cache).entry(key).or_insert(runs);
-            }
-        }
-    });
-    tx
-}
 
 /// Diff layout: unified (stacked) or split (old | new, like `git delta`).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -108,113 +38,6 @@ enum View {
 enum Focus {
     Sidebar,
     Diff,
-}
-
-/// A row in the file tree: a directory node (collapsible), a file entry (by
-/// file index), or a comment thread (by index) nested under its file. `depth`
-/// is the visual nesting level used for indentation.
-enum SbRow {
-    Dir {
-        path: String,
-        name: String,
-        depth: usize,
-    },
-    File {
-        idx: usize,
-        depth: usize,
-    },
-}
-
-/// One-letter change status for a file, with its accent color.
-fn file_status(f: &DiffFile) -> (char, Color) {
-    let added = f.old_path == "/dev/null" || f.old_path.is_empty();
-    let deleted = f.new_path == "/dev/null" || f.new_path.is_empty();
-    if added {
-        ('A', THEME.added)
-    } else if deleted {
-        ('D', THEME.removed)
-    } else if f.old_path != f.new_path {
-        ('R', THEME.accent)
-    } else {
-        ('M', THEME.warn)
-    }
-}
-
-fn dir_of(path: &str) -> &str {
-    match path.rfind('/') {
-        Some(i) => &path[..i],
-        None => "",
-    }
-}
-
-fn base_of(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
-}
-
-/// Build the collapsible file tree (keeping file order). Directory segments
-/// become `Dir` nodes; files nest under them. Subtrees under a collapsed
-/// directory are omitted. Returns the rows plus a `file_idx -> row` map
-/// (`usize::MAX` for files hidden by a collapse).
-fn build_sidebar_rows(
-    changeset: &Changeset,
-    collapsed: &HashSet<String>,
-) -> (Vec<SbRow>, Vec<usize>) {
-    let mut rows = Vec::new();
-    let mut map = vec![usize::MAX; changeset.files.len()];
-    let mut prev: Vec<String> = Vec::new();
-    for (i, f) in changeset.files.iter().enumerate() {
-        let dir = dir_of(f.display_path());
-        let segs: Vec<String> = if dir.is_empty() {
-            Vec::new()
-        } else {
-            dir.split('/').map(|s| s.to_string()).collect()
-        };
-        // Longest directory prefix shared with the previous file (already open).
-        let mut common = 0;
-        while common < segs.len() && common < prev.len() && segs[common] == prev[common] {
-            common += 1;
-        }
-        // Emit any newly-entered directory segments, unless an ancestor is
-        // collapsed (then the whole subtree is hidden).
-        for d in common..segs.len() {
-            let ancestor_collapsed = (0..d).any(|a| collapsed.contains(&segs[..=a].join("/")));
-            if ancestor_collapsed {
-                continue;
-            }
-            rows.push(SbRow::Dir {
-                path: segs[..=d].join("/"),
-                name: segs[d].clone(),
-                depth: d,
-            });
-        }
-        prev = segs.clone();
-        // Hide the file when any ancestor dir is collapsed.
-        let hidden = (0..segs.len()).any(|d| collapsed.contains(&segs[..=d].join("/")));
-        if hidden {
-            continue;
-        }
-        map[i] = rows.len();
-        rows.push(SbRow::File {
-            idx: i,
-            depth: segs.len(),
-        });
-    }
-    (rows, map)
-}
-
-/// Comment marker for a file: `Some(true)` when it has an unresolved thread,
-/// `Some(false)` when it only has resolved threads, `None` when it has none.
-fn file_comment_state(comments: &CommentStore, path: &str) -> Option<bool> {
-    let p = Path::new(path);
-    let mut any = false;
-    let mut open = false;
-    for t in comments.threads.iter().filter(|t| t.file == p) {
-        any = true;
-        if !t.resolved {
-            open = true;
-        }
-    }
-    any.then_some(open)
 }
 
 /// A `width`×`height` rect centered inside `area` (clamped to fit).
@@ -301,16 +124,40 @@ fn sb_thumb_pos(track_y: u16, track_h: usize, total: usize, viewport: usize, row
     ((off as f32 / span as f32) * max_top as f32).round() as usize
 }
 
-/// Truncate `s` from the left (keeping the tail) to fit `w` columns.
+/// Right-pad `s` with spaces so its display width is exactly `w` (no-op when it
+/// already meets/exceeds `w`). Use after `elide_left`/`take_width` so a wide
+/// glyph can't push the column past `w`.
+fn pad_width(s: &str, w: usize) -> String {
+    let sw = str_width(s);
+    if sw >= w {
+        s.to_string()
+    } else {
+        format!("{s}{}", " ".repeat(w - sw))
+    }
+}
+
+/// Truncate `s` from the left (keeping the tail) to fit `w` display columns,
+/// prefixing an ellipsis when it doesn't fit.
 fn elide_left(s: &str, w: usize) -> String {
-    let n = s.chars().count();
-    if n <= w {
+    if str_width(s) <= w {
         return s.to_string();
     }
     if w <= 1 {
-        return "…".chars().take(w).collect();
+        return "…".repeat(w);
     }
-    let tail: String = s.chars().skip(n - (w - 1)).collect();
+    // Keep the widest tail that fits in `w - 1` cells (room for the ellipsis).
+    let budget = w - 1;
+    let mut tail: std::collections::VecDeque<char> = std::collections::VecDeque::new();
+    let mut used = 0usize;
+    for c in s.chars().rev() {
+        let cw = char_width(c);
+        if used + cw > budget {
+            break;
+        }
+        tail.push_front(c);
+        used += cw;
+    }
+    let tail: String = tail.into_iter().collect();
     format!("…{tail}")
 }
 
@@ -369,18 +216,10 @@ pub struct App {
     diff_sb: Rect,          // diff scrollbar track (zero-sized when none)
     sidebar_sb: Rect,       // sidebar scrollbar track (zero-sized when none)
     sb_drag: Option<Focus>, // which scrollbar is being dragged
-    highlighter: Highlighter,
-    /// (file_idx, line text) -> highlighted runs. Grows lazily on the render
-    /// path and is also filled ahead of time by the warm worker.
-    hl_cache: SharedCache,
-    /// Sends per-file warm requests (a file index) to the background worker.
-    hl_tx: Sender<usize>,
-    /// Last file we asked the worker to pre-highlight (so we only enqueue on
-    /// change, not every frame).
-    warmed_file: Option<usize>,
-    /// Most-recently-viewed files (most recent last), used to bound the cache:
-    /// entries for files that fall out of this window are evicted.
-    warmed_recent: Vec<usize>,
+    /// Syntax-highlight cache + background warm worker (see [`HighlightCache`]).
+    hl: HighlightCache,
+    /// Cached `[start, end)` row span of `current_file` (see `file_range`).
+    file_span: (usize, usize),
     composer: Option<Composer>,
     /// Visual line-select mode: movement keeps `sel_anchor` so the user can
     /// grow a multi-line selection (then `i` anchors a comment to the range).
@@ -405,8 +244,7 @@ impl App {
         let collapsed = HashSet::new();
         let (sidebar_rows, file_to_sbrow) = build_sidebar_rows(&changeset, &collapsed);
         let changeset = Arc::new(changeset);
-        let hl_cache: SharedCache = Arc::new(Mutex::new(HashMap::new()));
-        let hl_tx = spawn_warm_worker(hl_cache.clone(), changeset.clone());
+        let hl = HighlightCache::new(changeset.clone());
         let mut app = App {
             changeset,
             rows,
@@ -442,68 +280,15 @@ impl App {
             diff_sb: Rect::default(),
             sidebar_sb: Rect::default(),
             sb_drag: None,
-            highlighter: Highlighter::new(),
-            hl_cache,
-            hl_tx,
-            warmed_file: None,
-            warmed_recent: Vec::new(),
+            hl,
+            file_span: (0, 0),
             composer: None,
             visual: false,
             quit: false,
         };
+        app.recompute_file_span();
         app.selected = app.first_selectable().unwrap_or(0);
         app
-    }
-
-    /// Highlighted `(color, text)` runs for a line, cached per (file, text).
-    ///
-    /// On a miss we still highlight synchronously so the current frame is
-    /// correct; the background worker just front-runs us so misses are rare
-    /// during scroll.
-    fn highlight(&self, file_idx: usize, text: &str) -> LineRuns {
-        let key = (file_idx, text.to_string());
-        if let Some(v) = lock_cache(&self.hl_cache).get(&key) {
-            return v.clone();
-        }
-        let spans = match self.changeset.files.get(file_idx) {
-            Some(f) => {
-                let syntax = self.highlighter.syntax_for(f.display_path());
-                self.highlighter.line(syntax, text)
-            }
-            None => vec![(THEME.text, text.to_string())],
-        };
-        let rc = Arc::new(spans);
-        // `or_insert` keeps any entry the warm worker added while we computed,
-        // so both threads converge on a single canonical `Arc`.
-        lock_cache(&self.hl_cache).entry(key).or_insert(rc).clone()
-    }
-
-    /// Ask the background worker to pre-highlight `file_idx`, unless we already
-    /// requested it. Cheap no-op when the file is unchanged. Collecting and
-    /// sanitizing the lines happens on the worker, not here.
-    fn warm_file(&mut self, file_idx: usize) {
-        if self.warmed_file == Some(file_idx) {
-            return;
-        }
-        self.warmed_file = Some(file_idx);
-        self.touch_recent(file_idx);
-        // If the worker has gone away the render path still highlights lazily.
-        let _ = self.hl_tx.send(file_idx);
-    }
-
-    /// Record `file_idx` as most-recently-viewed and evict cached highlights
-    /// for files that have fallen outside the retained window, so the shared
-    /// cache stays bounded regardless of how many files are visited.
-    fn touch_recent(&mut self, file_idx: usize) {
-        /// How many files' worth of highlights to keep cached at once.
-        const KEEP_FILES: usize = 3;
-        self.warmed_recent.retain(|&f| f != file_idx);
-        self.warmed_recent.push(file_idx);
-        if self.warmed_recent.len() > KEEP_FILES {
-            self.warmed_recent.remove(0);
-            let keep = self.warmed_recent.clone();
-            lock_cache(&self.hl_cache).retain(|(fi, _), _| keep.contains(fi));
-        }
     }
 
     /// Highlighted spans for `text`, truncated/padded to exactly `width` chars,
@@ -515,18 +300,18 @@ impl App {
         width: usize,
         bg: Option<Color>,
     ) -> Vec<Span<'static>> {
-        let hl = self.highlight(file_idx, text);
+        let hl = self.hl.runs(file_idx, text);
         let mut out = Vec::new();
         let mut used = 0usize;
         for (c, s) in hl.iter() {
             if used >= width {
                 break;
             }
-            let take: String = s.chars().take(width - used).collect();
+            let (take, tw) = take_width(s, width - used);
             if take.is_empty() {
                 continue;
             }
-            used += take.chars().count();
+            used += tw;
             let mut st = Style::default().fg(*c);
             if let Some(b) = bg {
                 st = st.bg(b);
@@ -675,10 +460,17 @@ impl App {
         }
     }
 
+    /// Inclusive `[lo, hi]` row span of the current selection: the cursor line
+    /// alone, or the cursor-to-anchor range when a drag/visual selection is
+    /// active. The single source of truth for selection extent.
+    fn selection_bounds(&self) -> (usize, usize) {
+        let anchor = self.sel_anchor.unwrap_or(self.selected);
+        (anchor.min(self.selected), anchor.max(self.selected))
+    }
+
     /// Whether row `idx` falls within the current selection (cursor or drag).
     fn in_selection(&self, idx: usize) -> bool {
-        let anchor = self.sel_anchor.unwrap_or(self.selected);
-        let (lo, hi) = (anchor.min(self.selected), anchor.max(self.selected));
+        let (lo, hi) = self.selection_bounds();
         idx >= lo && idx <= hi
     }
 
@@ -703,8 +495,7 @@ impl App {
 
     /// Copy the selected lines to the system clipboard (via OSC 52 next frame).
     fn copy_selection(&mut self) {
-        let anchor = self.sel_anchor.unwrap_or(self.selected);
-        let (lo, hi) = (anchor.min(self.selected), anchor.max(self.selected));
+        let (lo, hi) = self.selection_bounds();
         let lines: Vec<String> = (lo..=hi).filter_map(|i| self.line_text(i)).collect();
         if lines.is_empty() {
             return;
@@ -953,6 +744,9 @@ impl App {
             &self.expanded,
             self.comment_wrap,
         );
+        // Rows changed; refresh the cached span (for the current file) before
+        // first_selectable/ensure_visible read it.
+        self.recompute_file_span();
         let target = anchor.and_then(|a| {
             (0..self.active_len())
                 .find(|&i| self.is_selectable_at(i) && self.anchor_at(i) == Some(a))
@@ -962,6 +756,7 @@ impl App {
             .unwrap_or(0)
             .min(self.active_len().saturating_sub(1));
         self.current_file = self.row_file_idx(self.selected).unwrap_or(cur_file);
+        self.recompute_file_span();
         self.ensure_visible();
     }
 
@@ -1217,8 +1012,18 @@ impl App {
     }
 
     /// `[start, end)` row range of the current file in the active list. Files
-    /// are contiguous, so this is a single slice. Empty `(len, len)` if absent.
+    /// are contiguous, so this is a single slice. Cached (see `file_span`) and
+    /// only recomputed when the file, view, or row lists change — it's read on
+    /// every keystroke and several times per frame, so the O(rows) scan must
+    /// not run on the hot path.
     fn file_range(&self) -> (usize, usize) {
+        self.file_span
+    }
+
+    /// Recompute the cached current-file row span. Call after any change to
+    /// `current_file`, `view`, or the active row list, and before code that
+    /// reads `file_range` (navigation, scrolling, rendering).
+    fn recompute_file_span(&mut self) {
         let len = self.active_len();
         let (mut start, mut end) = (len, len);
         for i in 0..len {
@@ -1229,7 +1034,7 @@ impl App {
                 end = i + 1;
             }
         }
-        (start, end)
+        self.file_span = (start, end);
     }
 
     /// Switch the diff pane to the next/prev file.
@@ -1249,6 +1054,7 @@ impl App {
     fn set_current_file(&mut self, file: usize) {
         self.sel_anchor = None;
         self.current_file = file.min(self.changeset.files.len().saturating_sub(1));
+        self.recompute_file_span();
         // A file in a collapsed directory has no visible row; open its ancestors.
         self.reveal_file_in_tree(self.current_file);
         self.sidebar_sel = self
@@ -1289,6 +1095,9 @@ impl App {
             View::Unified => View::Split,
             View::Split => View::Unified,
         };
+        // The active list switched; refresh the cached span before
+        // first_selectable reads it.
+        self.recompute_file_span();
         // Re-find the same (file, side, line) in the other layout.
         let target = anchor.and_then(|a| {
             (0..self.active_len())
@@ -1302,6 +1111,7 @@ impl App {
         self.current_file = self
             .row_file_idx(self.selected)
             .unwrap_or(self.current_file);
+        self.recompute_file_span();
         // Recenter so the cursor is roughly mid-viewport (clamped to the file).
         self.scroll = self.selected.saturating_sub(self.height / 2);
         self.ensure_visible();
@@ -1474,8 +1284,7 @@ impl App {
     /// cursor are ignored (a comment anchors to one side).
     fn selection_range(&self) -> Option<(usize, Side, u32, u32)> {
         let (fi, side, cur) = self.anchor_at(self.selected)?;
-        let anchor = self.sel_anchor.unwrap_or(self.selected);
-        let (lo, hi) = (anchor.min(self.selected), anchor.max(self.selected));
+        let (lo, hi) = self.selection_bounds();
         let (mut start, mut end) = (cur, cur);
         for i in lo..=hi {
             if let Some((f, s, l)) = self.anchor_at(i) {
@@ -1564,7 +1373,10 @@ impl App {
 
     fn jump_comment(&mut self, dir: isize) {
         self.sel_anchor = None;
-        // Collect rows in the current file that carry a thread anchor.
+        // Collect the *head* row of each thread in the current file. Navigation
+        // (`n`/`N`) deliberately stops once per thread, at its first line
+        // (`range.start`) — unlike the act-on-thread operations (reply/resolve/
+        // delete), which match anywhere in the range via `range.contains`.
         let (start, end) = self.file_range();
         let mut targets: Vec<usize> = Vec::new();
         for i in start..end {
@@ -1610,7 +1422,7 @@ impl App {
         // Pre-highlight the file in view off the render path so scrolling stays
         // smooth. Catches every path that changes the visible file (nav, jumps,
         // scroll across file boundaries).
-        self.warm_file(self.current_file);
+        self.hl.warm(self.current_file);
         let area = f.area();
         let chunks = Layout::default()
             .direction(Direction::Vertical)
@@ -1784,8 +1596,8 @@ impl App {
         }
     }
 
-    /// Left-hand collapsible file tree: directories, files (with a one-letter
-    /// change status), and comment threads, indented by depth.
+    /// Left-hand collapsible file tree: directories and files (with a one-letter
+    /// change status and a comment-state dot), indented by depth.
     fn render_sidebar(&self, f: &mut Frame, area: Rect) {
         let focused = self.effective_focus() == Focus::Sidebar;
         // No border on the sidebar: the floating diff panel's rounded left
@@ -1813,7 +1625,7 @@ impl App {
                         "▼ "
                     };
                     let avail = w.saturating_sub(indent.chars().count() + 2);
-                    let label = format!("{:<width$}", elide_left(name, avail), width = avail);
+                    let label = pad_width(&elide_left(name, avail), avail);
                     let bg = if is_cursor {
                         Some(THEME.cursor_bg)
                     } else {
@@ -1858,7 +1670,7 @@ impl App {
                         .saturating_sub(indent.chars().count() + 4)
                         .saturating_sub(counts.chars().count());
                     let base = base_of(path);
-                    let name = format!("{:<width$}", elide_left(base, avail), width = avail);
+                    let name = pad_width(&elide_left(base, avail), avail);
                     let bg = if is_cursor {
                         Some(THEME.cursor_bg)
                     } else if is_cur {
@@ -2074,7 +1886,7 @@ impl App {
                     .bg(THEME.file_header_bg)
                     .add_modifier(Modifier::BOLD);
                 let text = format!("▌ {}", row.text);
-                let pad = width.saturating_sub(text.chars().count());
+                let pad = width.saturating_sub(str_width(&text));
                 Line::from(vec![
                     Span::styled(text, st),
                     Span::styled(" ".repeat(pad), st),
@@ -2115,15 +1927,15 @@ impl App {
                     Some(b) => st.bg(b),
                     None => st,
                 };
-                let mut used = num.chars().count() + 1;
+                let mut used = str_width(&num) + 1;
                 let mut spans = vec![
                     Span::styled(num, with_bg(Style::default().fg(THEME.muted))),
                     Span::styled(sign.to_string(), with_bg(Style::default().fg(sign_color))),
                 ];
                 // Highlighted code, with the diff background tint behind it.
-                let hl = self.highlight(row.file_idx, code);
+                let hl = self.hl.runs(row.file_idx, code);
                 for (c, s) in hl.iter() {
-                    used += s.chars().count();
+                    used += str_width(s);
                     spans.push(Span::styled(s.clone(), with_bg(Style::default().fg(*c))));
                 }
                 // Fill the rest so the tint / selection spans the whole line.
@@ -2170,8 +1982,8 @@ impl App {
                 // Name on the left, date flush right (1-col gutter before the
                 // border). Spans below total exactly `inner_w`.
                 let left = format!(" @{name}");
-                let llen = left.chars().count();
-                let dlen = date.chars().count();
+                let llen = str_width(&left);
+                let dlen = str_width(date);
                 let name_col = if cl.resolved { THEME.muted } else { THEME.warn };
                 let name_style = Style::default().fg(name_col).add_modifier(Modifier::BOLD);
                 let inner = if llen + dlen + 2 <= inner_w {
@@ -2182,8 +1994,8 @@ impl App {
                         Span::raw(" "),
                     ]
                 } else {
-                    let l: String = left.chars().take(inner_w).collect();
-                    let pad = inner_w - l.chars().count();
+                    let (l, lw) = take_width(&left, inner_w);
+                    let pad = inner_w - lw;
                     vec![Span::styled(l, name_style), Span::raw(" ".repeat(pad))]
                 };
                 let mut spans = vec![margin, Span::styled("│".to_string(), bstyle)];
@@ -2218,9 +2030,9 @@ impl App {
                 if bold {
                     cstyle = cstyle.add_modifier(Modifier::BOLD);
                 }
-                let clen = content.chars().count();
+                let clen = str_width(&content);
                 let content = if clen > inner_w {
-                    content.chars().take(inner_w).collect::<String>()
+                    take_width(&content, inner_w).0
                 } else {
                     format!("{content}{}", " ".repeat(inner_w - clen))
                 };

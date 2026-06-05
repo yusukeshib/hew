@@ -5,6 +5,37 @@ use crate::diff::model::{Changeset, LineKind, Side};
 use std::collections::HashSet;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+use unicode_width::UnicodeWidthChar;
+
+/// Terminal display width of a string in cells (wide/CJK glyphs count as 2,
+/// zero-width/control as 0). The whole TUI lays text out in fixed cells, so
+/// column math must measure cells, not `char`s, or wide glyphs misalign.
+pub fn str_width(s: &str) -> usize {
+    s.chars().map(char_width).sum()
+}
+
+/// Display width of a single char (control chars treated as 0; they're stripped
+/// before rendering anyway).
+pub fn char_width(c: char) -> usize {
+    UnicodeWidthChar::width(c).unwrap_or(0)
+}
+
+/// Take the longest prefix of `s` whose display width does not exceed `max`,
+/// returning the prefix and its actual width. A wide glyph straddling the
+/// boundary is dropped (so the result never overflows `max`).
+pub fn take_width(s: &str, max: usize) -> (String, usize) {
+    let mut out = String::new();
+    let mut w = 0;
+    for c in s.chars() {
+        let cw = char_width(c);
+        if w + cw > max {
+            break;
+        }
+        out.push(c);
+        w += cw;
+    }
+    (out, w)
+}
 
 /// Format a `SystemTime` as a UTC `YYYY-MM-DD HH:MM` timestamp (no external
 /// date crate).
@@ -52,30 +83,32 @@ pub struct CommentLine {
     pub resolved: bool,
 }
 
-/// Greedy word-wrap to `width` columns, hard-splitting over-long words.
+/// Greedy word-wrap to `width` display columns, hard-splitting over-long words.
+/// All measurements are in terminal cells (wide glyphs count as 2).
 fn wrap_text(s: &str, width: usize) -> Vec<String> {
     let width = width.max(1);
     let mut out = Vec::new();
     let mut line = String::new();
     let mut w = 0usize;
-    let push_word = |word: &str, out: &mut Vec<String>, line: &mut String, w: &mut usize| {
-        let ww = word.chars().count();
-        if *w == 0 {
-            if ww <= width {
-                line.push_str(word);
-                *w = ww;
-            } else {
-                let mut cw = 0;
-                for ch in word.chars() {
-                    if cw == width {
-                        out.push(std::mem::take(line));
-                        cw = 0;
-                    }
-                    line.push(ch);
-                    cw += 1;
-                }
-                *w = cw;
+    // Append `word` to the current line, hard-splitting it across lines when it
+    // overflows. Only break before a glyph when the current line is non-empty,
+    // so a single glyph wider than `width` (e.g. a CJK char at width 1) lands on
+    // its own line instead of emitting a spurious empty line ahead of it.
+    let push_overlong = |word: &str, out: &mut Vec<String>, line: &mut String, w: &mut usize| {
+        for ch in word.chars() {
+            let cw = char_width(ch);
+            if *w > 0 && *w + cw > width {
+                out.push(std::mem::take(line));
+                *w = 0;
             }
+            line.push(ch);
+            *w += cw;
+        }
+    };
+    let push_word = |word: &str, out: &mut Vec<String>, line: &mut String, w: &mut usize| {
+        let ww = str_width(word);
+        if *w == 0 {
+            push_overlong(word, out, line, w);
         } else if *w + 1 + ww <= width {
             line.push(' ');
             line.push_str(word);
@@ -83,22 +116,7 @@ fn wrap_text(s: &str, width: usize) -> Vec<String> {
         } else {
             out.push(std::mem::take(line));
             *w = 0;
-            // re-handle this word at the start of a fresh line
-            if ww <= width {
-                line.push_str(word);
-                *w = ww;
-            } else {
-                let mut cw = 0;
-                for ch in word.chars() {
-                    if cw == width {
-                        out.push(std::mem::take(line));
-                        cw = 0;
-                    }
-                    line.push(ch);
-                    cw += 1;
-                }
-                *w = cw;
-            }
+            push_overlong(word, out, line, w);
         }
     };
     for word in s.split_whitespace() {
@@ -639,6 +657,42 @@ mod tests {
         assert_eq!(sanitize_line("a\u{0}b"), "ab");
         // ANSI CSI color sequence is removed, payload kept.
         assert_eq!(sanitize_line("\u{1b}[31mred\u{1b}[0m"), "red");
+    }
+
+    #[test]
+    fn display_width_counts_wide_glyphs() {
+        assert_eq!(str_width("abc"), 3);
+        assert_eq!(str_width("日本語"), 6); // 3 wide CJK glyphs = 6 cells
+        assert_eq!(str_width("a日b"), 4);
+    }
+
+    #[test]
+    fn take_width_never_overflows_on_wide_glyphs() {
+        // Budget 3 over "a日本": fits 'a'(1)+'日'(2)=3; '本' would overflow.
+        let (s, w) = take_width("a日本", 3);
+        assert_eq!(s, "a日");
+        assert_eq!(w, 3);
+        // Odd budget straddling a wide glyph drops it (no half-cell).
+        let (s, w) = take_width("日本", 1);
+        assert_eq!(s, "");
+        assert_eq!(w, 0);
+    }
+
+    #[test]
+    fn wrap_text_wraps_on_display_width() {
+        // Three wide glyphs (6 cells) wrap at width 4 (2 glyphs per line).
+        let lines = wrap_text("日本語", 4);
+        assert!(lines.iter().all(|l| str_width(l) <= 4));
+        assert_eq!(lines.concat(), "日本語");
+    }
+
+    #[test]
+    fn wrap_text_no_empty_lines_for_unsplittable_glyphs() {
+        // A glyph wider than the width can't be split; it must land on its own
+        // line with no spurious empty line ahead of it.
+        let lines = wrap_text("日本", 1);
+        assert_eq!(lines, vec!["日".to_string(), "本".to_string()]);
+        assert!(lines.iter().all(|l| !l.is_empty()));
     }
 
     #[test]
