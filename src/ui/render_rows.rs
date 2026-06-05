@@ -139,7 +139,7 @@ enum Injected {
 
 /// Expand an open composer into wrapped visual lines (a rounded box with the
 /// title, the live buffer + caret, and a key hint).
-pub fn composer_lines(spec: &ComposerSpec, width: usize) -> Vec<ComposerLine> {
+fn composer_lines(spec: &ComposerSpec, width: usize) -> Vec<ComposerLine> {
     let mut out = vec![ComposerLine {
         kind: ComposerKind::Top {
             title: spec.title.clone(),

@@ -960,7 +960,8 @@ impl App {
             buf: String::new(),
         });
         self.status =
-            "new comment — enter for newline, shift+enter to submit, esc to cancel".into();
+            "new comment — enter for newline, shift+enter (or ctrl-s) to submit, esc to cancel"
+                .into();
         self.rebuild_rows();
         self.ensure_composer_visible();
     }
@@ -981,7 +982,8 @@ impl App {
         // A reply renders under its thread, so make sure that thread is
         // expanded (collapsed threads emit no rows to attach the box to).
         self.expanded.insert(id);
-        self.status = "reply — enter for newline, shift+enter to submit, esc to cancel".into();
+        self.status =
+            "reply — enter for newline, shift+enter (or ctrl-s) to submit, esc to cancel".into();
         self.rebuild_rows();
         self.ensure_composer_visible();
     }
@@ -1024,7 +1026,9 @@ impl App {
                     c.buf.push(ch);
                 }
             }
-            _ => {}
+            // Unhandled keys change no state, so skip the row rebuild entirely
+            // (it walks the whole changeset — wasteful per keystroke).
+            _ => return,
         }
         // The composer is part of the row stream now, so any state change
         // (typed text, cancel) must rebuild rows to reflect it. `submit_compose`
@@ -2297,7 +2301,7 @@ impl App {
                 margin,
                 Span::styled("│".to_string(), bstyle),
                 Span::styled(
-                    fit(" shift+enter: submit · enter: newline · esc: cancel"),
+                    fit(" shift+enter / ctrl-s: submit · enter: newline · esc: cancel"),
                     Style::default().fg(THEME.muted),
                 ),
                 Span::styled("│".to_string(), bstyle),
