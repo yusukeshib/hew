@@ -18,10 +18,13 @@ use std::sync::{Arc, Mutex, MutexGuard};
 /// Highlighted runs for one line: `(fg color, text)`. `Arc` (not `Rc`) so the
 /// background pre-warm worker can share entries with the render thread.
 pub type LineRuns = Arc<Vec<(Color, String)>>;
-/// Cache key: which file + the exact line text.
-type HlKey = (usize, String);
-/// Highlight cache shared between the render thread and the warm worker.
-type SharedCache = Arc<Mutex<HashMap<HlKey, LineRuns>>>;
+/// Per-file map from a line's exact text to its highlighted runs.
+type FileCache = HashMap<String, LineRuns>;
+/// Highlight cache shared between the render thread and the warm worker, keyed
+/// `file_idx -> (line text -> runs)`. The nested shape lets the hot `runs`
+/// lookup hit by `&str` (no per-frame key allocation) and makes per-file
+/// eviction a single outer-key removal.
+type SharedCache = Arc<Mutex<HashMap<usize, FileCache>>>;
 
 /// How many files' worth of highlights to keep cached at once.
 const KEEP_FILES: usize = 3;
@@ -30,7 +33,9 @@ const KEEP_FILES: usize = 3;
 /// panicking. The cached data is just colorized spans — a worker panic mid-
 /// insert can't leave it logically corrupt — so a poisoned lock should never
 /// be allowed to crash the render thread.
-fn lock_cache(cache: &Mutex<HashMap<HlKey, LineRuns>>) -> MutexGuard<'_, HashMap<HlKey, LineRuns>> {
+fn lock_cache(
+    cache: &Mutex<HashMap<usize, FileCache>>,
+) -> MutexGuard<'_, HashMap<usize, FileCache>> {
     cache.lock().unwrap_or_else(|e| e.into_inner())
 }
 
@@ -75,15 +80,21 @@ fn spawn_warm_worker(cache: SharedCache, changeset: Arc<Changeset>) -> Sender<us
                     Err(mpsc::TryRecvError::Empty) => {}
                 }
                 let text = sanitize_line(&line.text);
-                let key = (file_idx, text);
-                if lock_cache(&cache).contains_key(&key) {
+                if lock_cache(&cache)
+                    .get(&file_idx)
+                    .is_some_and(|m| m.contains_key(&text))
+                {
                     continue;
                 }
                 // Highlight outside the lock (it's the expensive part), then
                 // insert without clobbering an entry the render thread may have
                 // added in the meantime.
-                let runs = Arc::new(hl.line(syntax, &key.1));
-                lock_cache(&cache).entry(key).or_insert(runs);
+                let runs = Arc::new(hl.line(syntax, &text));
+                lock_cache(&cache)
+                    .entry(file_idx)
+                    .or_default()
+                    .entry(text)
+                    .or_insert(runs);
             }
         }
     });
@@ -126,8 +137,12 @@ impl HighlightCache {
     /// correct; the background worker just front-runs us so misses are rare
     /// during scroll.
     pub fn runs(&self, file_idx: usize, text: &str) -> LineRuns {
-        let key = (file_idx, text.to_string());
-        if let Some(v) = lock_cache(&self.cache).get(&key) {
+        // Hot-path lookup hits by `&str` (HashMap's `Borrow<str>`), so a cached
+        // line costs no allocation — only a miss builds an owned key.
+        if let Some(v) = lock_cache(&self.cache)
+            .get(&file_idx)
+            .and_then(|m| m.get(text))
+        {
             return v.clone();
         }
         let spans = match self.changeset.files.get(file_idx) {
@@ -140,7 +155,12 @@ impl HighlightCache {
         let rc = Arc::new(spans);
         // `or_insert` keeps any entry the warm worker added while we computed,
         // so both threads converge on a single canonical `Arc`.
-        lock_cache(&self.cache).entry(key).or_insert(rc).clone()
+        lock_cache(&self.cache)
+            .entry(file_idx)
+            .or_default()
+            .entry(text.to_string())
+            .or_insert(rc)
+            .clone()
     }
 
     /// Ask the background worker to pre-highlight `file_idx`, unless we already
@@ -164,7 +184,7 @@ impl HighlightCache {
         if self.warmed_recent.len() > KEEP_FILES {
             self.warmed_recent.remove(0);
             let keep = self.warmed_recent.clone();
-            lock_cache(&self.cache).retain(|(fi, _), _| keep.contains(fi));
+            lock_cache(&self.cache).retain(|fi, _| keep.contains(fi));
         }
     }
 }
