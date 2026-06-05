@@ -6,7 +6,10 @@ pub mod sidebar;
 pub mod theme;
 
 use anyhow::{Context, Result};
-use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use crossterm::event::{
+    DisableMouseCapture, EnableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
+};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -75,6 +78,9 @@ fn reattach_stdin_to_tty() -> Result<()> {
 /// from a panic hook, so every exit path (normal, error, panic) lands the user
 /// back on a clean prompt. Errors are ignored — we're tearing down regardless.
 fn restore_terminal() {
+    // Pop the keyboard-enhancement flags first (best-effort; terminals that
+    // never received a push simply ignore the pop), then tear down the rest.
+    let _ = execute!(stderr(), PopKeyboardEnhancementFlags);
     let _ = disable_raw_mode();
     let _ = execute!(stderr(), LeaveAlternateScreen, DisableMouseCapture);
 }
@@ -124,6 +130,20 @@ pub fn run(changeset: Changeset, comments: CommentStore) -> Result<CommentStore>
     enable_raw_mode()?;
     let mut out = stderr();
     execute!(out, EnterAlternateScreen, EnableMouseCapture)?;
+    // Enable the keyboard-enhancement protocol so the composer can distinguish
+    // Shift+Enter (submit) from a bare Enter (newline) on terminals that
+    // support it (kitty/ghostty/wezterm/foot/…). We push it *unconditionally to
+    // stderr* — where the TUI renders — rather than gating on
+    // `supports_keyboard_enhancement()`, whose probe writes to stdout. stdout
+    // is reserved for the action-log JSON (and is often redirected to a file),
+    // so the probe never reaches the terminal and would wrongly report "no
+    // support". Terminals that don't implement the protocol simply ignore the
+    // escape sequence, and Ctrl-S remains as a fallback. The matching pop
+    // happens in `restore_terminal`.
+    let _ = execute!(
+        out,
+        PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+    );
     let backend = CrosstermBackend::new(out);
     let mut terminal = Terminal::new(backend)?;
 

@@ -77,11 +77,127 @@ pub enum CommentKind {
 }
 
 /// One visual line of a thread box, tagged with the thread's `resolved` state
-/// so the renderer can dim the whole box (not just the header) when resolved.
+/// so the renderer can dim the whole box (not just the header) when resolved,
+/// plus identity so the line can be selected/focused. `comment_id` is the
+/// owning message for content lines (`Author`/`Body`/`Gap`) and `None` for
+/// thread chrome (`Top`/`Head`/`Bottom`) — selection keys off it, so a message
+/// (author + its body lines) forms one selectable unit.
 #[derive(Debug, Clone)]
 pub struct CommentLine {
     pub kind: CommentKind,
     pub resolved: bool,
+    pub thread_id: Uuid,
+    pub comment_id: Option<Uuid>,
+}
+
+/// Where an open inline composer attaches in the row stream.
+#[derive(Debug, Clone)]
+pub enum ComposerAnchor {
+    /// A new thread, anchored to the first line of the selected diff range.
+    NewThread {
+        file_idx: usize,
+        side: Side,
+        line: u32,
+    },
+    /// A reply, injected just below an existing thread's box.
+    Reply { thread_id: Uuid },
+}
+
+/// An open inline composer to inject into the row stream while typing.
+#[derive(Debug, Clone)]
+pub struct ComposerSpec {
+    pub anchor: ComposerAnchor,
+    pub title: String,
+    pub body: String,
+}
+
+/// One visual line of the inline composer box.
+#[derive(Debug, Clone)]
+pub enum ComposerKind {
+    /// Top rounded border, carrying the box title.
+    Top { title: String },
+    /// A (pre-wrapped) body line; the last one carries the caret glyph.
+    Body(String),
+    /// The one-line key hint above the bottom border.
+    Hint,
+    /// Bottom rounded border.
+    Bottom,
+}
+
+#[derive(Debug, Clone)]
+pub struct ComposerLine {
+    pub kind: ComposerKind,
+}
+
+/// A row injected after a code line: an existing comment thread line, or a line
+/// of the live composer box. Internal to row building — not part of the crate
+/// API.
+enum Injected {
+    Comment(CommentLine),
+    Composer(ComposerLine),
+}
+
+/// Expand an open composer into wrapped visual lines (a rounded box with the
+/// title, the live buffer + caret, and a key hint).
+fn composer_lines(spec: &ComposerSpec, width: usize) -> Vec<ComposerLine> {
+    let mut out = vec![ComposerLine {
+        kind: ComposerKind::Top {
+            title: spec.title.clone(),
+        },
+    }];
+    // Append the caret to the buffer so it tracks the insertion point as the
+    // body wraps. The caret glyph survives `sanitize_line` (not a control char).
+    let body = format!("{}\u{2588}", spec.body);
+    for raw in body.split('\n') {
+        let s = sanitize_line(raw);
+        if s.is_empty() {
+            out.push(ComposerLine {
+                kind: ComposerKind::Body(String::new()),
+            });
+        } else {
+            for wl in wrap_text(&s, width) {
+                out.push(ComposerLine {
+                    kind: ComposerKind::Body(wl),
+                });
+            }
+        }
+    }
+    out.push(ComposerLine {
+        kind: ComposerKind::Hint,
+    });
+    out.push(ComposerLine {
+        kind: ComposerKind::Bottom,
+    });
+    out
+}
+
+/// Composer lines for a *new* thread anchored exactly at `(file_idx, side,
+/// line)`, emitted at most once per build (tracked via `emitted`).
+fn new_thread_composer(
+    composer: Option<&ComposerSpec>,
+    emitted: &mut bool,
+    file_idx: usize,
+    side: Side,
+    line: u32,
+    width: usize,
+) -> Vec<ComposerLine> {
+    if *emitted {
+        return Vec::new();
+    }
+    if let Some(spec) = composer {
+        if let ComposerAnchor::NewThread {
+            file_idx: f,
+            side: s,
+            line: l,
+        } = spec.anchor
+        {
+            if f == file_idx && s == side && l == line {
+                *emitted = true;
+                return composer_lines(spec, width);
+            }
+        }
+    }
+    Vec::new()
 }
 
 /// Greedy word-wrap to `width` display columns, hard-splitting over-long words.
@@ -129,36 +245,49 @@ fn wrap_text(s: &str, width: usize) -> Vec<String> {
 
 /// Expand a thread into wrapped visual lines.
 pub fn thread_lines(t: &Thread, width: usize) -> Vec<CommentLine> {
-    let tag = |kind: CommentKind| CommentLine {
+    // Chrome lines (Top/Head/Bottom) carry no message id; content lines carry
+    // their owning message's id so author + body + trailing gap select as one.
+    let chrome = |kind: CommentKind| CommentLine {
         kind,
         resolved: t.resolved,
+        thread_id: t.id,
+        comment_id: None,
+    };
+    let content = |kind: CommentKind, cid: Uuid| CommentLine {
+        kind,
+        resolved: t.resolved,
+        thread_id: t.id,
+        comment_id: Some(cid),
     };
     let mut out = vec![
-        tag(CommentKind::Top),
-        tag(CommentKind::Head {
+        chrome(CommentKind::Top),
+        chrome(CommentKind::Head {
             replies: t.comments.len(),
         }),
     ];
     for (i, c) in t.comments.iter().enumerate() {
-        out.push(tag(CommentKind::Author {
-            name: c.author.clone().unwrap_or_else(|| "?".into()),
-            date: fmt_date(c.created_at),
-        }));
+        out.push(content(
+            CommentKind::Author {
+                name: c.author.clone().unwrap_or_else(|| "?".into()),
+                date: fmt_date(c.created_at),
+            },
+            c.id,
+        ));
         for raw in c.body.split('\n') {
             let s = sanitize_line(raw);
             if s.is_empty() {
-                out.push(tag(CommentKind::Body(String::new())));
+                out.push(content(CommentKind::Body(String::new()), c.id));
             } else {
                 for wl in wrap_text(&s, width) {
-                    out.push(tag(CommentKind::Body(wl)));
+                    out.push(content(CommentKind::Body(wl), c.id));
                 }
             }
         }
         if i + 1 < t.comments.len() {
-            out.push(tag(CommentKind::Gap));
+            out.push(content(CommentKind::Gap, c.id));
         }
     }
-    out.push(tag(CommentKind::Bottom));
+    out.push(chrome(CommentKind::Bottom));
     out
 }
 
@@ -177,6 +306,7 @@ fn threads_by_path(comments: &CommentStore) -> ThreadsByPath<'_> {
 
 /// Inline-comment lines to inject after a code row, for every expanded thread
 /// whose anchor matches one of the row's `(side, line)` anchors.
+#[allow(clippy::too_many_arguments)]
 fn comment_rows_for(
     comments: &CommentStore,
     by_path: &ThreadsByPath<'_>,
@@ -185,7 +315,8 @@ fn comment_rows_for(
     path: &str,
     anchors: &[(Side, u32)],
     width: usize,
-) -> Vec<(Side, CommentLine)> {
+    composer: Option<&ComposerSpec>,
+) -> Vec<(Side, Injected)> {
     let mut out = Vec::new();
     let Some(indices) = by_path.get(Path::new(path)) else {
         return out;
@@ -204,7 +335,21 @@ fn comment_rows_for(
             .any(|(s, l)| *s == t.side && t.range.contains(*l))
         {
             emitted.insert(t.id);
-            out.extend(thread_lines(t, width).into_iter().map(|cl| (t.side, cl)));
+            out.extend(
+                thread_lines(t, width)
+                    .into_iter()
+                    .map(|cl| (t.side, Injected::Comment(cl))),
+            );
+            // A reply composer sits directly under the thread it replies to.
+            if let Some(spec) = composer {
+                if matches!(spec.anchor, ComposerAnchor::Reply { thread_id } if thread_id == t.id) {
+                    out.extend(
+                        composer_lines(spec, width)
+                            .into_iter()
+                            .map(|cl| (t.side, Injected::Composer(cl))),
+                    );
+                }
+            }
         }
     }
     out
@@ -276,6 +421,8 @@ pub enum RowKind {
     },
     /// An inline-expanded comment-thread line (non-selectable).
     Comment(CommentLine),
+    /// A line of the live inline composer box (non-selectable).
+    Composer(ComposerLine),
 }
 
 #[derive(Debug, Clone)]
@@ -329,6 +476,12 @@ pub enum SplitRowKind {
         side: Side,
         line: CommentLine,
     },
+    /// A line of the live inline composer box (non-selectable). `side` records
+    /// the anchored column so split view renders it under the correct side.
+    Composer {
+        side: Side,
+        line: ComposerLine,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -377,9 +530,11 @@ pub fn build_split_rows(
     comments: &CommentStore,
     expanded: &HashSet<Uuid>,
     width: usize,
+    composer: Option<&ComposerSpec>,
 ) -> Vec<SplitRow> {
     let mut rows = Vec::new();
     let mut emitted: HashSet<Uuid> = HashSet::new();
+    let mut composer_emitted = false;
     let by_path = threads_by_path(comments);
     for (fi, file) in changeset.files.iter().enumerate() {
         let path = file.display_path();
@@ -428,6 +583,8 @@ pub fn build_split_rows(
                             &mut emitted,
                             path,
                             width,
+                            composer,
+                            &mut composer_emitted,
                         );
                         rows.push(SplitRow {
                             file_idx: fi,
@@ -448,7 +605,7 @@ pub fn build_split_rows(
                         if let Some(l) = line.new_line {
                             anchors.push((Side::New, l));
                         }
-                        for (side, cl) in comment_rows_for(
+                        for (side, inj) in comment_rows_for(
                             comments,
                             &by_path,
                             expanded,
@@ -456,12 +613,32 @@ pub fn build_split_rows(
                             path,
                             &anchors,
                             width,
+                            composer,
                         ) {
                             rows.push(SplitRow {
                                 file_idx: fi,
-                                kind: SplitRowKind::Comment { side, line: cl },
+                                kind: split_injected(side, inj),
                                 text: String::new(),
                             });
+                        }
+                        for (side, l) in &anchors {
+                            for cl in new_thread_composer(
+                                composer,
+                                &mut composer_emitted,
+                                fi,
+                                *side,
+                                *l,
+                                width,
+                            ) {
+                                rows.push(SplitRow {
+                                    file_idx: fi,
+                                    kind: SplitRowKind::Composer {
+                                        side: *side,
+                                        line: cl,
+                                    },
+                                    text: String::new(),
+                                });
+                            }
                         }
                     }
                 }
@@ -477,10 +654,20 @@ pub fn build_split_rows(
                 &mut emitted,
                 path,
                 width,
+                composer,
+                &mut composer_emitted,
             );
         }
     }
     rows
+}
+
+/// Map an injected row to its split-view kind under column `side`.
+fn split_injected(side: Side, inj: Injected) -> SplitRowKind {
+    match inj {
+        Injected::Comment(line) => SplitRowKind::Comment { side, line },
+        Injected::Composer(line) => SplitRowKind::Composer { side, line },
+    }
 }
 
 /// Emit the accumulated deletion/addition runs as zipped pairs.
@@ -496,6 +683,8 @@ fn flush_pairs(
     emitted: &mut HashSet<Uuid>,
     path: &str,
     width: usize,
+    composer: Option<&ComposerSpec>,
+    composer_emitted: &mut bool,
 ) {
     let n = dels.len().max(adds.len());
     let mut di = dels.drain(..);
@@ -515,14 +704,26 @@ fn flush_pairs(
             kind: SplitRowKind::Pair { left, right },
             text: String::new(),
         });
-        for (side, cl) in
-            comment_rows_for(comments, by_path, expanded, emitted, path, &anchors, width)
-        {
+        for (side, inj) in comment_rows_for(
+            comments, by_path, expanded, emitted, path, &anchors, width, composer,
+        ) {
             rows.push(SplitRow {
                 file_idx,
-                kind: SplitRowKind::Comment { side, line: cl },
+                kind: split_injected(side, inj),
                 text: String::new(),
             });
+        }
+        for (side, l) in &anchors {
+            for cl in new_thread_composer(composer, composer_emitted, file_idx, *side, *l, width) {
+                rows.push(SplitRow {
+                    file_idx,
+                    kind: SplitRowKind::Composer {
+                        side: *side,
+                        line: cl,
+                    },
+                    text: String::new(),
+                });
+            }
         }
     }
 }
@@ -533,9 +734,11 @@ pub fn build_rows(
     comments: &CommentStore,
     expanded: &HashSet<Uuid>,
     width: usize,
+    composer: Option<&ComposerSpec>,
 ) -> Vec<Row> {
     let mut rows = Vec::new();
     let mut emitted: HashSet<Uuid> = HashSet::new();
+    let mut composer_emitted = false;
     let by_path = threads_by_path(comments);
     for (fi, file) in changeset.files.iter().enumerate() {
         let path = file.display_path();
@@ -578,7 +781,7 @@ pub fn build_rows(
                     _ => (Side::New, line.new_line),
                 };
                 if let Some(ln) = ln {
-                    for (_, cl) in comment_rows_for(
+                    for (_, inj) in comment_rows_for(
                         comments,
                         &by_path,
                         expanded,
@@ -586,10 +789,24 @@ pub fn build_rows(
                         path,
                         &[(side, ln)],
                         width,
+                        composer,
                     ) {
+                        let kind = match inj {
+                            Injected::Comment(cl) => RowKind::Comment(cl),
+                            Injected::Composer(cl) => RowKind::Composer(cl),
+                        };
                         rows.push(Row {
                             file_idx: fi,
-                            kind: RowKind::Comment(cl),
+                            kind,
+                            text: String::new(),
+                        });
+                    }
+                    for cl in
+                        new_thread_composer(composer, &mut composer_emitted, fi, side, ln, width)
+                    {
+                        rows.push(Row {
+                            file_idx: fi,
+                            kind: RowKind::Composer(cl),
                             text: String::new(),
                         });
                     }
@@ -647,7 +864,7 @@ mod tests {
         // Old-side thread (anchored to the deleted line 2) is tagged Old.
         let old = store_with(Side::Old, 2);
         let all = expand_all(&old);
-        let rows = build_split_rows(&cs, &old, &all, 80);
+        let rows = build_split_rows(&cs, &old, &all, 80, None);
         assert!(
             rows.iter().any(|r| matches!(
                 r.kind,
@@ -672,7 +889,7 @@ mod tests {
         // New-side thread (anchored to the added line 2) is tagged New.
         let new = store_with(Side::New, 2);
         let all = expand_all(&new);
-        let rows = build_split_rows(&cs, &new, &all, 80);
+        let rows = build_split_rows(&cs, &new, &all, 80, None);
         assert!(
             rows.iter().any(|r| matches!(
                 r.kind,
@@ -737,8 +954,8 @@ mod tests {
         let comments = load_comments(Path::new("examples/rust-long-en.comments.json")).unwrap();
         let none = HashSet::new();
         let all = expand_all(&comments);
-        let base = build_rows(&cs, &comments, &none, 80);
-        let rows = build_rows(&cs, &comments, &all, 80);
+        let base = build_rows(&cs, &comments, &none, 80, None);
+        let rows = build_rows(&cs, &comments, &all, 80, None);
         // Expanding threads injects extra rows.
         assert!(rows.len() > base.len());
         // Those rows are comment rows: non-selectable and anchorless.
@@ -764,5 +981,82 @@ mod tests {
         assert_eq!(heads, comments.threads.len());
         assert!(rows.iter().all(|r| !matches!(r.kind, RowKind::Comment(_))
             || (!r.is_selectable() && r.anchor().is_none())));
+    }
+
+    #[test]
+    fn new_thread_composer_injects_inline_box() {
+        let cs = parse_report(SIMPLE_DIFF).0;
+        let store = CommentStore::default();
+        let none = HashSet::new();
+        let spec = ComposerSpec {
+            anchor: ComposerAnchor::NewThread {
+                file_idx: 0,
+                side: Side::New,
+                line: 2,
+            },
+            title: " new comment ".into(),
+            body: "hi".into(),
+        };
+        // Without a composer, no composer rows; with one, a box appears.
+        assert!(!build_rows(&cs, &store, &none, 80, None)
+            .iter()
+            .any(|r| matches!(r.kind, RowKind::Composer(_))));
+        let rows = build_rows(&cs, &store, &none, 80, Some(&spec));
+        // Exactly one top + one bottom border (a single box), and it carries
+        // the live body text. Composer rows are never selectable.
+        assert_eq!(
+            rows.iter()
+                .filter(|r| matches!(
+                    r.kind,
+                    RowKind::Composer(ComposerLine {
+                        kind: ComposerKind::Top { .. }
+                    })
+                ))
+                .count(),
+            1
+        );
+        assert!(rows
+            .iter()
+            .any(|r| matches!(&r.kind, RowKind::Composer(ComposerLine { kind: ComposerKind::Body(b) }) if b.contains("hi"))));
+        assert!(rows
+            .iter()
+            .all(|r| !matches!(r.kind, RowKind::Composer(_)) || !r.is_selectable()));
+    }
+
+    #[test]
+    fn reply_composer_injects_under_its_thread() {
+        let cs = parse_report(SIMPLE_DIFF).0;
+        let store = store_with(Side::New, 2);
+        let thread_id = store.threads[0].id;
+        let all = expand_all(&store);
+        let spec = ComposerSpec {
+            anchor: ComposerAnchor::Reply { thread_id },
+            title: " reply ".into(),
+            body: "ok".into(),
+        };
+        let rows = build_rows(&cs, &store, &all, 80, Some(&spec));
+        // The reply box renders after the thread's bottom border.
+        let bottom = rows.iter().position(|r| {
+            matches!(
+                &r.kind,
+                RowKind::Comment(CommentLine {
+                    kind: CommentKind::Bottom,
+                    ..
+                })
+            )
+        });
+        let comp_top = rows.iter().position(|r| {
+            matches!(
+                r.kind,
+                RowKind::Composer(ComposerLine {
+                    kind: ComposerKind::Top { .. }
+                })
+            )
+        });
+        assert!(bottom.is_some() && comp_top.is_some());
+        assert!(
+            comp_top > bottom,
+            "reply composer must sit below its thread"
+        );
     }
 }

@@ -4,8 +4,9 @@ use crate::comments::model::{CommentStore, LineRange};
 use crate::diff::model::{Changeset, LineKind, Side};
 use crate::ui::highlight_cache::HighlightCache;
 use crate::ui::render_rows::{
-    build_rows, build_split_rows, char_width, str_width, take_width, CommentKind, CommentLine, Row,
-    RowKind, SideCell, SplitRow, SplitRowKind,
+    build_rows, build_split_rows, char_width, str_width, take_width, CommentKind, CommentLine,
+    ComposerAnchor, ComposerKind, ComposerLine, ComposerSpec, Row, RowKind, SideCell, SplitRow,
+    SplitRowKind,
 };
 use crate::ui::sidebar::{
     base_of, build_sidebar_rows, dir_of, file_comment_state, file_status, SbRow,
@@ -17,8 +18,7 @@ use crossterm::event::{
 };
 use ratatui::prelude::*;
 use ratatui::widgets::{
-    Block, BorderType, Borders, Clear, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
-    Wrap,
+    Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
@@ -38,16 +38,6 @@ enum View {
 enum Focus {
     Sidebar,
     Diff,
-}
-
-/// A `width`×`height` rect centered inside `area` (clamped to fit).
-fn centered_rect(width: u16, height: u16, area: Rect) -> Rect {
-    Rect {
-        x: area.x + area.width.saturating_sub(width) / 2,
-        y: area.y + area.height.saturating_sub(height) / 2,
-        width: width.min(area.width),
-        height: height.min(area.height),
-    }
 }
 
 const SIDEBAR_WIDTH: u16 = 38;
@@ -161,6 +151,15 @@ fn elide_left(s: &str, w: usize) -> String {
     format!("…{tail}")
 }
 
+/// A view-independent handle to the selected row, stable across row rebuilds
+/// and unified/split switches (raw indices are not).
+enum SelKey {
+    /// A diff line, keyed by its comment anchor `(file, side, line)`.
+    Line(usize, Side, u32),
+    /// A comment message, keyed by its stable id.
+    Comment(Uuid),
+}
+
 /// What an open composer will write on submit.
 enum ComposeTarget {
     /// A brand-new thread anchored to a diff line range (`start == end` for a
@@ -238,8 +237,8 @@ impl App {
     pub fn with_comments(changeset: Changeset, comments: CommentStore) -> Self {
         // Show every comment thread inline by default; `o`/Enter collapse them.
         let expanded: HashSet<Uuid> = comments.threads.iter().map(|t| t.id).collect();
-        let rows = build_rows(&changeset, &comments, &expanded, 0);
-        let split_rows = build_split_rows(&changeset, &comments, &expanded, 0);
+        let rows = build_rows(&changeset, &comments, &expanded, 0, None);
+        let split_rows = build_split_rows(&changeset, &comments, &expanded, 0, None);
         let stats = file_stats(&changeset);
         let collapsed = HashSet::new();
         let (sidebar_rows, file_to_sbrow) = build_sidebar_rows(&changeset, &collapsed);
@@ -330,12 +329,12 @@ impl App {
 
     fn first_selectable(&self) -> Option<usize> {
         let (s, e) = self.file_range();
-        (s..e).find(|&i| self.is_selectable_at(i))
+        (s..e).find(|&i| self.is_stop_at(i))
     }
 
     fn last_selectable(&self) -> Option<usize> {
         let (s, e) = self.file_range();
-        (s..e).rev().find(|&i| self.is_selectable_at(i))
+        (s..e).rev().find(|&i| self.is_stop_at(i))
     }
 
     pub fn run(&mut self, terminal: &mut Terminal<impl Backend>) -> Result<()> {
@@ -468,8 +467,13 @@ impl App {
         (anchor.min(self.selected), anchor.max(self.selected))
     }
 
-    /// Whether row `idx` falls within the current selection (cursor or drag).
+    /// Whether row `idx` falls within the current selection. When the cursor is
+    /// on a comment, the whole message (its contiguous rows) is the selection;
+    /// otherwise it's the diff-line cursor/drag range.
     fn in_selection(&self, idx: usize) -> bool {
+        if let Some((lo, hi)) = self.comment_unit_span(self.selected) {
+            return idx >= lo && idx <= hi;
+        }
         let (lo, hi) = self.selection_bounds();
         idx >= lo && idx <= hi
     }
@@ -493,8 +497,27 @@ impl App {
         }
     }
 
-    /// Copy the selected lines to the system clipboard (via OSC 52 next frame).
+    /// Copy the selection to the system clipboard (via OSC 52 next frame): the
+    /// focused comment's body when a comment is selected, else the diff lines.
     fn copy_selection(&mut self) {
+        if let Some((thread_id, comment_id)) = self.focused_comment() {
+            if let Some(body) = self
+                .comments
+                .threads
+                .iter()
+                .find(|t| t.id == thread_id)
+                .and_then(|t| {
+                    t.comments
+                        .iter()
+                        .find(|c| c.id == comment_id)
+                        .map(|c| c.body.clone())
+                })
+            {
+                self.status = "copied comment".into();
+                self.pending_copy = Some(body);
+            }
+            return;
+        }
         let (lo, hi) = self.selection_bounds();
         let lines: Vec<String> = (lo..=hi).filter_map(|i| self.line_text(i)).collect();
         if lines.is_empty() {
@@ -715,27 +738,27 @@ impl App {
     /// Rebuild the diff row lists from the changeset + inline-expanded threads,
     /// keeping the cursor on the same (file, side, line) anchor.
     fn rebuild_rows(&mut self) {
-        let anchor = self.anchor_at(self.selected);
+        let key = self.sel_key();
         let cur_file = self.current_file;
+        let composer = self.composer_spec();
         self.rows = build_rows(
             &self.changeset,
             &self.comments,
             &self.expanded,
             self.comment_wrap,
+            composer.as_ref(),
         );
         self.split_rows = build_split_rows(
             &self.changeset,
             &self.comments,
             &self.expanded,
             self.comment_wrap,
+            composer.as_ref(),
         );
         // Rows changed; refresh the cached span (for the current file) before
         // first_selectable/ensure_visible read it.
         self.recompute_file_span();
-        let target = anchor.and_then(|a| {
-            (0..self.active_len())
-                .find(|&i| self.is_selectable_at(i) && self.anchor_at(i) == Some(a))
-        });
+        let target = key.as_ref().and_then(|k| self.find_sel_key(k));
         self.selected = target
             .or_else(|| self.first_selectable())
             .unwrap_or(0)
@@ -745,8 +768,64 @@ impl App {
         self.ensure_visible();
     }
 
+    /// A stable handle to the current selection that survives a row rebuild or
+    /// a view switch: the focused comment's message id, else the diff-line
+    /// anchor `(file, side, line)`.
+    fn sel_key(&self) -> Option<SelKey> {
+        if let Some((_, cid)) = self.focused_comment() {
+            return Some(SelKey::Comment(cid));
+        }
+        self.anchor_at(self.selected)
+            .map(|(f, s, l)| SelKey::Line(f, s, l))
+    }
+
+    /// Re-find the row matching `key` in the (freshly rebuilt) active list.
+    fn find_sel_key(&self, key: &SelKey) -> Option<usize> {
+        (0..self.active_len()).find(|&i| match key {
+            SelKey::Line(f, s, l) => {
+                self.is_selectable_at(i) && self.anchor_at(i) == Some((*f, *s, *l))
+            }
+            SelKey::Comment(cid) => {
+                self.is_stop_at(i) && self.comment_unit_at(i).map(|(_, c)| c) == Some(*cid)
+            }
+        })
+    }
+
     /// Toggle inline expansion of the comment thread(s) on the selected line.
+    /// When a comment is focused there's nothing to expand, so collapse its
+    /// thread and drop the cursor back onto the thread's anchor line.
     fn toggle_comment(&mut self) {
+        if let Some(cl) = self.comment_at(self.selected) {
+            let id = cl.thread_id;
+            self.expanded.remove(&id);
+            // Re-anchor onto the diff line the thread points at, so the cursor
+            // doesn't jump elsewhere when the box disappears.
+            if let Some((fi, side, line)) = self
+                .comments
+                .threads
+                .iter()
+                .find(|t| t.id == id)
+                .map(|t| (t.file.clone(), t.side, t.range.start))
+                .and_then(|(path, side, line)| {
+                    let fi = self
+                        .changeset
+                        .files
+                        .iter()
+                        .position(|f| Path::new(f.display_path()) == path)?;
+                    Some((fi, side, line))
+                })
+            {
+                self.rebuild_rows();
+                if let Some(i) = self.find_sel_key(&SelKey::Line(fi, side, line)) {
+                    self.selected = i;
+                    self.ensure_visible();
+                }
+            } else {
+                self.rebuild_rows();
+            }
+            self.status = "collapsed thread".into();
+            return;
+        }
         let Some((fi, side, line)) = self.anchor_at(self.selected) else {
             return;
         };
@@ -780,6 +859,85 @@ impl App {
         self.rebuild_rows();
     }
 
+    /// Translate the live composer into a row-stream injection spec (where the
+    /// box renders inline + its title), or `None` when no composer is open.
+    fn composer_spec(&self) -> Option<ComposerSpec> {
+        let c = self.composer.as_ref()?;
+        let (anchor, title) = match &c.target {
+            ComposeTarget::NewThread {
+                file_idx,
+                side,
+                start,
+                end,
+            } => {
+                let path = self
+                    .changeset
+                    .files
+                    .get(*file_idx)
+                    .map(|f| f.display_path())
+                    .unwrap_or("?");
+                let title = if start == end {
+                    format!(" new comment — {path}:{start} ")
+                } else {
+                    format!(" new comment — {path}:{start}-{end} ")
+                };
+                (
+                    ComposerAnchor::NewThread {
+                        file_idx: *file_idx,
+                        side: *side,
+                        line: *start,
+                    },
+                    title,
+                )
+            }
+            ComposeTarget::Reply { thread_id } => (
+                ComposerAnchor::Reply {
+                    thread_id: *thread_id,
+                },
+                " reply ".into(),
+            ),
+        };
+        Some(ComposerSpec {
+            anchor,
+            title,
+            body: c.buf.clone(),
+        })
+    }
+
+    /// Whether the active row at `i` is a line of the inline composer box.
+    fn is_composer_at(&self, i: usize) -> bool {
+        match self.view {
+            View::Unified => matches!(
+                self.rows.get(i).map(|r| &r.kind),
+                Some(RowKind::Composer(_))
+            ),
+            View::Split => matches!(
+                self.split_rows.get(i).map(|r| &r.kind),
+                Some(SplitRowKind::Composer { .. })
+            ),
+        }
+    }
+
+    /// Scroll so the (contiguous) inline composer box is fully in view, biased
+    /// to keep its top visible when it's taller than the viewport.
+    fn ensure_composer_visible(&mut self) {
+        let (s, e) = self.file_range();
+        let Some(first) = (s..e).find(|&i| self.is_composer_at(i)) else {
+            return;
+        };
+        let last = (first..e)
+            .take_while(|&i| self.is_composer_at(i))
+            .last()
+            .unwrap_or(first);
+        let height = self.height.max(1);
+        if last >= self.scroll + height {
+            self.scroll = (last + 1).saturating_sub(height).max(s);
+        }
+        if first < self.scroll {
+            self.scroll = first.max(s);
+        }
+    }
+
     /// Open the composer for a new thread anchored to the current selection —
     /// the cursor line, or a multi-line range from visual mode (`v`) or a mouse
     /// drag (see [`Self::selection_range`]).
@@ -801,13 +959,18 @@ impl App {
             },
             buf: String::new(),
         });
-        self.status = "new comment — enter for newline, ctrl-s to submit, esc to cancel".into();
+        self.status =
+            "new comment — enter for newline, shift+enter (or ctrl-s) to submit, esc to cancel"
+                .into();
+        self.rebuild_rows();
+        self.ensure_composer_visible();
     }
 
-    /// Open the composer to reply to the thread on the selected line.
+    /// Open the composer to reply to the focused thread (the comment the cursor
+    /// is on, or the thread anchored to the focused diff line).
     fn open_reply(&mut self) {
-        let Some(id) = self.current_thread_id() else {
-            self.status = "no comment thread on this line".into();
+        let Some(id) = self.focused_thread_id() else {
+            self.status = "no comment thread here".into();
             return;
         };
         self.resizing = false;
@@ -816,7 +979,13 @@ impl App {
             target: ComposeTarget::Reply { thread_id: id },
             buf: String::new(),
         });
-        self.status = "reply — type, enter to submit, esc to cancel".into();
+        // A reply renders under its thread, so make sure that thread is
+        // expanded (collapsed threads emit no rows to attach the box to).
+        self.expanded.insert(id);
+        self.status =
+            "reply — enter for newline, shift+enter (or ctrl-s) to submit, esc to cancel".into();
+        self.rebuild_rows();
+        self.ensure_composer_visible();
     }
 
     /// Keystrokes while the composer modal is open.
@@ -836,7 +1005,11 @@ impl App {
                 self.sel_anchor = None;
                 self.status = "cancelled".into();
             }
-            // Ctrl-S submits; Enter inserts a newline (bodies are multi-line).
+            // Shift+Enter submits; a bare Enter inserts a newline (bodies are
+            // multi-line). Ctrl-S is kept as a fallback for terminals without
+            // the keyboard-enhancement protocol, where Shift+Enter is
+            // indistinguishable from Enter.
+            KeyCode::Enter if mods.contains(KeyModifiers::SHIFT) => self.submit_compose(),
             KeyCode::Char('s') if ctrl => self.submit_compose(),
             KeyCode::Enter => {
                 if let Some(c) = self.composer.as_mut() {
@@ -853,7 +1026,16 @@ impl App {
                     c.buf.push(ch);
                 }
             }
-            _ => {}
+            // Unhandled keys change no state, so skip the row rebuild entirely
+            // (it walks the whole changeset — wasteful per keystroke).
+            _ => return,
+        }
+        // The composer is part of the row stream now, so any state change
+        // (typed text, cancel) must rebuild rows to reflect it. `submit_compose`
+        // already rebuilds; a redundant rebuild here is cheap and harmless.
+        self.rebuild_rows();
+        if self.composer.is_some() {
+            self.ensure_composer_visible();
         }
     }
 
@@ -919,10 +1101,10 @@ impl App {
             .map(|t| t.id)
     }
 
-    /// Toggle the resolved state of the thread on the selected line.
+    /// Toggle the resolved state of the focused thread.
     fn resolve_current_thread(&mut self) {
-        let Some(id) = self.current_thread_id() else {
-            self.status = "no comment thread on this line".into();
+        let Some(id) = self.focused_thread_id() else {
+            self.status = "no comment thread here".into();
             return;
         };
         match self.comments.toggle_resolved(id) {
@@ -933,10 +1115,10 @@ impl App {
         self.rebuild_rows();
     }
 
-    /// Delete the thread on the selected line.
+    /// Delete the focused thread.
     fn delete_current_thread(&mut self) {
-        let Some(id) = self.current_thread_id() else {
-            self.status = "no comment thread on this line".into();
+        let Some(id) = self.focused_thread_id() else {
+            self.status = "no comment thread here".into();
             return;
         };
         if self.comments.remove_thread(id) {
@@ -956,16 +1138,16 @@ impl App {
         let top = self.scroll.max(start);
         let idx = (top + row.saturating_sub(self.diff_area.y) as usize)
             .clamp(start, end.saturating_sub(1).max(start));
-        let target = if self.is_selectable_at(idx) {
-            Some(idx)
-        } else {
-            self.nearest_selectable(idx, 1)
-                .or_else(|| self.nearest_selectable(idx, -1))
-        };
-        if let Some(i) = target {
+        if let Some(i) = self.stop_for(idx) {
             self.selected = i;
-            if anchor {
-                self.sel_anchor = Some(i);
+            // A drag-range only makes sense between diff lines; landing on a
+            // comment selects that one message and drops any range anchor.
+            if self.is_selectable_at(i) {
+                if anchor {
+                    self.sel_anchor = Some(i);
+                }
+            } else {
+                self.sel_anchor = None;
             }
             self.ensure_visible();
         }
@@ -985,6 +1167,98 @@ impl App {
             View::Unified => self.rows.get(i).is_some_and(|r| r.is_selectable()),
             View::Split => self.split_rows.get(i).is_some_and(|r| r.is_selectable()),
         }
+    }
+
+    /// The comment-thread line at row `i`, in whichever view is active.
+    fn comment_at(&self, i: usize) -> Option<&CommentLine> {
+        match self.view {
+            View::Unified => match &self.rows.get(i)?.kind {
+                RowKind::Comment(cl) => Some(cl),
+                _ => None,
+            },
+            View::Split => match &self.split_rows.get(i)?.kind {
+                SplitRowKind::Comment { line, .. } => Some(line),
+                _ => None,
+            },
+        }
+    }
+
+    /// `(thread_id, comment_id)` of the message that row `i` belongs to, if it's
+    /// a content line of a comment (author/body/gap). Chrome rows return `None`.
+    fn comment_unit_at(&self, i: usize) -> Option<(Uuid, Uuid)> {
+        let cl = self.comment_at(i)?;
+        Some((cl.thread_id, cl.comment_id?))
+    }
+
+    /// A "stop" is a place the cursor can land: a diff line, or the *first* row
+    /// of a comment message (so a multi-line message is a single stop).
+    fn is_stop_at(&self, i: usize) -> bool {
+        if self.is_selectable_at(i) {
+            return true;
+        }
+        match self.comment_unit_at(i) {
+            // First row of a message: the row above belongs to a different
+            // message (or is chrome / a diff line).
+            Some((_, cid)) => i == 0 || self.comment_unit_at(i - 1).map(|(_, c)| c) != Some(cid),
+            None => false,
+        }
+    }
+
+    /// Inclusive `[lo, hi]` rows of the comment message covering row `i`, if `i`
+    /// is a comment content line. Used to highlight/scroll the whole message.
+    fn comment_unit_span(&self, i: usize) -> Option<(usize, usize)> {
+        let (_, cid) = self.comment_unit_at(i)?;
+        let same = |j: usize| self.comment_unit_at(j).map(|(_, c)| c) == Some(cid);
+        let mut lo = i;
+        while lo > 0 && same(lo - 1) {
+            lo -= 1;
+        }
+        let mut hi = i;
+        let len = self.active_len();
+        while hi + 1 < len && same(hi + 1) {
+            hi += 1;
+        }
+        Some((lo, hi))
+    }
+
+    /// First stop at/beyond `from` scanning in `dir`, within the file.
+    fn nearest_stop(&self, from: usize, dir: isize) -> Option<usize> {
+        let (start, end) = self.file_range();
+        let mut i = from as isize;
+        while i >= start as isize && (i as usize) < end {
+            if self.is_stop_at(i as usize) {
+                return Some(i as usize);
+            }
+            i += dir;
+        }
+        None
+    }
+
+    /// Map a clicked/landed row to the stop it should select: itself if it's a
+    /// stop, the message head if it's inside a message, else the nearest stop.
+    fn stop_for(&self, idx: usize) -> Option<usize> {
+        if self.is_stop_at(idx) {
+            return Some(idx);
+        }
+        if self.comment_unit_at(idx).is_some() {
+            return self.comment_unit_span(idx).map(|(lo, _)| lo);
+        }
+        self.nearest_stop(idx, 1)
+            .or_else(|| self.nearest_stop(idx, -1))
+    }
+
+    /// `(thread_id, comment_id)` the cursor is currently on, if it's a comment.
+    fn focused_comment(&self) -> Option<(Uuid, Uuid)> {
+        self.comment_unit_at(self.selected)
+    }
+
+    /// The thread the cursor acts on: the focused comment's thread, else the
+    /// thread anchored to the focused diff line.
+    fn focused_thread_id(&self) -> Option<Uuid> {
+        if let Some(cl) = self.comment_at(self.selected) {
+            return Some(cl.thread_id);
+        }
+        self.current_thread_id()
     }
 
     /// The file index a row belongs to (header rows included).
@@ -1074,7 +1348,7 @@ impl App {
     fn toggle_view(&mut self) {
         self.sel_anchor = None;
         self.visual = false;
-        let anchor = self.anchor_at(self.selected);
+        let key = self.sel_key();
         self.view = match self.view {
             View::Unified => View::Split,
             View::Split => View::Unified,
@@ -1082,11 +1356,8 @@ impl App {
         // The active list switched; refresh the cached span before
         // first_selectable reads it.
         self.recompute_file_span();
-        // Re-find the same (file, side, line) in the other layout.
-        let target = anchor.and_then(|a| {
-            (0..self.active_len())
-                .find(|&i| self.is_selectable_at(i) && self.anchor_at(i) == Some(a))
-        });
+        // Re-find the same line / comment message in the other layout.
+        let target = key.as_ref().and_then(|k| self.find_sel_key(k));
         self.selected = target
             .or_else(|| self.first_selectable())
             .unwrap_or(0)
@@ -1292,7 +1563,7 @@ impl App {
             if i < start as isize || i as usize >= end {
                 return;
             }
-            if self.is_selectable_at(i as usize) {
+            if self.is_stop_at(i as usize) {
                 self.selected = i as usize;
                 self.ensure_visible();
                 return;
@@ -1327,26 +1598,19 @@ impl App {
         // stays put (and simply scrolls out of view) until the user moves it.
     }
 
-    /// First selectable row at/beyond `from` scanning in `dir`, within the file.
-    fn nearest_selectable(&self, from: usize, dir: isize) -> Option<usize> {
-        let (start, end) = self.file_range();
-        let mut i = from as isize;
-        while i >= start as isize && (i as usize) < end {
-            if self.is_selectable_at(i as usize) {
-                return Some(i as usize);
-            }
-            i += dir;
-        }
-        None
-    }
-
     fn ensure_visible(&mut self) {
         let (start, end) = self.file_range();
         let height = self.height.max(1);
-        if self.selected < self.scroll {
-            self.scroll = self.selected;
-        } else if self.selected >= self.scroll + height {
-            self.scroll = self.selected + 1 - height;
+        // For a focused comment, keep the whole message in view (biased to its
+        // top when taller than the viewport); otherwise just the cursor row.
+        let (top_row, bot_row) = self
+            .comment_unit_span(self.selected)
+            .unwrap_or((self.selected, self.selected));
+        if bot_row >= self.scroll + height {
+            self.scroll = bot_row + 1 - height;
+        }
+        if top_row < self.scroll {
+            self.scroll = top_row;
         }
         // Never scroll outside the current file's slice, and never past the
         // last full screen of content.
@@ -1413,7 +1677,9 @@ impl App {
         let cw = (diff_inner_width as usize).saturating_sub(8);
         if cw != self.comment_wrap && !self.resizing {
             self.comment_wrap = cw;
-            if !self.expanded.is_empty() {
+            // Re-wrap when there are inline boxes to re-wrap: expanded threads
+            // or an open composer (which renders inline too).
+            if !self.expanded.is_empty() || self.composer.is_some() {
                 self.rebuild_rows();
             }
         }
@@ -1509,77 +1775,6 @@ impl App {
             Paragraph::new(self.status.clone()).style(Style::default().fg(THEME.muted)),
             chunks[1],
         );
-
-        // Composer modal floats on top of everything when open.
-        self.render_composer(f, area);
-    }
-
-    /// Draw the comment composer modal, centered over the whole frame.
-    fn render_composer(&self, f: &mut Frame, area: Rect) {
-        let Some(c) = &self.composer else {
-            return;
-        };
-        let title = match &c.target {
-            ComposeTarget::NewThread {
-                file_idx,
-                start,
-                end,
-                ..
-            } => {
-                let path = self
-                    .changeset
-                    .files
-                    .get(*file_idx)
-                    .map(|f| f.display_path())
-                    .unwrap_or("?");
-                if start == end {
-                    format!(" new comment — {path}:{start} ")
-                } else {
-                    format!(" new comment — {path}:{start}-{end} ")
-                }
-            }
-            ComposeTarget::Reply { .. } => " reply ".into(),
-        };
-        let width = area.width.saturating_sub(8).clamp(20, 72);
-        let height = 7u16.min(area.height);
-        let rect = centered_rect(width, height, area);
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_type(BorderType::Rounded)
-            .border_style(Style::default().fg(THEME.border_focus))
-            .title(title);
-        let inner = block.inner(rect);
-        f.render_widget(Clear, rect);
-        f.render_widget(block, rect);
-        if inner.height == 0 {
-            return;
-        }
-        // Body (with a block caret) above a one-line hint.
-        let body_h = inner.height.saturating_sub(1).max(1);
-        let body = Rect {
-            height: body_h,
-            ..inner
-        };
-        let mut text = c.buf.clone();
-        text.push('█');
-        f.render_widget(
-            Paragraph::new(text)
-                .wrap(Wrap { trim: false })
-                .style(Style::default().fg(THEME.text)),
-            body,
-        );
-        if inner.height > 1 {
-            let hint = Rect {
-                y: inner.y + body_h,
-                height: 1,
-                ..inner
-            };
-            f.render_widget(
-                Paragraph::new("enter newline · ctrl-s submit · esc cancel")
-                    .style(Style::default().fg(THEME.muted)),
-                hint,
-            );
-        }
     }
 
     fn render_diff(&self, f: &mut Frame, area: Rect) {
@@ -1802,12 +1997,33 @@ impl App {
                 // Render the thread under the column it is anchored to: old
                 // (deletion) comments on the left, new (addition) comments on
                 // the right. The opposite column is left blank.
-                let body = self.comment_line_to_line(cl, side_w).spans;
+                let body = self.comment_line_to_line(cl, selected, side_w).spans;
                 match side {
                     Side::Old => {
                         let mut spans = body;
                         // Pad out to the divider + right column so the row
                         // fills its width.
+                        spans.push(Span::styled(
+                            " ".repeat(divider.chars().count() + side_w),
+                            Style::default(),
+                        ));
+                        Line::from(spans)
+                    }
+                    Side::New => {
+                        let pad = side_w + divider.chars().count();
+                        let mut spans = vec![Span::styled(" ".repeat(pad), Style::default())];
+                        spans.extend(body);
+                        Line::from(spans)
+                    }
+                }
+            }
+            SplitRowKind::Composer { side, line: cl } => {
+                // Same side-aware placement as comment rows: render under the
+                // anchored column, blank the other.
+                let body = self.composer_line_to_line(cl, side_w).spans;
+                match side {
+                    Side::Old => {
+                        let mut spans = body;
                         spans.push(Span::styled(
                             " ".repeat(divider.chars().count() + side_w),
                             Style::default(),
@@ -1932,20 +2148,24 @@ impl App {
                 }
                 Line::from(spans)
             }
-            RowKind::Comment(cl) => self.comment_line_to_line(cl, width),
+            RowKind::Comment(cl) => self.comment_line_to_line(cl, selected, width),
+            RowKind::Composer(cl) => self.composer_line_to_line(cl, width),
         }
     }
 
     /// Render one inline comment line as part of a rounded box spanning `width`
-    /// (2-column left margin + `╭─╮`/`│ │`/`╰─╯` frame).
-    fn comment_line_to_line(&self, cl: &CommentLine, width: usize) -> Line<'static> {
+    /// (2-column left margin + `╭─╮`/`│ │`/`╰─╯` frame). `focused` is set for
+    /// the rows of the message the cursor is on.
+    fn comment_line_to_line(&self, cl: &CommentLine, focused: bool, width: usize) -> Line<'static> {
         const MARGIN: usize = 2;
-        // Resolved threads dim the entire box (border + body), not just the
-        // header flag, so a reviewer can skim past settled discussion.
+        // Border brightness signals focus: the focused message keeps the bright
+        // (theme) border, others dim. Resolved threads always read as settled.
         let border_col = if cl.resolved {
             THEME.muted
+        } else if focused {
+            THEME.border_focus
         } else {
-            THEME.text_strong
+            THEME.border_unfocus
         };
         let bstyle = Style::default().fg(border_col);
         // Box occupies cols [MARGIN, width); inner_w is the span between borders.
@@ -2028,6 +2248,64 @@ impl App {
                     Span::styled("│".to_string(), bstyle),
                 ])
             }
+        }
+    }
+
+    /// Render one inline composer line as part of a rounded accent box spanning
+    /// `width` (2-col left margin + framed title / live body / key hint).
+    fn composer_line_to_line(&self, cl: &ComposerLine, width: usize) -> Line<'static> {
+        const MARGIN: usize = 2;
+        let bstyle = Style::default().fg(THEME.accent);
+        let inner_w = width.saturating_sub(MARGIN + 2);
+        if width <= MARGIN + 2 {
+            return Line::from(Span::raw(" ".repeat(width)));
+        }
+        let margin = Span::raw(" ".repeat(MARGIN));
+        // Pad/truncate `s` to exactly `inner_w` display cells.
+        let fit = |s: &str| -> String {
+            let w = str_width(s);
+            if w > inner_w {
+                take_width(s, inner_w).0
+            } else {
+                format!("{s}{}", " ".repeat(inner_w - w))
+            }
+        };
+        match &cl.kind {
+            ComposerKind::Top { title } => {
+                let t = take_width(title, inner_w).0;
+                let dashes = inner_w.saturating_sub(str_width(&t));
+                Line::from(vec![
+                    margin,
+                    Span::styled("╭".to_string(), bstyle),
+                    Span::styled(
+                        t,
+                        Style::default()
+                            .fg(THEME.accent)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled("─".repeat(dashes), bstyle),
+                    Span::styled("╮".to_string(), bstyle),
+                ])
+            }
+            ComposerKind::Bottom => Line::from(vec![
+                margin,
+                Span::styled(format!("╰{}╯", "─".repeat(inner_w)), bstyle),
+            ]),
+            ComposerKind::Body(b) => Line::from(vec![
+                margin,
+                Span::styled("│".to_string(), bstyle),
+                Span::styled(fit(&format!(" {b}")), Style::default().fg(THEME.text)),
+                Span::styled("│".to_string(), bstyle),
+            ]),
+            ComposerKind::Hint => Line::from(vec![
+                margin,
+                Span::styled("│".to_string(), bstyle),
+                Span::styled(
+                    fit(" shift+enter / ctrl-s: submit · enter: newline · esc: cancel"),
+                    Style::default().fg(THEME.muted),
+                ),
+                Span::styled("│".to_string(), bstyle),
+            ]),
         }
     }
 }
@@ -2151,5 +2429,93 @@ mod tests {
         app.jump_file(-1);
         assert_eq!(app.current_file, 0);
         assert_eq!(app.row_file_idx(app.selected), Some(0));
+    }
+
+    /// Build an app with one new-side thread (two messages) anchored to `line`,
+    /// expanded inline by default.
+    fn app_with_thread(line: u32) -> (App, Uuid, Uuid) {
+        let cs = parse_report(DIFF).0;
+        let mut store = CommentStore::default();
+        let tid = store.add_thread(
+            "f.rs".into(),
+            Side::New,
+            LineRange {
+                start: line,
+                end: line,
+            },
+            Some("a".into()),
+            "root message".into(),
+        );
+        store.reply(tid, Some("b".into()), "a reply".into());
+        let reply_id = store.threads[0].comments[1].id;
+        let mut app = App::with_comments(cs, store);
+        app.height = 40; // tall enough to hold the whole thread
+        (app, tid, reply_id)
+    }
+
+    /// First active row that is a content line of comment `comment_id`.
+    fn comment_head(app: &App, comment_id: Uuid) -> usize {
+        (0..app.active_len())
+            .find(|&i| {
+                app.is_stop_at(i) && app.comment_unit_at(i).map(|(_, c)| c) == Some(comment_id)
+            })
+            .expect("comment head row")
+    }
+
+    #[test]
+    fn comments_are_navigable_stops() {
+        let (mut app, _tid, reply_id) = app_with_thread(3);
+        // Land on the diff line the thread anchors to, then walk down: we must
+        // eventually stop on each comment message (a stop that is not a line).
+        goto(&mut app, Side::New, 3);
+        let mut comment_stops = 0;
+        for _ in 0..40 {
+            app.move_by(1, 1);
+            if app.comment_unit_at(app.selected).is_some() {
+                comment_stops += 1;
+            }
+        }
+        assert!(
+            comment_stops >= 2,
+            "navigation should stop on each comment message (got {comment_stops})"
+        );
+        // And the reply message is reachable as its own stop.
+        let head = comment_head(&app, reply_id);
+        assert!(app.is_stop_at(head));
+    }
+
+    #[test]
+    fn focusing_a_comment_selects_the_whole_message_and_its_thread() {
+        let (mut app, tid, reply_id) = app_with_thread(3);
+        let head = comment_head(&app, reply_id);
+        app.selected = head;
+
+        // The focused-thread action target is the comment's thread.
+        assert_eq!(app.focused_thread_id(), Some(tid));
+        assert_eq!(app.focused_comment(), Some((tid, reply_id)));
+
+        // Every row of the message (and only those) is in the selection.
+        let (lo, hi) = app.comment_unit_span(head).unwrap();
+        assert!(hi >= lo);
+        for i in lo..=hi {
+            assert!(
+                app.in_selection(i),
+                "row {i} of the message should highlight"
+            );
+        }
+        assert!(!app.in_selection(lo.saturating_sub(1)) || lo == 0);
+        assert!(!app.in_selection(hi + 1));
+    }
+
+    #[test]
+    fn comment_selection_survives_view_toggle() {
+        let (mut app, tid, reply_id) = app_with_thread(3);
+        app.selected = comment_head(&app, reply_id);
+        app.toggle_view(); // unified <-> split
+        assert_eq!(
+            app.focused_comment(),
+            Some((tid, reply_id)),
+            "the same comment should stay focused across a view switch"
+        );
     }
 }
