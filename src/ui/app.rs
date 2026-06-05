@@ -199,7 +199,7 @@ pub struct App {
     show_sidebar: bool,
     sidebar_width: u16,
     sidebar_scroll: usize, // top file row of the sidebar (independent of selection)
-    sidebar_sel: usize,    // cursor row in the sidebar (a File or Thread row)
+    sidebar_sel: usize,    // cursor row in the sidebar (a Dir or File row)
     expanded: HashSet<Uuid>, // thread ids expanded inline in the diff
     collapsed: HashSet<String>, // directory paths collapsed in the sidebar tree
     comment_wrap: usize,   // width used to wrap inline comment bodies
@@ -606,14 +606,14 @@ impl App {
         self.reveal_sidebar();
     }
 
-    /// Toggle the directory under the cursor (no-op on file/thread rows).
+    /// Toggle the directory under the cursor (no-op on file rows).
     fn toggle_dir(&mut self, path: String) {
         let collapsed = self.collapsed.contains(&path);
         self.set_dir_collapsed(path, !collapsed);
     }
 
     /// Collapse (`collapse = true`) or expand the directory under the cursor.
-    /// Collapsing while on a file/thread row closes its containing folder and
+    /// Collapsing while on a file row closes its containing folder and
     /// moves the cursor onto that folder.
     fn fold_dir(&mut self, collapse: bool) {
         match self.sidebar_rows.get(self.sidebar_sel) {
@@ -676,7 +676,7 @@ impl App {
         self.activate_sidebar();
     }
 
-    /// Apply the row under the sidebar cursor: switch file or jump to thread.
+    /// Apply the row under the sidebar cursor: switch to the file it names.
     fn activate_sidebar(&mut self) {
         // Directory rows are just a cursor resting spot during navigation;
         // they toggle only on explicit activation.

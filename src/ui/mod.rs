@@ -110,11 +110,12 @@ pub fn run(changeset: Changeset, comments: CommentStore) -> Result<CommentStore>
     // initialize input reader".
     reattach_stdin_to_tty()?;
 
-    // From here on the terminal is in raw mode / alternate screen, so any early
-    // return or panic must restore it. The panic hook covers panics; the
-    // explicit `restore_terminal()` below covers the normal and error paths
-    // (note we do *not* use `?` on teardown — a restore error must not skip the
-    // rest of the teardown or swallow the app's own result).
+    // Install the panic hook *before* we enter raw mode / the alternate screen
+    // below, so a panic at any point after that is guaranteed to restore the
+    // terminal first. The hook covers panics; the explicit `restore_terminal()`
+    // below covers the normal and error paths (note we do *not* use `?` on
+    // teardown — a restore error must not skip the rest of the teardown or
+    // swallow the app's own result).
     install_panic_hook();
 
     // Render to stderr, not stdout: stdout is reserved for the review JSON we

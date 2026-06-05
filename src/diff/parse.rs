@@ -36,9 +36,13 @@ pub fn parse_report(input: &str) -> (Changeset, Option<String>) {
 
 /// Heuristic: does `input` contain a line that marks it as a unified diff?
 fn looks_like_patch(input: &str) -> bool {
+    // `@@ -` is the real unified-diff hunk-header prefix; a bare `@@` check
+    // would false-positive on non-diff text that merely starts with `@@`
+    // (email quotes, logs), since `patch::from_multiple` errors on any
+    // non-patch input.
     input
         .lines()
-        .any(|l| l.starts_with("--- ") || l.starts_with("diff --git ") || l.starts_with("@@"))
+        .any(|l| l.starts_with("--- ") || l.starts_with("diff --git ") || l.starts_with("@@ -"))
 }
 
 /// Scan for git's `Binary files a/x and b/y differ` markers and turn each into

@@ -73,6 +73,12 @@ fn read_patch(path: Option<&Path>) -> Result<String> {
 mod tests {
     use super::*;
 
+    /// A unique temp path so parallel tests (cargo runs them in one process)
+    /// can't collide on a fixed filename and flake.
+    fn unique_temp(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("hew_test_{tag}_{}.json", uuid::Uuid::new_v4()))
+    }
+
     #[test]
     fn loads_handwritten_comments() {
         let json = r#"{
@@ -88,8 +94,7 @@ mod tests {
             }
           ]
         }"#;
-        let dir = std::env::temp_dir();
-        let path = dir.join("hew_test_comments.json");
+        let path = unique_temp("comments");
         std::fs::write(&path, json).unwrap();
         let store = load_comments(&path).unwrap();
         assert_eq!(store.threads.len(), 1);
@@ -106,7 +111,7 @@ mod tests {
             { "file": "a.rs", "side": "new", "range": { "start": 1, "end": 1 },
               "comments": [ { "author": "x", "body": "hi" } ] }
         ]"#;
-        let path = std::env::temp_dir().join("hew_test_array.json");
+        let path = unique_temp("array");
         std::fs::write(&path, json).unwrap();
         let store = load_comments(&path).unwrap();
         assert_eq!(store.threads.len(), 1);
@@ -119,7 +124,7 @@ mod tests {
         // store parse, not a misleading "expected array".
         let json = r#"{ "threads": [ { "file": "a.rs", "side": "sideways",
             "range": { "start": 1, "end": 1 }, "comments": [] } ] }"#;
-        let path = std::env::temp_dir().join("hew_test_bad_store.json");
+        let path = unique_temp("bad_store");
         std::fs::write(&path, json).unwrap();
         let err = load_comments(&path).unwrap_err().to_string();
         assert!(err.contains("parsing comments JSON"), "got: {err}");
@@ -129,7 +134,7 @@ mod tests {
 
     #[test]
     fn load_or_default_is_empty_when_missing() {
-        let path = std::env::temp_dir().join("hew_test_does_not_exist_xyz.json");
+        let path = unique_temp("missing");
         let _ = std::fs::remove_file(&path);
         let store = load_comments_or_default(&path).unwrap();
         assert!(store.threads.is_empty());
