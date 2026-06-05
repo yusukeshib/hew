@@ -1,5 +1,6 @@
 pub mod app;
 pub mod highlight;
+pub mod highlight_cache;
 pub mod render_rows;
 pub mod theme;
 
