@@ -432,10 +432,17 @@ impl App {
         }
     }
 
+    /// Inclusive `[lo, hi]` row span of the current selection: the cursor line
+    /// alone, or the cursor-to-anchor range when a drag/visual selection is
+    /// active. The single source of truth for selection extent.
+    fn selection_bounds(&self) -> (usize, usize) {
+        let anchor = self.sel_anchor.unwrap_or(self.selected);
+        (anchor.min(self.selected), anchor.max(self.selected))
+    }
+
     /// Whether row `idx` falls within the current selection (cursor or drag).
     fn in_selection(&self, idx: usize) -> bool {
-        let anchor = self.sel_anchor.unwrap_or(self.selected);
-        let (lo, hi) = (anchor.min(self.selected), anchor.max(self.selected));
+        let (lo, hi) = self.selection_bounds();
         idx >= lo && idx <= hi
     }
 
@@ -460,8 +467,7 @@ impl App {
 
     /// Copy the selected lines to the system clipboard (via OSC 52 next frame).
     fn copy_selection(&mut self) {
-        let anchor = self.sel_anchor.unwrap_or(self.selected);
-        let (lo, hi) = (anchor.min(self.selected), anchor.max(self.selected));
+        let (lo, hi) = self.selection_bounds();
         let lines: Vec<String> = (lo..=hi).filter_map(|i| self.line_text(i)).collect();
         if lines.is_empty() {
             return;
@@ -1231,8 +1237,7 @@ impl App {
     /// cursor are ignored (a comment anchors to one side).
     fn selection_range(&self) -> Option<(usize, Side, u32, u32)> {
         let (fi, side, cur) = self.anchor_at(self.selected)?;
-        let anchor = self.sel_anchor.unwrap_or(self.selected);
-        let (lo, hi) = (anchor.min(self.selected), anchor.max(self.selected));
+        let (lo, hi) = self.selection_bounds();
         let (mut start, mut end) = (cur, cur);
         for i in lo..=hi {
             if let Some((f, s, l)) = self.anchor_at(i) {
