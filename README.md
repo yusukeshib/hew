@@ -203,10 +203,34 @@ sidecar format* and *Action log format* above), the GitHub round-trip needs no
 code in the binary: an agent that understands the schema is the bridge — it
 prepares the base sidecar from `gh api` and replays the action log through `gh`.
 
-Planned: a tree-sitter highlighting backend and theme selection. Optional `gh`
-wrapper examples may ship under `examples/`, but they are conveniences, not a
-dependency. A live socket for in-session AI co-review is deferred (see
-`ROADMAP.md`).
+### Design invariants
+
+These are the rules that keep hew small — they should not be broken:
+
+- **hew never talks to GitHub.** It eats a patch + a comment JSON, nothing else.
+  The GitHub round-trip lives entirely outside the binary; any `gh` wrappers
+  ship only as `examples/`, never as a dependency.
+- **hew is a pure filter — no "save".** All inputs are immutable: the patch
+  (stdin) and the `--comments` base JSON are read, never written. There is no
+  save/flush/autosave/document concept.
+- **The TUI is the sole writer of its in-memory store.** All edits
+  (compose/reply/resolve/delete) mutate one `CommentStore`.
+- **Output is a compacted action log**, not the comment store: on exit hew emits
+  `diff(base, final)` as a minimal action array to stdout (a thread created then
+  deleted, or a resolve toggled back, cancels out). Replay requires the base to
+  carry stable thread ids.
+- **Channels stay separated:** stdin = patch, stderr/tty = render, stdout =
+  action-log result.
+- **No daemon, no DB, no background services**, and a deliberately minimal CLI
+  (just `FILE` and `--comments`).
+
+### Planned
+
+A tree-sitter highlighting backend and theme selection. Optional `gh` wrapper
+examples may ship under `examples/`, but they are conveniences, not a dependency.
+Live in-session AI co-review over a socket is deferred and out of scope for v1;
+the turn-based flow (an agent prepares a base review, opens hew for the human,
+then drives `gh` from the emitted action log) covers the v1 workflows without it.
 
 Note: `hew` parses **plain unified diffs**, not git `format-patch` mailbox output
 (`gh pr diff --patch`). Use a `.diff`/`git diff` stream instead.
