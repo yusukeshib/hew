@@ -2022,3 +2022,125 @@ impl App {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::diff::parse::parse_report;
+
+    // Four additions framed by two context lines, so the new side carries
+    // lines 1..=6 and there are six selectable rows in a known order.
+    const DIFF: &str = "\
+--- a/f.rs
++++ b/f.rs
+@@ -1,2 +1,6 @@
+ a
++b
++c
++d
++e
+ f
+";
+
+    // Two files, to exercise per-file navigation.
+    const TWO_FILES: &str = "\
+--- a/one.rs
++++ b/one.rs
+@@ -1 +1,2 @@
+ x
++y
+--- a/two.rs
++++ b/two.rs
+@@ -1 +1,2 @@
+ p
++q
+";
+
+    fn app_with(diff: &str) -> App {
+        let cs = parse_report(diff).0;
+        let mut app = App::with_comments(cs, CommentStore::default());
+        app.height = 4; // deterministic viewport for scroll math
+        app
+    }
+
+    /// Move the cursor onto the row anchored at `(current_file, side, line)`.
+    fn goto(app: &mut App, side: Side, line: u32) {
+        let (s, e) = app.file_range();
+        for i in s..e {
+            if app.anchor_at(i) == Some((app.current_file, side, line)) {
+                app.selected = i;
+                return;
+            }
+        }
+        panic!("no selectable row for {side:?} line {line}");
+    }
+
+    #[test]
+    fn navigation_clamps_within_the_file() {
+        let mut app = app_with(DIFF);
+        let first = app.first_selectable().unwrap();
+        let last = app.last_selectable().unwrap();
+        app.selected = first;
+
+        // Up past the top is a no-op.
+        app.move_by(-1, 5);
+        assert_eq!(app.selected, first);
+
+        // Down past the bottom clamps to the last selectable row.
+        app.move_by(1, 100);
+        assert_eq!(app.selected, last);
+    }
+
+    #[test]
+    fn ensure_visible_keeps_cursor_in_viewport() {
+        let mut app = app_with(DIFF);
+        let (start, end) = app.file_range();
+        app.selected = app.last_selectable().unwrap();
+        app.ensure_visible();
+        let h = app.height;
+        assert!(app.scroll <= app.selected, "cursor above viewport");
+        assert!(app.selected < app.scroll + h, "cursor below viewport");
+        // Scroll never leaves the file's row slice.
+        assert!(app.scroll >= start && app.scroll < end);
+    }
+
+    #[test]
+    fn visual_selection_spans_a_multi_line_range() {
+        let mut app = app_with(DIFF);
+        goto(&mut app, Side::New, 2);
+        app.toggle_visual();
+        assert!(app.visual && app.sel_anchor.is_some());
+        goto(&mut app, Side::New, 5);
+
+        // The selection covers new-side lines 2..=5 on a single side.
+        let (fi, side, lo, hi) = app.selection_range().unwrap();
+        assert_eq!((fi, side, lo, hi), (app.current_file, Side::New, 2, 5));
+
+        // Leaving visual drops the anchor.
+        app.toggle_visual();
+        assert!(!app.visual && app.sel_anchor.is_none());
+    }
+
+    #[test]
+    fn selection_range_is_single_line_without_an_anchor() {
+        let mut app = app_with(DIFF);
+        goto(&mut app, Side::New, 3);
+        let (_, side, lo, hi) = app.selection_range().unwrap();
+        assert_eq!((side, lo, hi), (Side::New, 3, 3));
+    }
+
+    #[test]
+    fn jumping_files_moves_the_cursor_into_the_new_file() {
+        let mut app = app_with(TWO_FILES);
+        assert_eq!(app.current_file, 0);
+        app.jump_file(1);
+        assert_eq!(app.current_file, 1);
+        // The cursor lands on a selectable row belonging to file 1.
+        assert!(app.is_selectable_at(app.selected));
+        assert_eq!(app.row_file_idx(app.selected), Some(1));
+        // ...and back.
+        app.jump_file(-1);
+        assert_eq!(app.current_file, 0);
+        assert_eq!(app.row_file_idx(app.selected), Some(0));
+    }
+}
