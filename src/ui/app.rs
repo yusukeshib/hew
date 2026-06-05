@@ -959,9 +959,7 @@ impl App {
             },
             buf: String::new(),
         });
-        self.status =
-            "new comment — enter for newline, shift+enter (or ctrl-s) to submit, esc to cancel"
-                .into();
+        self.status = "new comment — enter for newline, ctrl+enter to submit, esc to cancel".into();
         self.rebuild_rows();
         self.ensure_composer_visible();
     }
@@ -982,8 +980,7 @@ impl App {
         // A reply renders under its thread, so make sure that thread is
         // expanded (collapsed threads emit no rows to attach the box to).
         self.expanded.insert(id);
-        self.status =
-            "reply — enter for newline, shift+enter (or ctrl-s) to submit, esc to cancel".into();
+        self.status = "reply — enter for newline, ctrl+enter to submit, esc to cancel".into();
         self.rebuild_rows();
         self.ensure_composer_visible();
     }
@@ -1005,12 +1002,13 @@ impl App {
                 self.sel_anchor = None;
                 self.status = "cancelled".into();
             }
-            // Shift+Enter submits; a bare Enter inserts a newline (bodies are
-            // multi-line). Ctrl-S is kept as a fallback for terminals without
-            // the keyboard-enhancement protocol, where Shift+Enter is
-            // indistinguishable from Enter.
-            KeyCode::Enter if mods.contains(KeyModifiers::SHIFT) => self.submit_compose(),
-            KeyCode::Char('s') if ctrl => self.submit_compose(),
+            // Ctrl+Enter submits (GitHub-style); a bare Enter inserts a newline
+            // (bodies are multi-line). We use Ctrl rather than Shift because the
+            // kitty keyboard-enhancement protocol's DISAMBIGUATE_ESCAPE_CODES
+            // flag (enabled in `run`) reports ctrl+key as a distinct event but
+            // NOT plain shift+key — so Shift+Enter is indistinguishable from a
+            // bare Enter and could never be detected.
+            KeyCode::Enter if ctrl => self.submit_compose(),
             KeyCode::Enter => {
                 if let Some(c) = self.composer.as_mut() {
                     c.buf.push('\n');
@@ -2301,7 +2299,7 @@ impl App {
                 margin,
                 Span::styled("│".to_string(), bstyle),
                 Span::styled(
-                    fit(" shift+enter / ctrl-s: submit · enter: newline · esc: cancel"),
+                    fit(" ctrl+enter: submit · enter: newline · esc: cancel"),
                     Style::default().fg(THEME.muted),
                 ),
                 Span::styled("│".to_string(), bstyle),
@@ -2517,5 +2515,51 @@ mod tests {
             Some((tid, reply_id)),
             "the same comment should stay focused across a view switch"
         );
+    }
+
+    /// Open a new-thread composer anchored on a known diff line.
+    fn open_composer(app: &mut App) {
+        goto(app, Side::New, 3);
+        app.open_new_thread();
+        assert!(app.composer.is_some(), "composer should be open");
+    }
+
+    #[test]
+    fn bare_enter_inserts_a_newline_in_the_composer() {
+        let mut app = app_with(DIFF);
+        open_composer(&mut app);
+        app.on_key_compose(KeyCode::Char('a'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Enter, KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Char('b'), KeyModifiers::NONE);
+        // A bare Enter must NOT submit — the composer stays open with a newline.
+        assert!(app.composer.is_some(), "bare Enter should not submit");
+        assert_eq!(app.composer.as_ref().unwrap().buf, "a\nb");
+    }
+
+    #[test]
+    fn ctrl_enter_submits_the_composer() {
+        let (mut app, _tid, _reply) = app_with_thread(3);
+        let before = app.comments.threads.len();
+        goto(&mut app, Side::New, 1);
+        app.open_new_thread();
+        app.on_key_compose(KeyCode::Char('h'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Char('i'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Enter, KeyModifiers::CONTROL);
+        // Ctrl+Enter submits: composer closes and a new thread is recorded.
+        assert!(app.composer.is_none(), "Ctrl+Enter should submit");
+        assert_eq!(app.comments.threads.len(), before + 1);
+    }
+
+    #[test]
+    fn shift_enter_does_not_submit_the_composer() {
+        // Regression: Shift+Enter is indistinguishable from a bare Enter under
+        // the DISAMBIGUATE_ESCAPE_CODES protocol, so it must behave like one
+        // (insert a newline) rather than submit.
+        let mut app = app_with(DIFF);
+        open_composer(&mut app);
+        app.on_key_compose(KeyCode::Char('x'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Enter, KeyModifiers::SHIFT);
+        assert!(app.composer.is_some(), "Shift+Enter must not submit");
+        assert_eq!(app.composer.as_ref().unwrap().buf, "x\n");
     }
 }
