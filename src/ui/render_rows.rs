@@ -580,7 +580,7 @@ pub fn build_rows(
 mod tests {
     use super::*;
     use crate::comments::model::{CommentStore, LineRange};
-    use crate::diff::parse::parse_unified;
+    use crate::diff::parse::parse_report;
     use crate::loader::{load_comments, load_patch};
     use std::collections::HashSet;
     use std::path::{Path, PathBuf};
@@ -618,7 +618,7 @@ mod tests {
 
     #[test]
     fn split_comment_renders_under_anchored_side() {
-        let cs = parse_unified(SIMPLE_DIFF);
+        let cs = parse_report(SIMPLE_DIFF).0;
 
         // Old-side thread (anchored to the deleted line 2) is tagged Old.
         let old = store_with(Side::Old, 2);

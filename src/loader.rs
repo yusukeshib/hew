@@ -7,9 +7,18 @@ use std::io::Read;
 use std::path::Path;
 
 /// Read a unified patch from `path` (or stdin when `None`/`-`) and parse it.
+///
+/// A patch that *looks* like a unified diff but fails to parse is reported on
+/// stderr (stdout stays reserved for the action log) so the user isn't left
+/// staring at a silent "no changes to review". A genuinely empty diff stays
+/// quiet.
 pub fn load_patch(path: Option<&Path>) -> Result<Changeset> {
     let text = read_patch(path)?;
-    Ok(parse::parse_unified(&text))
+    let (changeset, parse_err) = parse::parse_report(&text);
+    if let Some(err) = parse_err {
+        eprintln!("hew: warning: input looks like a patch but failed to parse: {err}");
+    }
+    Ok(changeset)
 }
 
 /// Load a sidecar comments JSON file into a [`CommentStore`].
