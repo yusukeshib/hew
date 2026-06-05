@@ -8,13 +8,39 @@ use crate::diff::model::{Changeset, DiffFile, DiffLine, Hunk, LineKind};
 
 /// Parse a unified diff. Returns an empty changeset if the text is not a
 /// recognizable patch (e.g. an empty diff).
+///
+/// The `patch` crate handles text hunks but silently skips binary entries
+/// (`Binary files a/x and b/x differ`), so we scan for those separately and
+/// append them as hunk-less binary files. They render as a `Binary file` marker
+/// rather than disappearing.
 pub fn parse_unified(input: &str) -> Changeset {
-    match patch::Patch::from_multiple(input) {
-        Ok(patches) => Changeset {
-            files: patches.iter().map(convert).collect(),
-        },
-        Err(_) => Changeset::default(),
-    }
+    let mut files = match patch::Patch::from_multiple(input) {
+        Ok(patches) => patches.iter().map(convert).collect::<Vec<_>>(),
+        Err(_) => Vec::new(),
+    };
+    files.extend(binary_files(input));
+    Changeset { files }
+}
+
+/// Scan for git's `Binary files a/x and b/y differ` markers and turn each into
+/// a hunk-less binary [`DiffFile`]. A `/dev/null` side encodes an add/delete.
+fn binary_files(input: &str) -> Vec<DiffFile> {
+    input
+        .lines()
+        .filter_map(|line| {
+            let rest = line
+                .trim()
+                .strip_prefix("Binary files ")?
+                .strip_suffix(" differ")?;
+            let (a, b) = rest.split_once(" and ")?;
+            Some(DiffFile {
+                old_path: strip_prefix(a),
+                new_path: strip_prefix(b),
+                hunks: Vec::new(),
+                is_binary: true,
+            })
+        })
+        .collect()
 }
 
 fn strip_prefix(path: &str) -> String {
@@ -137,5 +163,44 @@ mod tests {
     #[test]
     fn empty_input_is_empty() {
         assert!(parse_unified("").is_empty());
+    }
+
+    #[test]
+    fn detects_binary_files_alongside_text() {
+        let input = "\
+diff --git a/logo.png b/logo.png
+index e69de29..d95f3ad 100644
+Binary files a/logo.png and b/logo.png differ
+diff --git a/src/main.rs b/src/main.rs
+--- a/src/main.rs
++++ b/src/main.rs
+@@ -1,2 +1,2 @@
+-old
++new
+ ctx
+";
+        let cs = parse_unified(input);
+        // One text file (with a hunk) + one binary file (hunk-less).
+        assert_eq!(cs.files.len(), 2);
+        let bin = cs
+            .files
+            .iter()
+            .find(|f| f.is_binary)
+            .expect("binary file detected");
+        assert_eq!(bin.display_path(), "logo.png");
+        assert!(bin.hunks.is_empty());
+        let text = cs.files.iter().find(|f| !f.is_binary).unwrap();
+        assert_eq!(text.hunks.len(), 1);
+    }
+
+    #[test]
+    fn binary_add_and_delete_resolve_paths() {
+        let added = parse_unified("Binary files /dev/null and b/new.bin differ\n");
+        assert_eq!(added.files.len(), 1);
+        assert_eq!(added.files[0].display_path(), "new.bin");
+
+        let deleted = parse_unified("Binary files a/old.bin and /dev/null differ\n");
+        assert_eq!(deleted.files.len(), 1);
+        assert_eq!(deleted.files[0].display_path(), "old.bin");
     }
 }
