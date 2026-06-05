@@ -1,11 +1,14 @@
 //! TUI application state and render loop.
 
 use crate::comments::model::{CommentStore, LineRange};
-use crate::diff::model::{Changeset, DiffFile, LineKind, Side};
+use crate::diff::model::{Changeset, LineKind, Side};
 use crate::ui::highlight_cache::HighlightCache;
 use crate::ui::render_rows::{
     build_rows, build_split_rows, CommentKind, CommentLine, Row, RowKind, SideCell, SplitRow,
     SplitRowKind,
+};
+use crate::ui::sidebar::{
+    base_of, build_sidebar_rows, dir_of, file_comment_state, file_status, SbRow,
 };
 use crate::ui::theme::THEME;
 use anyhow::Result;
@@ -35,113 +38,6 @@ enum View {
 enum Focus {
     Sidebar,
     Diff,
-}
-
-/// A row in the file tree: a directory node (collapsible), a file entry (by
-/// file index), or a comment thread (by index) nested under its file. `depth`
-/// is the visual nesting level used for indentation.
-enum SbRow {
-    Dir {
-        path: String,
-        name: String,
-        depth: usize,
-    },
-    File {
-        idx: usize,
-        depth: usize,
-    },
-}
-
-/// One-letter change status for a file, with its accent color.
-fn file_status(f: &DiffFile) -> (char, Color) {
-    let added = f.old_path == "/dev/null" || f.old_path.is_empty();
-    let deleted = f.new_path == "/dev/null" || f.new_path.is_empty();
-    if added {
-        ('A', THEME.added)
-    } else if deleted {
-        ('D', THEME.removed)
-    } else if f.old_path != f.new_path {
-        ('R', THEME.accent)
-    } else {
-        ('M', THEME.warn)
-    }
-}
-
-fn dir_of(path: &str) -> &str {
-    match path.rfind('/') {
-        Some(i) => &path[..i],
-        None => "",
-    }
-}
-
-fn base_of(path: &str) -> &str {
-    path.rsplit('/').next().unwrap_or(path)
-}
-
-/// Build the collapsible file tree (keeping file order). Directory segments
-/// become `Dir` nodes; files nest under them. Subtrees under a collapsed
-/// directory are omitted. Returns the rows plus a `file_idx -> row` map
-/// (`usize::MAX` for files hidden by a collapse).
-fn build_sidebar_rows(
-    changeset: &Changeset,
-    collapsed: &HashSet<String>,
-) -> (Vec<SbRow>, Vec<usize>) {
-    let mut rows = Vec::new();
-    let mut map = vec![usize::MAX; changeset.files.len()];
-    let mut prev: Vec<String> = Vec::new();
-    for (i, f) in changeset.files.iter().enumerate() {
-        let dir = dir_of(f.display_path());
-        let segs: Vec<String> = if dir.is_empty() {
-            Vec::new()
-        } else {
-            dir.split('/').map(|s| s.to_string()).collect()
-        };
-        // Longest directory prefix shared with the previous file (already open).
-        let mut common = 0;
-        while common < segs.len() && common < prev.len() && segs[common] == prev[common] {
-            common += 1;
-        }
-        // Emit any newly-entered directory segments, unless an ancestor is
-        // collapsed (then the whole subtree is hidden).
-        for d in common..segs.len() {
-            let ancestor_collapsed = (0..d).any(|a| collapsed.contains(&segs[..=a].join("/")));
-            if ancestor_collapsed {
-                continue;
-            }
-            rows.push(SbRow::Dir {
-                path: segs[..=d].join("/"),
-                name: segs[d].clone(),
-                depth: d,
-            });
-        }
-        prev = segs.clone();
-        // Hide the file when any ancestor dir is collapsed.
-        let hidden = (0..segs.len()).any(|d| collapsed.contains(&segs[..=d].join("/")));
-        if hidden {
-            continue;
-        }
-        map[i] = rows.len();
-        rows.push(SbRow::File {
-            idx: i,
-            depth: segs.len(),
-        });
-    }
-    (rows, map)
-}
-
-/// Comment marker for a file: `Some(true)` when it has an unresolved thread,
-/// `Some(false)` when it only has resolved threads, `None` when it has none.
-fn file_comment_state(comments: &CommentStore, path: &str) -> Option<bool> {
-    let p = Path::new(path);
-    let mut any = false;
-    let mut open = false;
-    for t in comments.threads.iter().filter(|t| t.file == p) {
-        any = true;
-        if !t.resolved {
-            open = true;
-        }
-    }
-    any.then_some(open)
 }
 
 /// A `width`×`height` rect centered inside `area` (clamped to fit).
