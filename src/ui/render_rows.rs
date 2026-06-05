@@ -162,10 +162,24 @@ pub fn thread_lines(t: &Thread, width: usize) -> Vec<CommentLine> {
     out
 }
 
+/// Index thread positions by their anchored file path, so the per-line
+/// injection scans only the (usually few) threads on the current file instead
+/// of every thread in the changeset. Built once per row rebuild.
+type ThreadsByPath<'a> = std::collections::HashMap<&'a Path, Vec<usize>>;
+
+fn threads_by_path(comments: &CommentStore) -> ThreadsByPath<'_> {
+    let mut map: ThreadsByPath<'_> = std::collections::HashMap::new();
+    for (i, t) in comments.threads.iter().enumerate() {
+        map.entry(t.file.as_path()).or_default().push(i);
+    }
+    map
+}
+
 /// Inline-comment lines to inject after a code row, for every expanded thread
 /// whose anchor matches one of the row's `(side, line)` anchors.
 fn comment_rows_for(
     comments: &CommentStore,
+    by_path: &ThreadsByPath<'_>,
     expanded: &HashSet<Uuid>,
     emitted: &mut HashSet<Uuid>,
     path: &str,
@@ -173,13 +187,14 @@ fn comment_rows_for(
     width: usize,
 ) -> Vec<(Side, CommentLine)> {
     let mut out = Vec::new();
-    for t in comments.threads.iter() {
+    let Some(indices) = by_path.get(Path::new(path)) else {
+        return out;
+    };
+    for &i in indices {
+        let t = &comments.threads[i];
         // Identity is the thread's stable id, not its position: adding or
         // removing a thread must not change which others are expanded.
-        if !expanded.contains(&t.id)
-            || emitted.contains(&t.id)
-            || t.file.as_path() != Path::new(path)
-        {
+        if !expanded.contains(&t.id) || emitted.contains(&t.id) {
             continue;
         }
         // Emit once per thread, at the first line of its range present in the
@@ -365,6 +380,7 @@ pub fn build_split_rows(
 ) -> Vec<SplitRow> {
     let mut rows = Vec::new();
     let mut emitted: HashSet<Uuid> = HashSet::new();
+    let by_path = threads_by_path(comments);
     for (fi, file) in changeset.files.iter().enumerate() {
         let path = file.display_path();
         rows.push(SplitRow {
@@ -407,6 +423,7 @@ pub fn build_split_rows(
                             &mut adds,
                             &mut rows,
                             comments,
+                            &by_path,
                             expanded,
                             &mut emitted,
                             path,
@@ -433,6 +450,7 @@ pub fn build_split_rows(
                         }
                         for (side, cl) in comment_rows_for(
                             comments,
+                            &by_path,
                             expanded,
                             &mut emitted,
                             path,
@@ -454,6 +472,7 @@ pub fn build_split_rows(
                 &mut adds,
                 &mut rows,
                 comments,
+                &by_path,
                 expanded,
                 &mut emitted,
                 path,
@@ -472,6 +491,7 @@ fn flush_pairs(
     adds: &mut Vec<SideCell>,
     rows: &mut Vec<SplitRow>,
     comments: &CommentStore,
+    by_path: &ThreadsByPath<'_>,
     expanded: &HashSet<Uuid>,
     emitted: &mut HashSet<Uuid>,
     path: &str,
@@ -495,7 +515,9 @@ fn flush_pairs(
             kind: SplitRowKind::Pair { left, right },
             text: String::new(),
         });
-        for (side, cl) in comment_rows_for(comments, expanded, emitted, path, &anchors, width) {
+        for (side, cl) in
+            comment_rows_for(comments, by_path, expanded, emitted, path, &anchors, width)
+        {
             rows.push(SplitRow {
                 file_idx,
                 kind: SplitRowKind::Comment { side, line: cl },
@@ -514,6 +536,7 @@ pub fn build_rows(
 ) -> Vec<Row> {
     let mut rows = Vec::new();
     let mut emitted: HashSet<Uuid> = HashSet::new();
+    let by_path = threads_by_path(comments);
     for (fi, file) in changeset.files.iter().enumerate() {
         let path = file.display_path();
         rows.push(Row {
@@ -557,6 +580,7 @@ pub fn build_rows(
                 if let Some(ln) = ln {
                     for (_, cl) in comment_rows_for(
                         comments,
+                        &by_path,
                         expanded,
                         &mut emitted,
                         path,
