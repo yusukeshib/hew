@@ -1499,7 +1499,9 @@ impl App {
         let cw = (diff_inner_width as usize).saturating_sub(8);
         if cw != self.comment_wrap && !self.resizing {
             self.comment_wrap = cw;
-            if !self.expanded.is_empty() {
+            // Re-wrap when there are inline boxes to re-wrap: expanded threads
+            // or an open composer (which renders inline too).
+            if !self.expanded.is_empty() || self.composer.is_some() {
                 self.rebuild_rows();
             }
         }
