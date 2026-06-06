@@ -9,7 +9,7 @@
 use crate::diff::model::Changeset;
 use crate::ui::highlight::Highlighter;
 use crate::ui::render_rows::sanitize_line;
-use crate::ui::theme::THEME;
+use crate::ui::theme::theme;
 use ratatui::style::Color;
 use std::collections::HashMap;
 use std::sync::mpsc::{self, Sender};
@@ -150,7 +150,7 @@ impl HighlightCache {
                 let syntax = self.highlighter.syntax_for(f.display_path());
                 self.highlighter.line(syntax, text)
             }
-            None => vec![(THEME.text, text.to_string())],
+            None => vec![(theme().text, text.to_string())],
         };
         let rc = Arc::new(spans);
         // `or_insert` keeps any entry the warm worker added while we computed,

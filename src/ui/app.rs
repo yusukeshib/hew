@@ -11,7 +11,7 @@ use crate::ui::render_rows::{
 use crate::ui::sidebar::{
     base_of, build_sidebar_rows, dir_of, file_comment_state, file_status, SbRow,
 };
-use crate::ui::theme::THEME;
+use crate::ui::theme::theme;
 use anyhow::Result;
 use crossterm::event::{
     self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -1384,9 +1384,9 @@ impl App {
     /// Selection background for the diff pane (dim when it isn't focused).
     fn diff_cursor_bg(&self) -> Color {
         if self.effective_focus() == Focus::Diff {
-            THEME.cursor_bg
+            theme().cursor_bg
         } else {
-            THEME.unfocus_bg
+            theme().unfocus_bg
         }
     }
 
@@ -1765,9 +1765,9 @@ impl App {
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
             .border_style(Style::default().fg(if diff_focused {
-                THEME.border_focus
+                theme().border_focus
             } else {
-                THEME.border_unfocus
+                theme().border_unfocus
             }));
         let diff_inner = diff_block.inner(diff_outer);
         // Layout is only known here, so the one row-affecting side effect of
@@ -1820,7 +1820,7 @@ impl App {
 
         // Status line.
         f.render_widget(
-            Paragraph::new(self.status.clone()).style(Style::default().fg(THEME.muted)),
+            Paragraph::new(self.status.clone()).style(Style::default().fg(theme().muted)),
             chunks[1],
         );
     }
@@ -1863,7 +1863,7 @@ impl App {
                     let avail = w.saturating_sub(indent.chars().count() + 2);
                     let label = pad_width(&elide_left(name, avail), avail);
                     let bg = if is_cursor {
-                        Some(THEME.cursor_bg)
+                        Some(theme().cursor_bg)
                     } else {
                         None
                     };
@@ -1873,8 +1873,8 @@ impl App {
                     };
                     lines.push(Line::from(vec![
                         Span::styled(indent, wbg(Style::default())),
-                        Span::styled(arrow, wbg(Style::default().fg(THEME.faint))),
-                        Span::styled(label, wbg(Style::default().fg(THEME.faint))),
+                        Span::styled(arrow, wbg(Style::default().fg(theme().faint))),
+                        Span::styled(label, wbg(Style::default().fg(theme().faint))),
                     ]));
                 }
                 SbRow::File { idx: fi, depth } => {
@@ -1885,7 +1885,7 @@ impl App {
                         .files
                         .get(fi)
                         .map(file_status)
-                        .unwrap_or(('M', THEME.warn));
+                        .unwrap_or(('M', theme().warn));
                     let indent = "  ".repeat(depth + 1);
                     let path = self
                         .changeset
@@ -1896,9 +1896,9 @@ impl App {
                     // A comment dot just left of the filename: yellow = open,
                     // hollow gray = all resolved, blank = none.
                     let (dot, dot_color) = match file_comment_state(&self.comments, path) {
-                        Some(true) => ("● ", THEME.warn),
-                        Some(false) => ("○ ", THEME.muted),
-                        None => ("  ", THEME.none),
+                        Some(true) => ("● ", theme().warn),
+                        Some(false) => ("○ ", theme().muted),
+                        None => ("  ", theme().none),
                     };
                     let (adds, dels) = self.file_stats.get(fi).copied().unwrap_or((0, 0));
                     let counts = format!(" +{adds} -{dels}");
@@ -1908,9 +1908,9 @@ impl App {
                     let base = base_of(path);
                     let name = pad_width(&elide_left(base, avail), avail);
                     let bg = if is_cursor {
-                        Some(THEME.cursor_bg)
+                        Some(theme().cursor_bg)
                     } else if is_cur {
-                        Some(THEME.unfocus_bg)
+                        Some(theme().unfocus_bg)
                     } else {
                         None
                     };
@@ -1920,18 +1920,21 @@ impl App {
                     };
                     let name_style = if is_cur {
                         Style::default()
-                            .fg(THEME.text_strong)
+                            .fg(theme().text_strong)
                             .add_modifier(Modifier::BOLD)
                     } else {
-                        Style::default().fg(THEME.text)
+                        Style::default().fg(theme().text)
                     };
                     lines.push(Line::from(vec![
                         Span::styled(indent, wbg(Style::default())),
                         Span::styled(format!("{status} "), wbg(Style::default().fg(status_color))),
                         Span::styled(dot, wbg(Style::default().fg(dot_color))),
                         Span::styled(name, wbg(name_style)),
-                        Span::styled(format!(" +{adds}"), wbg(Style::default().fg(THEME.added))),
-                        Span::styled(format!(" -{dels}"), wbg(Style::default().fg(THEME.removed))),
+                        Span::styled(format!(" +{adds}"), wbg(Style::default().fg(theme().added))),
+                        Span::styled(
+                            format!(" -{dels}"),
+                            wbg(Style::default().fg(theme().removed)),
+                        ),
                     ]));
                 }
             }
@@ -1950,7 +1953,7 @@ impl App {
                     .end_symbol(None)
                     .track_symbol(Some(" "))
                     .thumb_symbol("█")
-                    .thumb_style(Style::default().fg(THEME.scrollbar_thumb)),
+                    .thumb_style(Style::default().fg(theme().scrollbar_thumb)),
                 inner,
                 &mut sb,
             );
@@ -1975,7 +1978,7 @@ impl App {
                 .end_symbol(None)
                 .track_symbol(Some(" "))
                 .thumb_symbol("█")
-                .thumb_style(Style::default().fg(THEME.scrollbar_thumb)),
+                .thumb_style(Style::default().fg(theme().scrollbar_thumb)),
             area,
             &mut sb,
         );
@@ -2022,21 +2025,21 @@ impl App {
             SplitRowKind::FileHeader => Line::from(Span::styled(
                 format!("▌ {}", row.text),
                 Style::default()
-                    .fg(THEME.text_strong)
-                    .bg(THEME.file_header_bg)
+                    .fg(theme().text_strong)
+                    .bg(theme().file_header_bg)
                     .add_modifier(Modifier::BOLD),
             )),
             SplitRowKind::HunkHeader => Line::from(Span::styled(
                 row.text.clone(),
                 Style::default()
-                    .fg(THEME.faint)
+                    .fg(theme().faint)
                     .add_modifier(Modifier::ITALIC),
             )),
             SplitRowKind::Pair { left, right } => {
                 let mut spans = self.side_spans(left.as_ref(), row.file_idx, side_w, selected);
                 spans.push(Span::styled(
                     divider.to_string(),
-                    Style::default().fg(THEME.subtle),
+                    Style::default().fg(theme().subtle),
                 ));
                 spans.extend(self.side_spans(right.as_ref(), row.file_idx, side_w, selected));
                 Line::from(spans)
@@ -2101,7 +2104,7 @@ impl App {
         match cell {
             None => vec![Span::styled(
                 " ".repeat(width),
-                Style::default().bg(THEME.comment_bg),
+                Style::default().bg(theme().comment_bg),
             )],
             Some(c) => {
                 let num = c
@@ -2112,14 +2115,14 @@ impl App {
                     Some(self.diff_cursor_bg())
                 } else {
                     match c.kind {
-                        LineKind::Addition => Some(THEME.add_bg),
-                        LineKind::Deletion => Some(THEME.del_bg),
+                        LineKind::Addition => Some(theme().add_bg),
+                        LineKind::Deletion => Some(theme().del_bg),
                         LineKind::Context => None,
                     }
                 };
                 let mut spans = vec![Span::styled(
                     format!("{num} "),
-                    Style::default().fg(THEME.muted),
+                    Style::default().fg(theme().muted),
                 )];
                 spans.extend(self.styled_fit(file_idx, &c.text, width.saturating_sub(PREFIX), bg));
                 spans
@@ -2131,8 +2134,8 @@ impl App {
         match &row.kind {
             RowKind::FileHeader => {
                 let st = Style::default()
-                    .fg(THEME.text_strong)
-                    .bg(THEME.file_header_bg)
+                    .fg(theme().text_strong)
+                    .bg(theme().file_header_bg)
                     .add_modifier(Modifier::BOLD);
                 let text = format!("▌ {}", row.text);
                 let pad = width.saturating_sub(str_width(&text));
@@ -2144,7 +2147,7 @@ impl App {
             RowKind::HunkHeader => Line::from(Span::styled(
                 row.text.clone(),
                 Style::default()
-                    .fg(THEME.faint)
+                    .fg(theme().faint)
                     .add_modifier(Modifier::ITALIC),
             )),
             RowKind::Line {
@@ -2162,15 +2165,15 @@ impl App {
                     Some(self.diff_cursor_bg())
                 } else {
                     match kind {
-                        LineKind::Addition => Some(THEME.add_bg),
-                        LineKind::Deletion => Some(THEME.del_bg),
+                        LineKind::Addition => Some(theme().add_bg),
+                        LineKind::Deletion => Some(theme().del_bg),
                         LineKind::Context => None,
                     }
                 };
                 let sign_color = match kind {
-                    LineKind::Addition => THEME.added,
-                    LineKind::Deletion => THEME.removed,
-                    LineKind::Context => THEME.muted,
+                    LineKind::Addition => theme().added,
+                    LineKind::Deletion => theme().removed,
+                    LineKind::Context => theme().muted,
                 };
                 let with_bg = |st: Style| match bg {
                     Some(b) => st.bg(b),
@@ -2178,7 +2181,7 @@ impl App {
                 };
                 let mut used = str_width(&num) + 1;
                 let mut spans = vec![
-                    Span::styled(num, with_bg(Style::default().fg(THEME.muted))),
+                    Span::styled(num, with_bg(Style::default().fg(theme().muted))),
                     Span::styled(sign.to_string(), with_bg(Style::default().fg(sign_color))),
                 ];
                 // Highlighted code, with the diff background tint behind it.
@@ -2212,11 +2215,11 @@ impl App {
         // reads as fully settled. Without the focus check first, landing on a
         // resolved comment gave no visual feedback at all.
         let border_col = if focused {
-            THEME.border_focus
+            theme().border_focus
         } else if cl.resolved {
-            THEME.muted
+            theme().muted
         } else {
-            THEME.border_unfocus
+            theme().border_unfocus
         };
         let bstyle = Style::default().fg(border_col);
         // Box occupies cols [MARGIN, width); inner_w is the span between borders.
@@ -2240,13 +2243,17 @@ impl App {
                 let left = format!(" @{name}");
                 let llen = str_width(&left);
                 let dlen = str_width(date);
-                let name_col = if cl.resolved { THEME.muted } else { THEME.warn };
+                let name_col = if cl.resolved {
+                    theme().muted
+                } else {
+                    theme().warn
+                };
                 let name_style = Style::default().fg(name_col).add_modifier(Modifier::BOLD);
                 let inner = if llen + dlen + 2 <= inner_w {
                     vec![
                         Span::styled(left, name_style),
                         Span::raw(" ".repeat(inner_w - llen - dlen - 1)),
-                        Span::styled(date.clone(), Style::default().fg(THEME.muted)),
+                        Span::styled(date.clone(), Style::default().fg(theme().muted)),
                         Span::raw(" "),
                     ]
                 } else {
@@ -2269,18 +2276,22 @@ impl App {
                             if *replies == 1 { "" } else { "s" }
                         ),
                         if cl.resolved {
-                            THEME.muted
+                            theme().muted
                         } else {
-                            THEME.accent
+                            theme().accent
                         },
                         true,
                     ),
                     CommentKind::Body(b) => (
                         format!("   {b}"),
-                        if cl.resolved { THEME.muted } else { THEME.text },
+                        if cl.resolved {
+                            theme().muted
+                        } else {
+                            theme().text
+                        },
                         false,
                     ),
-                    _ => (String::new(), THEME.text, false), // Gap
+                    _ => (String::new(), theme().text, false), // Gap
                 };
                 let mut cstyle = Style::default().fg(color);
                 if bold {
@@ -2306,7 +2317,7 @@ impl App {
     /// `width` (2-col left margin + framed title / live body / key hint).
     fn composer_line_to_line(&self, cl: &ComposerLine, width: usize) -> Line<'static> {
         const MARGIN: usize = 2;
-        let bstyle = Style::default().fg(THEME.accent);
+        let bstyle = Style::default().fg(theme().accent);
         let inner_w = width.saturating_sub(MARGIN + 2);
         if width <= MARGIN + 2 {
             return Line::from(Span::raw(" ".repeat(width)));
@@ -2331,7 +2342,7 @@ impl App {
                     Span::styled(
                         t,
                         Style::default()
-                            .fg(THEME.accent)
+                            .fg(theme().accent)
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled("─".repeat(dashes), bstyle),
@@ -2345,7 +2356,7 @@ impl App {
             ComposerKind::Body(b) => Line::from(vec![
                 margin,
                 Span::styled("│".to_string(), bstyle),
-                Span::styled(fit(&format!(" {b}")), Style::default().fg(THEME.text)),
+                Span::styled(fit(&format!(" {b}")), Style::default().fg(theme().text)),
                 Span::styled("│".to_string(), bstyle),
             ]),
             ComposerKind::Hint => Line::from(vec![
@@ -2353,7 +2364,7 @@ impl App {
                 Span::styled("│".to_string(), bstyle),
                 Span::styled(
                     fit(" ctrl+s: submit · enter: newline · esc: cancel"),
-                    Style::default().fg(THEME.muted),
+                    Style::default().fg(theme().muted),
                 ),
                 Span::styled("│".to_string(), bstyle),
             ]),
@@ -2695,8 +2706,8 @@ mod tests {
                 .find(|s| s.content.chars().any(|c| "╭╮╰╯│".contains(c)))
                 .and_then(|s| s.style.fg)
         };
-        assert_eq!(border_fg(&focused), Some(THEME.border_focus));
-        assert_eq!(border_fg(&unfocused), Some(THEME.muted));
+        assert_eq!(border_fg(&focused), Some(theme().border_focus));
+        assert_eq!(border_fg(&unfocused), Some(theme().muted));
     }
 
     #[test]

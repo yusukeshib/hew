@@ -108,6 +108,14 @@ Unified stacks `-`/`+` lines; split shows old on the left and new on the right
 (like `git delta --side-by-side`), pairing changed lines across a divider.
 Toggling keeps the cursor on the same line.
 
+The palette is authored in 24-bit truecolor. hew checks `COLORTERM` and, on a
+non-truecolor terminal (including tmux without truecolor passthrough), it
+automatically downsamples to the nearest xterm-256 colors so the look degrades
+gracefully. For the best fidelity, enable truecolor — e.g. in tmux:
+`set -ga terminal-features "*:RGB"` (and make sure `COLORTERM=truecolor` reaches
+the session). Semantic accents and the background still follow your terminal's
+ANSI palette either way.
+
 Comments are loaded from a sidecar (immutable) and displayed (gutter markers +
 inline popup). You can compose/reply/resolve/delete threads in-app; on exit hew
 prints the compacted action log to stdout (the inputs are never written).
@@ -194,8 +202,8 @@ integration, no patch apply/edit/merge, no structural (AST) diff, and no "save"
 — its inputs (the patch and the `--comments` base) are immutable, and it emits a
 compacted action log to stdout on exit. It offers unified and split layouts,
 in-app authoring (compose/reply/resolve/delete), syntax highlighting (syntect +
-two-face's bat syntax set for broad language coverage, Monokai Extended Bright
-theme, pure-Rust fancy-regex), and sidecar comment threads.
+two-face's bat syntax set for broad language coverage, TokyoNight (Night) theme,
+pure-Rust fancy-regex), and sidecar comment threads.
 
 Because hew is a pure filter with a documented JSON contract (see *Comment
 sidecar format* and *Action log format* above), the GitHub round-trip needs no

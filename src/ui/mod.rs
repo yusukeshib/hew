@@ -106,6 +106,20 @@ fn install_panic_hook() {
 }
 
 /// Set up the terminal, run the app, and restore the terminal afterwards.
+/// Whether the terminal advertises 24-bit truecolor support.
+///
+/// `COLORTERM=truecolor` (or `24bit`) is the de-facto signal terminals export.
+/// Inside tmux it's only present when the user enabled truecolor passthrough
+/// (`terminal-features`/`Tc`); if it's absent we deliberately fall back to
+/// 256-color rather than emit 24-bit sequences that tmux would re-quantize
+/// itself (often worse than our nearest-index match).
+fn detect_truecolor() -> bool {
+    matches!(
+        std::env::var("COLORTERM").as_deref(),
+        Ok("truecolor") | Ok("24bit")
+    )
+}
+
 pub fn run(changeset: Changeset, comments: CommentStore) -> Result<CommentStore> {
     // An empty changeset has nothing to show.
     if changeset.is_empty() {
@@ -113,6 +127,12 @@ pub fn run(changeset: Changeset, comments: CommentStore) -> Result<CommentStore>
         eprintln!("hew: no changes to review");
         return Ok(comments);
     }
+
+    // Resolve the color palette for this terminal before the first render.
+    // truecolor terminals keep the authored 24-bit palette; everything else
+    // (including tmux without truecolor passthrough) gets a 256-color
+    // downsample so colors degrade gracefully instead of being mangled.
+    theme::init_theme(detect_truecolor());
 
     // The patch usually arrives on stdin (`git diff | hew`), which leaves fd 0
     // wired to a pipe rather than a terminal. Reconnect it to the controlling
