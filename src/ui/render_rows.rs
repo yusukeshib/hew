@@ -71,6 +71,8 @@ pub enum CommentKind {
     Body(String),
     /// Blank spacer between messages.
     Gap,
+    /// The action-button row (reply / resolve / delete) above the bottom border.
+    Actions,
     /// Bottom rounded border of the thread box.
     Bottom,
 }
@@ -286,6 +288,7 @@ pub fn thread_lines(t: &Thread, width: usize) -> Vec<CommentLine> {
             out.push(content(CommentKind::Gap, &c.id));
         }
     }
+    out.push(chrome(CommentKind::Actions));
     out.push(chrome(CommentKind::Bottom));
     out
 }
