@@ -2521,7 +2521,7 @@ mod tests {
     }
 
     /// Build an app with one new-side thread (two messages) anchored to `line`,
-    /// expanded inline by default.
+    /// rendered inline.
     fn app_with_thread(line: u32) -> (App, Uuid, Uuid) {
         let cs = parse_report(DIFF).0;
         let mut store = CommentStore::default();

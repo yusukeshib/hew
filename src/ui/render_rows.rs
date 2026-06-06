@@ -304,8 +304,8 @@ fn threads_by_path(comments: &CommentStore) -> ThreadsByPath<'_> {
     map
 }
 
-/// Inline-comment lines to inject after a code row, for every expanded thread
-/// whose anchor matches one of the row's `(side, line)` anchors.
+/// Inline-comment lines to inject after a code row, for every thread whose
+/// anchor matches one of the row's `(side, line)` anchors.
 #[allow(clippy::too_many_arguments)]
 fn comment_rows_for(
     comments: &CommentStore,
