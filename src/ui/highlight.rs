@@ -8,18 +8,24 @@
 
 use ratatui::style::Color;
 use syntect::easy::HighlightLines;
-use syntect::highlighting::Theme;
+use syntect::highlighting::{Theme, ThemeSet};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
-use two_face::theme::EmbeddedThemeName;
+
+/// The vendored default theme, embedded directly in the binary. Unlike
+/// `two_face::theme::extra()` (which bundles *all* of bat's themes as one
+/// blob), this embeds only the single `.tmTheme` we ship, so we pay for exactly
+/// the theme we use. Converted from GitHub's official "Dark High Contrast"
+/// VSCode theme — a neutral, genuinely high-contrast palette that suits a
+/// GitHub PR review tool.
+const DEFAULT_THEME_TM: &str = include_str!("../../themes/github-dark-high-contrast.tmTheme");
 
 /// The default syntax theme. This is the single source of truth for the whole
 /// look: the chrome/background palette is *derived* from it (see
-/// [`crate::ui::theme::Theme::from_syntect`]), so changing this one line
-/// rethemes the entire UI.
+/// [`crate::ui::theme::Theme::from_syntect`]), so swapping the embedded
+/// `.tmTheme` above rethemes the entire UI.
 pub fn default_theme() -> Theme {
-    two_face::theme::extra()
-        .get(EmbeddedThemeName::MonokaiExtendedBright)
-        .clone()
+    ThemeSet::load_from_reader(&mut std::io::Cursor::new(DEFAULT_THEME_TM))
+        .expect("vendored default tmTheme must parse")
 }
 
 pub struct Highlighter {
@@ -86,11 +92,11 @@ mod tests {
         let syntax = hl.syntax_for("main.rs");
         let runs = hl.line(syntax, "let x = 1;");
         assert!(!runs.is_empty(), "highlighting produced no runs");
-        // TokyoNight is a truecolor theme; with truecolor active (the test
-        // default) at least one run should carry a real RGB foreground.
+        // GitHub Dark High Contrast is a truecolor theme; with truecolor active
+        // (the test default) at least one run should carry a real RGB foreground.
         assert!(
             runs.iter().any(|(c, _)| matches!(c, Color::Rgb(..))),
-            "expected an RGB foreground from the TokyoNight theme"
+            "expected an RGB foreground from the embedded theme"
         );
     }
 }
