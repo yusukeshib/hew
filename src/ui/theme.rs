@@ -69,9 +69,10 @@ pub struct Theme {
     pub none: Color,
 }
 
-/// Fallback palette used before [`init_theme`] runs (e.g. unit tests, which
-/// never load a syntect theme). A neutral dark theme; the real palette is
-/// derived from the active syntect theme at startup.
+/// Fallback palette returned by [`theme`] before [`init_theme`] installs the
+/// derived one (e.g. any code path — including tests — that reads the palette
+/// pre-init). A neutral dark theme; the real palette is derived from the active
+/// syntect theme at startup.
 static FALLBACK: Theme = Theme {
     bg: Color::Rgb(26, 27, 38),
     add_bg: Color::Rgb(32, 44, 38),
@@ -191,7 +192,10 @@ impl Theme {
             .or(s.selection)
             .map(|c| over(bg, c))
             .unwrap_or_else(|| mix(bg, fg, 0.22));
-        let cursor_bg = if dist2(sel, bg) < 900 {
+        // Min squared per-channel distance for the focused line to read as
+        // distinct from bg; below it we fall back to a clear bg->fg mix.
+        const CURSOR_BG_MIN_DIST2: i32 = 30 * 30;
+        let cursor_bg = if dist2(sel, bg) < CURSOR_BG_MIN_DIST2 {
             mix(bg, fg, 0.22)
         } else {
             sel
