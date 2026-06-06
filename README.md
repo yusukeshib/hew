@@ -214,7 +214,7 @@ integration, no patch apply/edit/merge, no structural (AST) diff, and no "save"
 — its inputs (the patch and the `--comments` base) are immutable, and it emits a
 compacted action log to stdout on exit. It offers unified and split layouts,
 in-app authoring (compose/reply/resolve/delete), syntax highlighting (syntect +
-two-face's bat syntax set for broad language coverage, TokyoNight (Night) theme,
+two-face's bat syntax set for broad language coverage, Dracula theme,
 pure-Rust fancy-regex), and sidecar comment threads.
 
 Because hew is a pure filter with a documented JSON contract (see *Comment
