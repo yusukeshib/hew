@@ -2526,18 +2526,27 @@ impl App {
         spans.push(Span::raw(" ".repeat(MARGIN)));
         spans.push(Span::styled("│".to_string(), bstyle));
         // Inner content: ` label ` chips packed left-to-right. Each chip is a
-        // bright fill with dark text (button-like); the distinct fills read as
-        // separate buttons without needing gaps, which matters in split view
-        // where a side column is narrow. Each chip's screen rect is recorded
-        // for click hit-testing.
+        // subtle raised surface with the action's color as the *text* (a soft,
+        // toolbar-like button rather than a loud solid fill); the chip padding
+        // and distinct text colors keep them readable as separate buttons even
+        // packed tight, which matters in split view's narrow side column. Each
+        // chip's screen rect is recorded for click hit-testing.
         let mut col = 0usize;
         let base_x = x0 + (left_pad + MARGIN + 1) as u16;
         let mut inner: Vec<Span<'static>> = Vec::new();
-        for (label, action, bg) in btns {
+        for (i, (label, action, color)) in btns.iter().enumerate() {
             let chip = format!(" {label} ");
             let w = str_width(&chip);
-            if col + w > inner_w {
+            // A one-cell (box-background) gap before each chip after the first,
+            // so the raised surfaces read as separate buttons. The gap is part
+            // of the fit test, so it never dangles and drops the next chip.
+            let gap = usize::from(i > 0);
+            if col + gap + w > inner_w {
                 break;
+            }
+            if gap > 0 {
+                inner.push(Span::raw(" "));
+                col += 1;
             }
             self.button_hits.borrow_mut().push((
                 Rect {
@@ -2551,8 +2560,8 @@ impl App {
             inner.push(Span::styled(
                 chip,
                 Style::default()
-                    .bg(*bg)
-                    .fg(theme().bg)
+                    .bg(theme().subtle)
+                    .fg(*color)
                     .add_modifier(Modifier::BOLD),
             ));
             col += w;
