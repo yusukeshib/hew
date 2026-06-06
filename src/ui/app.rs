@@ -3528,7 +3528,8 @@ mod tests {
         app.on_key_compose(KeyCode::Char('a'), KeyModifiers::CONTROL); // to start
         let spec = app.composer_spec().expect("composer spec");
         assert_eq!(
-            spec.body, format!("{COMPOSER_CARET}ab"),
+            spec.body,
+            format!("{COMPOSER_CARET}ab"),
             "caret renders at the cursor, not the end"
         );
     }
