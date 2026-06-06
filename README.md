@@ -76,7 +76,6 @@ the same base.
 | `g` / `G` (or `Home`/`End`) | Jump to top / bottom |
 | `[` / `]` | Jump to previous / next file |
 | `n` / `N` | Jump to next / previous comment |
-| `Enter` / `o` | Toggle the comment thread on the current line |
 | `v` | Visual line-select: extend with `j`/`k`, then `i` anchors a comment to the range |
 | `i` | Write a new comment on the current line (or the visual/drag selection) |
 | `r` | Reply to the thread on the current line |

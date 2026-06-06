@@ -203,7 +203,6 @@ pub struct App {
     sidebar_width: u16,
     sidebar_scroll: usize, // top file row of the sidebar (independent of selection)
     sidebar_sel: usize,    // cursor row in the sidebar (a Dir or File row)
-    expanded: HashSet<Uuid>, // thread ids expanded inline in the diff
     collapsed: HashSet<String>, // directory paths collapsed in the sidebar tree
     comment_wrap: usize,   // width used to wrap inline comment bodies
     resizing: bool,        // dragging the sidebar/diff divider
@@ -239,10 +238,9 @@ impl App {
 
     /// Construct with a pre-loaded comment store (e.g. from a sidecar JSON).
     pub fn with_comments(changeset: Changeset, comments: CommentStore) -> Self {
-        // Show every comment thread inline by default; `o`/Enter collapse them.
-        let expanded: HashSet<Uuid> = comments.threads.iter().map(|t| t.id).collect();
-        let rows = build_rows(&changeset, &comments, &expanded, 0, None);
-        let split_rows = build_split_rows(&changeset, &comments, &expanded, 0, None);
+        // Comment threads always render expanded inline.
+        let rows = build_rows(&changeset, &comments, 0, None);
+        let split_rows = build_split_rows(&changeset, &comments, 0, None);
         let stats = file_stats(&changeset);
         let collapsed = HashSet::new();
         let (sidebar_rows, file_to_sbrow) = build_sidebar_rows(&changeset, &collapsed);
@@ -267,7 +265,6 @@ impl App {
                 .copied()
                 .find(|&r| r != usize::MAX)
                 .unwrap_or(0),
-            expanded,
             collapsed,
             comment_wrap: 0,
             resizing: false,
@@ -741,7 +738,7 @@ impl App {
         }
     }
 
-    /// Rebuild the diff row lists from the changeset + inline-expanded threads,
+    /// Rebuild the diff row lists from the changeset + inline comment threads,
     /// keeping the cursor on the same (file, side, line) anchor.
     fn rebuild_rows(&mut self) {
         let key = self.sel_key();
@@ -750,14 +747,12 @@ impl App {
         self.rows = build_rows(
             &self.changeset,
             &self.comments,
-            &self.expanded,
             self.comment_wrap,
             composer.as_ref(),
         );
         self.split_rows = build_split_rows(
             &self.changeset,
             &self.comments,
-            &self.expanded,
             self.comment_wrap,
             composer.as_ref(),
         );
@@ -795,89 +790,6 @@ impl App {
                 self.is_stop_at(i) && self.comment_unit_at(i).map(|(_, c)| c) == Some(*cid)
             }
         })
-    }
-
-    /// Expand or collapse thread `id`, dropping the cursor back onto the diff
-    /// line it anchors to so focus doesn't jump when the box appears/disappears.
-    fn set_thread_fold(&mut self, id: Uuid, expand: bool) {
-        if expand {
-            self.expanded.insert(id);
-        } else {
-            self.expanded.remove(&id);
-        }
-        let anchor = self
-            .comments
-            .threads
-            .iter()
-            .find(|t| t.id == id)
-            .map(|t| (t.file.clone(), t.side, t.range.start))
-            .and_then(|(path, side, line)| {
-                let fi = self
-                    .changeset
-                    .files
-                    .iter()
-                    .position(|f| Path::new(f.display_path()) == path)?;
-                Some((fi, side, line))
-            });
-        self.rebuild_rows();
-        if let Some((fi, side, line)) = anchor {
-            if let Some(i) = self.find_sel_key(&SelKey::Line(fi, side, line)) {
-                self.selected = i;
-                self.ensure_visible();
-            }
-        }
-        self.status = if expand {
-            "expanded thread".into()
-        } else {
-            "collapsed thread".into()
-        };
-    }
-
-    /// Flip thread `id` between expanded and collapsed.
-    fn toggle_thread_fold(&mut self, id: Uuid) {
-        self.set_thread_fold(id, !self.expanded.contains(&id));
-    }
-
-    /// Toggle inline expansion of the comment thread(s) on the selected line.
-    /// A focused comment (or a collapsed-thread row) toggles that one thread;
-    /// a diff line toggles every thread anchored to it.
-    fn toggle_comment(&mut self) {
-        if let Some(cl) = self.comment_at(self.selected) {
-            let id = cl.thread_id;
-            self.toggle_thread_fold(id);
-            return;
-        }
-        let Some((fi, side, line)) = self.anchor_at(self.selected) else {
-            return;
-        };
-        let Some(file) = self.changeset.files.get(fi) else {
-            return;
-        };
-        let path = Path::new(file.display_path());
-        let here: Vec<Uuid> = self
-            .comments
-            .threads
-            .iter()
-            .filter(|t| t.file.as_path() == path && t.side == side && t.range.contains(line))
-            .map(|t| t.id)
-            .collect();
-        if here.is_empty() {
-            self.status = "no comments on this line".into();
-            return;
-        }
-        // Collapse if all are open; otherwise expand the rest.
-        if here.iter().all(|id| self.expanded.contains(id)) {
-            for id in &here {
-                self.expanded.remove(id);
-            }
-            self.status = "collapsed thread".into();
-        } else {
-            for id in here {
-                self.expanded.insert(id);
-            }
-            self.status = "expanded thread".into();
-        }
-        self.rebuild_rows();
     }
 
     /// Translate the live composer into a row-stream injection spec (where the
@@ -998,9 +910,6 @@ impl App {
             target: ComposeTarget::Reply { thread_id: id },
             buf: String::new(),
         });
-        // A reply renders under its thread, so make sure that thread is
-        // expanded (collapsed threads emit no rows to attach the box to).
-        self.expanded.insert(id);
         self.status = "reply — enter for newline, ctrl+s to submit, esc to cancel".into();
         self.rebuild_rows();
         self.ensure_composer_visible();
@@ -1102,7 +1011,7 @@ impl App {
                     return;
                 };
                 let path = PathBuf::from(file.display_path());
-                let id = self.comments.add_thread(
+                self.comments.add_thread(
                     path,
                     side,
                     LineRange { start, end },
@@ -1112,9 +1021,6 @@ impl App {
                 // Leaving the composer also leaves visual mode.
                 self.visual = false;
                 self.sel_anchor = None;
-                // Expand just the new thread (ids are stable, so existing
-                // collapse state is preserved).
-                self.expanded.insert(id);
                 self.status = "added comment".into();
             }
             ComposeTarget::Reply { thread_id } => {
@@ -1161,24 +1067,9 @@ impl App {
             return;
         };
         if self.comments.remove_thread(id) {
-            // Drop the gone thread's expand entry; every other thread keeps its
-            // state (ids are stable, so no positional shift to compensate for).
-            self.expanded.remove(&id);
             self.status = "deleted thread".into();
             self.rebuild_rows();
         }
-    }
-
-    /// The thread whose header sits at row `i`, if any. Clicking that area
-    /// toggles the thread folded/unfolded. The header is the box's title rows
-    /// (top border / `Head`) or a collapsed thread's single summary row.
-    fn comment_header_thread_at(&self, i: usize) -> Option<Uuid> {
-        let cl = self.comment_at(i)?;
-        matches!(
-            cl.kind,
-            CommentKind::Top | CommentKind::Head { .. } | CommentKind::Collapsed { .. }
-        )
-        .then_some(cl.thread_id)
     }
 
     /// Place the cursor at the clicked diff row. `anchor` starts a new
@@ -1189,16 +1080,6 @@ impl App {
         let top = self.scroll.max(start);
         let idx = (top + row.saturating_sub(self.diff_area.y) as usize)
             .clamp(start, end.saturating_sub(1).max(start));
-        // A click on a thread's title area (top border / header line, or a
-        // collapsed thread's summary row) toggles it folded/unfolded, mirroring
-        // the keyboard `o`/Enter toggle. Only on an initial press (`anchor`),
-        // never mid-drag, so dragging a selection past a box doesn't fold it.
-        if anchor {
-            if let Some(id) = self.comment_header_thread_at(idx) {
-                self.toggle_thread_fold(id);
-                return;
-            }
-        }
         if let Some(i) = self.stop_for(idx) {
             self.selected = i;
             // A drag-range only makes sense between diff lines; landing on a
@@ -1251,17 +1132,10 @@ impl App {
         Some((cl.thread_id, cl.comment_id?))
     }
 
-    /// A "stop" is a place the cursor can land: a diff line, the *first* row of
-    /// a comment message (so a multi-line message is a single stop), or a
-    /// collapsed thread's single summary row.
+    /// A "stop" is a place the cursor can land: a diff line, or the *first* row
+    /// of a comment message (so a multi-line message is a single stop).
     fn is_stop_at(&self, i: usize) -> bool {
         if self.is_selectable_at(i) {
-            return true;
-        }
-        if matches!(
-            self.comment_at(i).map(|cl| &cl.kind),
-            Some(CommentKind::Collapsed { .. })
-        ) {
             return true;
         }
         match self.comment_unit_at(i) {
@@ -1574,9 +1448,6 @@ impl App {
             KeyCode::Char('n') => self.jump_comment(1),
             KeyCode::Char('N') => self.jump_comment(-1),
 
-            // Toggle the inline comment thread on the current line.
-            KeyCode::Enter | KeyCode::Char('o') => self.toggle_comment(),
-
             // Visual line-select: anchor a comment to a multi-line range.
             KeyCode::Char('v') => self.toggle_visual(),
 
@@ -1810,9 +1681,9 @@ impl App {
         };
         if cw != self.comment_wrap && !self.resizing {
             self.comment_wrap = cw;
-            // Re-wrap when there are inline boxes to re-wrap: expanded threads
+            // Re-wrap when there are inline boxes to re-wrap: comment threads
             // or an open composer (which renders inline too).
-            if !self.expanded.is_empty() || self.composer.is_some() {
+            if !self.comments.threads.is_empty() || self.composer.is_some() {
                 self.rebuild_rows();
             }
         }
@@ -2311,33 +2182,6 @@ impl App {
         }
         let margin = Span::raw(" ".repeat(MARGIN));
         match &cl.kind {
-            CommentKind::Collapsed { replies } => {
-                // A single rounded-pill row: `▸ N messages` (dim when resolved).
-                let label = format!(
-                    " ▸ {} · {} message{}",
-                    if cl.resolved { "resolved" } else { "open" },
-                    replies,
-                    if *replies == 1 { "" } else { "s" }
-                );
-                let fg = if cl.resolved {
-                    THEME.muted
-                } else {
-                    THEME.accent
-                };
-                let lstyle = Style::default().fg(fg).add_modifier(Modifier::BOLD);
-                let clen = str_width(&label);
-                let label = if clen > inner_w {
-                    take_width(&label, inner_w).0
-                } else {
-                    format!("{label}{}", " ".repeat(inner_w - clen))
-                };
-                Line::from(vec![
-                    margin,
-                    Span::styled("│".to_string(), bstyle),
-                    Span::styled(label, lstyle),
-                    Span::styled("│".to_string(), bstyle),
-                ])
-            }
             CommentKind::Top => Line::from(vec![
                 margin,
                 Span::styled(format!("╭{}╮", "─".repeat(inner_w)), bstyle),
@@ -2676,7 +2520,7 @@ mod tests {
     }
 
     /// Build an app with one new-side thread (two messages) anchored to `line`,
-    /// expanded inline by default.
+    /// rendered inline.
     fn app_with_thread(line: u32) -> (App, Uuid, Uuid) {
         let cs = parse_report(DIFF).0;
         let mut store = CommentStore::default();
@@ -2745,60 +2589,6 @@ mod tests {
             "first line\nsecond line\nthird"
         );
         assert!(app.composer.is_some(), "paste must not submit");
-    }
-
-    #[test]
-    fn clicking_thread_title_collapses_it() {
-        let (mut app, tid, _reply) = app_with_thread(3);
-        assert!(app.expanded.contains(&tid), "thread starts expanded");
-
-        // The top border and the title (Head) line both register as the header.
-        let top_row = (0..app.active_len())
-            .find(|&i| matches!(app.comment_at(i).map(|cl| &cl.kind), Some(CommentKind::Top)))
-            .expect("top border row");
-        assert_eq!(app.comment_header_thread_at(top_row), Some(tid));
-
-        // Simulate a left-press on that row: scroll/area set so row maps to idx.
-        let (start, _) = app.file_range();
-        app.scroll = start;
-        app.diff_area = ratatui::layout::Rect::new(0, 0, 80, 40);
-        let click_row = (top_row - start) as u16;
-        app.click_diff(click_row, true);
-
-        assert!(
-            !app.expanded.contains(&tid),
-            "clicking the title should collapse the thread"
-        );
-        // A collapsed thread renders a single clickable summary row that is a
-        // navigation stop — and clicking it re-expands (true round-trip toggle).
-        let collapsed_row = (0..app.active_len())
-            .find(|&i| {
-                matches!(
-                    app.comment_at(i).map(|cl| &cl.kind),
-                    Some(CommentKind::Collapsed { .. })
-                )
-            })
-            .expect("collapsed summary row");
-        assert!(
-            app.is_stop_at(collapsed_row),
-            "collapsed row must be a stop"
-        );
-        assert_eq!(app.comment_header_thread_at(collapsed_row), Some(tid));
-        app.scroll = app.file_range().0;
-        app.click_diff((collapsed_row - app.file_range().0) as u16, true);
-        assert!(
-            app.expanded.contains(&tid),
-            "clicking the collapsed row should re-expand the thread"
-        );
-
-        // A body row (not a header) still just selects — no fold toggle.
-        let (mut app, tid, reply_id) = app_with_thread(3);
-        let body_row = comment_head(&app, reply_id);
-        assert_eq!(app.comment_header_thread_at(body_row), None);
-        app.scroll = app.file_range().0;
-        app.diff_area = ratatui::layout::Rect::new(0, 0, 80, 40);
-        app.click_diff((body_row - app.file_range().0) as u16, true);
-        assert!(app.expanded.contains(&tid), "body click must not collapse");
     }
 
     #[test]

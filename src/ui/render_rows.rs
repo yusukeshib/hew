@@ -74,11 +74,6 @@ pub enum CommentKind {
     Gap,
     /// Bottom rounded border of the thread box.
     Bottom,
-    /// A collapsed thread shown as a single clickable line (`replies` is the
-    /// message count). Clicking or pressing `o`/Enter re-expands it. Without
-    /// this, a collapsed thread emitted no rows and vanished with no way to
-    /// reopen it by mouse.
-    Collapsed { replies: usize },
 }
 
 /// One visual line of a thread box, tagged with the thread's `resolved` state
@@ -248,24 +243,6 @@ fn wrap_text(s: &str, width: usize) -> Vec<String> {
     out
 }
 
-/// The rows a collapsed thread renders as: a rounded box (same border as an
-/// expanded thread) wrapping a single clickable summary line.
-pub fn collapsed_lines(t: &Thread) -> Vec<CommentLine> {
-    let chrome = |kind: CommentKind| CommentLine {
-        kind,
-        resolved: t.resolved,
-        thread_id: t.id,
-        comment_id: None,
-    };
-    vec![
-        chrome(CommentKind::Top),
-        chrome(CommentKind::Collapsed {
-            replies: t.comments.len(),
-        }),
-        chrome(CommentKind::Bottom),
-    ]
-}
-
 /// Expand a thread into wrapped visual lines.
 pub fn thread_lines(t: &Thread, width: usize) -> Vec<CommentLine> {
     // Chrome lines (Top/Head/Bottom) carry no message id; content lines carry
@@ -327,13 +304,12 @@ fn threads_by_path(comments: &CommentStore) -> ThreadsByPath<'_> {
     map
 }
 
-/// Inline-comment lines to inject after a code row, for every expanded thread
-/// whose anchor matches one of the row's `(side, line)` anchors.
+/// Inline-comment lines to inject after a code row, for every thread whose
+/// anchor matches one of the row's `(side, line)` anchors.
 #[allow(clippy::too_many_arguments)]
 fn comment_rows_for(
     comments: &CommentStore,
     by_path: &ThreadsByPath<'_>,
-    expanded: &HashSet<Uuid>,
     emitted: &mut HashSet<Uuid>,
     path: &str,
     anchors: &[(Side, u32)],
@@ -357,18 +333,6 @@ fn comment_rows_for(
             .any(|(s, l)| *s == t.side && t.range.contains(*l))
         {
             emitted.insert(t.id);
-            // A collapsed thread renders as a compact rounded box (same border
-            // as expanded) wrapping a clickable summary line, so it stays
-            // visible and re-openable by mouse. Identity is the thread's stable
-            // id, not its position.
-            if !expanded.contains(&t.id) {
-                out.extend(
-                    collapsed_lines(t)
-                        .into_iter()
-                        .map(|cl| (t.side, Injected::Comment(cl))),
-                );
-                continue;
-            }
             out.extend(
                 thread_lines(t, width)
                     .into_iter()
@@ -562,7 +526,6 @@ fn hunk_header(hunk: &crate::diff::model::Hunk) -> String {
 pub fn build_split_rows(
     changeset: &Changeset,
     comments: &CommentStore,
-    expanded: &HashSet<Uuid>,
     width: usize,
     composer: Option<&ComposerSpec>,
 ) -> Vec<SplitRow> {
@@ -613,7 +576,6 @@ pub fn build_split_rows(
                             &mut rows,
                             comments,
                             &by_path,
-                            expanded,
                             &mut emitted,
                             path,
                             width,
@@ -642,7 +604,6 @@ pub fn build_split_rows(
                         for (side, inj) in comment_rows_for(
                             comments,
                             &by_path,
-                            expanded,
                             &mut emitted,
                             path,
                             &anchors,
@@ -684,7 +645,6 @@ pub fn build_split_rows(
                 &mut rows,
                 comments,
                 &by_path,
-                expanded,
                 &mut emitted,
                 path,
                 width,
@@ -713,7 +673,6 @@ fn flush_pairs(
     rows: &mut Vec<SplitRow>,
     comments: &CommentStore,
     by_path: &ThreadsByPath<'_>,
-    expanded: &HashSet<Uuid>,
     emitted: &mut HashSet<Uuid>,
     path: &str,
     width: usize,
@@ -738,9 +697,9 @@ fn flush_pairs(
             kind: SplitRowKind::Pair { left, right },
             text: String::new(),
         });
-        for (side, inj) in comment_rows_for(
-            comments, by_path, expanded, emitted, path, &anchors, width, composer,
-        ) {
+        for (side, inj) in
+            comment_rows_for(comments, by_path, emitted, path, &anchors, width, composer)
+        {
             rows.push(SplitRow {
                 file_idx,
                 kind: split_injected(side, inj),
@@ -766,7 +725,6 @@ fn flush_pairs(
 pub fn build_rows(
     changeset: &Changeset,
     comments: &CommentStore,
-    expanded: &HashSet<Uuid>,
     width: usize,
     composer: Option<&ComposerSpec>,
 ) -> Vec<Row> {
@@ -818,7 +776,6 @@ pub fn build_rows(
                     for (_, inj) in comment_rows_for(
                         comments,
                         &by_path,
-                        expanded,
                         &mut emitted,
                         path,
                         &[(side, ln)],
@@ -857,7 +814,6 @@ mod tests {
     use crate::comments::model::{CommentStore, LineRange};
     use crate::diff::parse::parse_report;
     use crate::loader::{load_comments, load_patch};
-    use std::collections::HashSet;
     use std::path::{Path, PathBuf};
 
     // A two-line change: old line 2 (`b`) deleted, new line 2 (`B`) added.
@@ -870,11 +826,6 @@ mod tests {
 +B
  c
 ";
-
-    /// Every thread id in `store`, i.e. "expand all threads".
-    fn expand_all(store: &CommentStore) -> HashSet<Uuid> {
-        store.threads.iter().map(|t| t.id).collect()
-    }
 
     fn store_with(side: Side, line: u32) -> CommentStore {
         let mut store = CommentStore::default();
@@ -897,8 +848,7 @@ mod tests {
 
         // Old-side thread (anchored to the deleted line 2) is tagged Old.
         let old = store_with(Side::Old, 2);
-        let all = expand_all(&old);
-        let rows = build_split_rows(&cs, &old, &all, 80, None);
+        let rows = build_split_rows(&cs, &old, 80, None);
         assert!(
             rows.iter().any(|r| matches!(
                 r.kind,
@@ -922,8 +872,7 @@ mod tests {
 
         // New-side thread (anchored to the added line 2) is tagged New.
         let new = store_with(Side::New, 2);
-        let all = expand_all(&new);
-        let rows = build_split_rows(&cs, &new, &all, 80, None);
+        let rows = build_split_rows(&cs, &new, 80, None);
         assert!(
             rows.iter().any(|r| matches!(
                 r.kind,
@@ -983,14 +932,12 @@ mod tests {
     }
 
     #[test]
-    fn injects_expanded_thread_rows() {
+    fn injects_inline_thread_rows() {
         let cs = load_patch(Some(Path::new("examples/rust-long-en.patch"))).unwrap();
         let comments = load_comments(Path::new("examples/rust-long-en.comments.json")).unwrap();
-        let none = HashSet::new();
-        let all = expand_all(&comments);
-        let base = build_rows(&cs, &comments, &none, 80, None);
-        let rows = build_rows(&cs, &comments, &all, 80, None);
-        // Expanding threads injects extra rows.
+        let base = build_rows(&cs, &CommentStore::default(), 80, None);
+        let rows = build_rows(&cs, &comments, 80, None);
+        // Threads inject extra (comment) rows over a no-comment baseline.
         assert!(rows.len() > base.len());
         // Those rows are comment rows: non-selectable and anchorless.
         let comment_rows = rows
@@ -1021,7 +968,6 @@ mod tests {
     fn new_thread_composer_injects_inline_box() {
         let cs = parse_report(SIMPLE_DIFF).0;
         let store = CommentStore::default();
-        let none = HashSet::new();
         let spec = ComposerSpec {
             anchor: ComposerAnchor::NewThread {
                 file_idx: 0,
@@ -1032,10 +978,10 @@ mod tests {
             body: "hi".into(),
         };
         // Without a composer, no composer rows; with one, a box appears.
-        assert!(!build_rows(&cs, &store, &none, 80, None)
+        assert!(!build_rows(&cs, &store, 80, None)
             .iter()
             .any(|r| matches!(r.kind, RowKind::Composer(_))));
-        let rows = build_rows(&cs, &store, &none, 80, Some(&spec));
+        let rows = build_rows(&cs, &store, 80, Some(&spec));
         // Exactly one top + one bottom border (a single box), and it carries
         // the live body text. Composer rows are never selectable.
         assert_eq!(
@@ -1062,13 +1008,12 @@ mod tests {
         let cs = parse_report(SIMPLE_DIFF).0;
         let store = store_with(Side::New, 2);
         let thread_id = store.threads[0].id;
-        let all = expand_all(&store);
         let spec = ComposerSpec {
             anchor: ComposerAnchor::Reply { thread_id },
             title: " reply ".into(),
             body: "ok".into(),
         };
-        let rows = build_rows(&cs, &store, &all, 80, Some(&spec));
+        let rows = build_rows(&cs, &store, 80, Some(&spec));
         // The reply box renders after the thread's bottom border.
         let bottom = rows.iter().position(|r| {
             matches!(
