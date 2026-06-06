@@ -14,10 +14,10 @@ use syntect::parsing::{SyntaxReference, SyntaxSet};
 /// The vendored default theme, embedded directly in the binary. Unlike
 /// `two_face::theme::extra()` (which bundles *all* of bat's themes as one
 /// blob), this embeds only the single `.tmTheme` we ship, so we pay for exactly
-/// the theme we use. Converted from GitHub's official "Dark High Contrast"
-/// VSCode theme — a neutral, genuinely high-contrast palette that suits a
-/// GitHub PR review tool.
-const DEFAULT_THEME_TM: &str = include_str!("../../themes/github-dark-high-contrast.tmTheme");
+/// the theme we use. A vivid, high-contrast palette modeled on Vim's built-in
+/// dark-background colors (cyan comments, yellow keywords, green types, magenta
+/// preprocessor) over a black background — a familiar "default" editor look.
+const DEFAULT_THEME_TM: &str = include_str!("../../themes/vim-dark.tmTheme");
 
 /// The default syntax theme. This is the single source of truth for the whole
 /// look: the chrome/background palette is *derived* from it (see
