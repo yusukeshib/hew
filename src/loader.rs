@@ -133,6 +133,31 @@ mod tests {
     }
 
     #[test]
+    fn loads_comments_with_non_uuid_ids() {
+        // PR-sourced sidecars carry GitHub ids (numeric REST ids, GraphQL node
+        // ids) in the `id` field. These aren't UUIDs and must not fail the
+        // parse — they're remapped to fresh UUIDs on load.
+        let json = r#"{
+          "threads": [
+            {
+              "id": "PRRT_kwDOS",
+              "file": "a.rs", "side": "new",
+              "range": { "start": 1, "end": 1 },
+              "comments": [
+                { "id": 1234567890, "author": "x", "body": "hi" }
+              ]
+            }
+          ]
+        }"#;
+        let path = unique_temp("non_uuid_ids");
+        std::fs::write(&path, json).unwrap();
+        let store = load_comments(&path).unwrap();
+        assert_eq!(store.threads.len(), 1);
+        assert_eq!(store.threads[0].comments.len(), 1);
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn load_or_default_is_empty_when_missing() {
         let path = unique_temp("missing");
         let _ = std::fs::remove_file(&path);

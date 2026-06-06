@@ -10,6 +10,25 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 use uuid::Uuid;
 
+/// Deserialize a thread/comment `id` that may be absent, a real UUID string, or
+/// a foreign id minted by another system. PR-sourced sidecars carry GitHub ids
+/// (numeric REST ids, GraphQL node ids like `PRRT_kwD…`) that are not UUIDs;
+/// rather than reject the whole file, any non-UUID value is mapped to a fresh
+/// UUID. The base store is loaded once and cloned into the working store, so
+/// the minted id is shared by both sides and the exit diff still correlates.
+fn flexible_id<'de, D>(de: D) -> Result<Uuid, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let v = serde_json::Value::deserialize(de)?;
+    if let serde_json::Value::String(s) = &v {
+        if let Ok(u) = Uuid::parse_str(s) {
+            return Ok(u);
+        }
+    }
+    Ok(Uuid::new_v4())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LineRange {
     pub start: u32,
@@ -25,7 +44,7 @@ impl LineRange {
 /// A single message in a thread (root or reply).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Comment {
-    #[serde(default = "Uuid::new_v4")]
+    #[serde(default = "Uuid::new_v4", deserialize_with = "flexible_id")]
     pub id: Uuid,
     #[serde(default)]
     pub author: Option<String>,
@@ -38,7 +57,7 @@ pub struct Comment {
 /// A review thread anchored to a line range. `comments[0]` is the root.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Thread {
-    #[serde(default = "Uuid::new_v4")]
+    #[serde(default = "Uuid::new_v4", deserialize_with = "flexible_id")]
     pub id: Uuid,
     pub file: PathBuf,
     pub side: Side,
