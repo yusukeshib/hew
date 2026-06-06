@@ -8,9 +8,13 @@
 
 use ratatui::style::Color;
 use syntect::easy::HighlightLines;
-use syntect::highlighting::Theme;
+use syntect::highlighting::{Theme, ThemeSet};
 use syntect::parsing::{SyntaxReference, SyntaxSet};
-use two_face::theme::EmbeddedThemeName;
+
+/// TokyoNight (Night) as a TextMate theme, vendored from
+/// `folke/tokyonight.nvim` (`extras/sublime/tokyonight_night.tmTheme`) so the
+/// default palette matches the editor theme without a runtime dependency.
+const TOKYONIGHT_TMTHEME: &str = include_str!("../../assets/themes/tokyonight_night.tmTheme");
 
 pub struct Highlighter {
     ps: SyntaxSet,
@@ -19,13 +23,13 @@ pub struct Highlighter {
 
 impl Highlighter {
     pub fn new() -> Self {
-        // two-face ships bat's extended syntax set (TS/TSX, TOML, Dockerfile, …)
-        // and high-contrast themes. Monokai Extended Bright reads well on dark
-        // terminals; `_no_newlines` matches our line-by-line highlighting.
+        // two-face ships bat's extended syntax set (TS/TSX, TOML, Dockerfile, …);
+        // `_no_newlines` matches our line-by-line highlighting. The default
+        // theme is TokyoNight (Night) to mirror the common editor palette.
         let ps = two_face::syntax::extra_no_newlines();
-        let theme = two_face::theme::extra()
-            .get(EmbeddedThemeName::MonokaiExtendedBright)
-            .clone();
+        let mut cursor = std::io::Cursor::new(TOKYONIGHT_TMTHEME);
+        let theme = ThemeSet::load_from_reader(&mut cursor)
+            .expect("embedded TokyoNight tmTheme must parse");
         Highlighter { ps, theme }
     }
 
@@ -58,5 +62,32 @@ impl Highlighter {
                 .collect(),
             Err(_) => vec![(Color::Gray, text.to_string())],
         }
+    }
+}
+
+impl Default for Highlighter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn embedded_tokyonight_theme_loads_and_highlights() {
+        // Guards the vendored asset: a missing/corrupt tmTheme would panic in
+        // `new()`, and a theme that yields no colors would defeat the point.
+        let hl = Highlighter::new();
+        let syntax = hl.syntax_for("main.rs");
+        let runs = hl.line(syntax, "let x = 1;");
+        assert!(!runs.is_empty(), "highlighting produced no runs");
+        // TokyoNight is a truecolor theme; with truecolor active (the test
+        // default) at least one run should carry a real RGB foreground.
+        assert!(
+            runs.iter().any(|(c, _)| matches!(c, Color::Rgb(..))),
+            "expected an RGB foreground from the TokyoNight theme"
+        );
     }
 }
