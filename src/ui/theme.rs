@@ -66,7 +66,7 @@ pub struct Theme {
 /// The master palette: a dark theme tuned for low-contrast chrome with a vivid
 /// focused cursor line, authored in truecolor. Resolved per-terminal by
 /// [`init_theme`]; read the resolved palette via [`theme()`].
-const MASTER: Theme = Theme {
+static MASTER: Theme = Theme {
     add_bg: Color::Rgb(20, 42, 24),
     del_bg: Color::Rgb(48, 24, 26),
     cursor_bg: Color::Rgb(38, 116, 180),
@@ -106,9 +106,11 @@ pub fn init_theme(truecolor: bool) {
 }
 
 /// The active palette. Falls back to the authored truecolor master if
-/// [`init_theme`] hasn't run (e.g. in tests).
+/// [`init_theme`] hasn't run (e.g. in tests). Crucially this *reads* `ACTIVE`
+/// without initializing it — a pre-init call must not lock in `MASTER` and
+/// prevent a later [`init_theme(false)`] from installing the 256-color palette.
 pub fn theme() -> &'static Theme {
-    ACTIVE.get_or_init(|| MASTER)
+    ACTIVE.get().unwrap_or(&MASTER)
 }
 
 /// Adapt a *dynamically produced* color (e.g. a syntect token's RGB) to the
@@ -182,8 +184,11 @@ fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
     let cube_rgb = (CUBE[ci], CUBE[cj], CUBE[ck]);
     let cube_idx = 16 + 36 * ci + 6 * cj + ck;
 
-    // Best match within the grayscale ramp: gray N (0..=23) is 8 + 10*N.
-    let gray_n = (((r + g + b) / 3) - 8).clamp(0, 230) / 10;
+    // Best match within the grayscale ramp: gray N (0..=23) is 8 + 10*N. Round
+    // to the *nearest* step (+5 before the floor-divide) rather than truncating,
+    // so e.g. avg 17 picks N=1 (18) not N=0 (8).
+    let avg = (r + g + b) / 3;
+    let gray_n = (((avg - 8).max(0) + 5) / 10).clamp(0, 23);
     let gray_v = 8 + 10 * gray_n;
     let gray_idx = 232 + gray_n as usize;
 
@@ -227,6 +232,25 @@ mod tests {
             (232..=255).contains(&idx),
             "expected grayscale ramp, got {idx}"
         );
+    }
+
+    #[test]
+    fn grayscale_ramp_rounds_to_nearest_step() {
+        // avg 17 is closer to gray step 1 (value 18 -> index 233) than step 0
+        // (value 8 -> index 232); flooring would wrongly pick 232.
+        assert_eq!(rgb_to_ansi256(17, 17, 17), 233);
+        // avg 12 -> step 0 (8) is nearer than step 1 (18).
+        assert_eq!(rgb_to_ansi256(12, 12, 12), 232);
+    }
+
+    #[test]
+    fn theme_falls_back_to_master_without_locking() {
+        // No test calls `init_theme`, so `ACTIVE` stays empty and `theme()`
+        // must hand back the `MASTER` reference itself (not a cached copy) —
+        // proving a pre-init read can't lock in a palette and block a later
+        // `init_theme(false)` from installing the 256-color fallback.
+        assert!(std::ptr::eq(theme(), &MASTER));
+        assert_eq!(theme().added, Color::Green);
     }
 
     #[test]
