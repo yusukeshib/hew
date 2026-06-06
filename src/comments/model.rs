@@ -100,11 +100,23 @@ impl CommentStore {
         }
     }
 
-    /// Remove the thread with `id`. Returns `true` when one was removed.
-    pub fn remove_thread(&mut self, id: Uuid) -> bool {
-        let before = self.threads.len();
-        self.threads.retain(|t| t.id != id);
-        self.threads.len() != before
+    /// Remove the single comment `comment_id` from thread `thread_id`. If that
+    /// leaves the thread empty, the thread is dropped too. Returns `true` when a
+    /// comment was removed. This is the only delete path used by the TUI — the
+    /// unit of deletion is a comment, never a whole thread.
+    pub fn remove_comment(&mut self, thread_id: Uuid, comment_id: Uuid) -> bool {
+        let Some(t) = self.threads.iter_mut().find(|t| t.id == thread_id) else {
+            return false;
+        };
+        let before = t.comments.len();
+        t.comments.retain(|c| c.id != comment_id);
+        if t.comments.len() == before {
+            return false;
+        }
+        if t.comments.is_empty() {
+            self.threads.retain(|t| t.id != thread_id);
+        }
+        true
     }
 
     /// Flip the resolved flag on the thread with `id`, returning the new state
@@ -175,12 +187,20 @@ mod tests {
     }
 
     #[test]
-    fn remove_thread_reports_hit() {
+    fn remove_comment_drops_reply_then_thread() {
         let mut store = CommentStore::default();
-        let id = store.add_thread("f".into(), Side::New, range(2, 2), None, "hi".into());
-        assert!(store.remove_thread(id));
+        let id = store.add_thread("f".into(), Side::New, range(2, 2), None, "root".into());
+        store.reply(id, Some("you".into()), "reply".into());
+        let root_id = store.threads[0].comments[0].id;
+        let reply_id = store.threads[0].comments[1].id;
+
+        // Removing the reply keeps the thread (root remains).
+        assert!(store.remove_comment(id, reply_id));
+        assert_eq!(store.threads[0].comments.len(), 1);
+        // Removing an unknown comment is a no-op.
+        assert!(!store.remove_comment(id, reply_id));
+        // Removing the last comment drops the now-empty thread.
+        assert!(store.remove_comment(id, root_id));
         assert!(store.threads.is_empty());
-        // Removing again is a no-op.
-        assert!(!store.remove_thread(id));
     }
 }
