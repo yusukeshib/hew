@@ -21,6 +21,7 @@ use ratatui::prelude::*;
 use ratatui::widgets::{
     Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState,
 };
+use std::cell::RefCell;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -226,6 +227,26 @@ fn body_with_caret(ta: &TextArea<'static>) -> String {
     out
 }
 
+/// A clickable on-screen button's effect. Recorded with the button's screen
+/// `Rect` during render (see `App::button_hits`) and dispatched on left-click.
+/// Thread/comment ids are captured so a click acts on *that* box regardless of
+/// where the keyboard cursor currently sits.
+#[derive(Clone, Debug)]
+enum ButtonAction {
+    /// Start a new comment on the current diff-line selection (same as `i`).
+    AddComment,
+    /// Submit the open composer (same as Ctrl+S).
+    Submit,
+    /// Cancel the open composer (same as Esc).
+    Cancel,
+    /// Reply to the given thread.
+    Reply(String),
+    /// Toggle resolved on the given thread.
+    ToggleResolve(String),
+    /// Delete a session-added comment (thread_id, comment_id).
+    Delete(String, String),
+}
+
 /// Diff/review TUI state. Comments are loaded from a sidecar (immutable),
 /// displayed and navigated inline, and mutated in place
 /// (compose/reply/resolve/delete); on exit the final store is diffed against
@@ -265,6 +286,11 @@ pub struct App {
     diff_sb: Rect,          // diff scrollbar track (zero-sized when none)
     sidebar_sb: Rect,       // sidebar scrollbar track (zero-sized when none)
     sb_drag: Option<Focus>, // which scrollbar is being dragged
+    /// Clickable button regions recorded during the last render (the inline
+    /// composer's submit/cancel and a thread box's reply/resolve/delete), so a
+    /// left-click can be mapped to its action. Rebuilt every frame; uses
+    /// interior mutability because the render path is `&self`.
+    button_hits: RefCell<Vec<(Rect, ButtonAction)>>,
     /// Syntax-highlight cache + background warm worker (see [`HighlightCache`]).
     hl: HighlightCache,
     /// Cached `[start, end)` row span of `current_file` (see `file_range`).
@@ -315,7 +341,7 @@ impl App {
             selected: 0,
             scroll: 0,
             height: 1,
-            status: "q quit  j/k move  i comment  r reply  R resolve  D delete".into(),
+            status: String::new(),
             needs_clear: false,
             show_sidebar: true,
             sidebar_width: SIDEBAR_WIDTH,
@@ -340,6 +366,7 @@ impl App {
             diff_sb: Rect::default(),
             sidebar_sb: Rect::default(),
             sb_drag: None,
+            button_hits: RefCell::new(Vec::new()),
             hl,
             file_span: (0, 0),
             file_spans: Vec::new(),
@@ -460,8 +487,37 @@ impl App {
 
     /// Mouse: wheel scrolls the pane under the pointer; left-click selects;
     /// dragging the divider resizes the sidebar.
+    /// The button whose recorded screen rect contains `(col, row)`, if any.
+    fn button_at(&self, col: u16, row: u16) -> Option<ButtonAction> {
+        self.button_hits
+            .borrow()
+            .iter()
+            .find(|(r, _)| hit(*r, col, row))
+            .map(|(_, a)| a.clone())
+    }
+
+    /// Run a clicked button's action.
+    fn dispatch_button(&mut self, action: ButtonAction) {
+        match action {
+            ButtonAction::AddComment => self.open_new_thread(),
+            ButtonAction::Submit => self.submit_compose(),
+            ButtonAction::Cancel => self.cancel_compose(),
+            ButtonAction::Reply(tid) => self.open_reply_to(tid),
+            ButtonAction::ToggleResolve(tid) => self.toggle_resolved_thread(tid),
+            ButtonAction::Delete(tid, cid) => self.delete_comment(tid, cid),
+        }
+    }
+
     fn on_mouse(&mut self, me: MouseEvent) {
-        // The composer modal swallows mouse input too.
+        // Clickable buttons win over everything else (and work while the
+        // composer is open, since its submit/cancel live in the box).
+        if let MouseEventKind::Down(MouseButton::Left) = me.kind {
+            if let Some(action) = self.button_at(me.column, me.row) {
+                self.dispatch_button(action);
+                return;
+            }
+        }
+        // The composer modal swallows all other mouse input.
         if self.composer.is_some() {
             return;
         }
@@ -864,27 +920,21 @@ impl App {
             ComposeTarget::NewThread {
                 file_idx,
                 side,
-                start,
+                start: _,
                 end,
             } => {
-                let path = self
-                    .changeset
-                    .files
-                    .get(*file_idx)
-                    .map(|f| f.display_path())
-                    .unwrap_or("?");
-                let title = if start == end {
-                    format!(" new comment — {path}:{start} ")
-                } else {
-                    format!(" new comment — {path}:{start}-{end} ")
-                };
+                // The box renders right under the selected line(s), so the
+                // file/range is obvious from context — keep the title bare.
                 (
                     ComposerAnchor::NewThread {
                         file_idx: *file_idx,
                         side: *side,
-                        line: *start,
+                        // Anchor the composer after the *last* line of the
+                        // range (GitHub-style), matching where the resulting
+                        // thread box renders (see `last_anchor_lines`).
+                        line: *end,
                     },
-                    title,
+                    " new comment ".into(),
                 )
             }
             ComposeTarget::Reply { thread_id } => (
@@ -1009,15 +1059,30 @@ impl App {
             self.status = "no comment thread here".into();
             return;
         };
+        self.open_reply_to(id);
+    }
+
+    /// Open the composer to reply to a specific thread (used by the reply
+    /// button, which acts on the clicked box regardless of cursor position).
+    fn open_reply_to(&mut self, thread_id: String) {
         self.resizing = false;
         self.sb_drag = None;
         self.composer = Some(Composer {
-            target: ComposeTarget::Reply { thread_id: id },
+            target: ComposeTarget::Reply { thread_id },
             textarea: TextArea::default(),
         });
         self.status = "reply — enter for newline, ctrl+s to submit, esc to cancel".into();
         self.rebuild_rows();
         self.ensure_composer_visible();
+    }
+
+    /// Cancel the open composer (button equivalent of Esc).
+    fn cancel_compose(&mut self) {
+        self.composer = None;
+        self.visual = false;
+        self.sel_anchor = None;
+        self.status = "cancelled".into();
+        self.rebuild_rows();
     }
 
     /// Insert pasted text in one shot (bracketed paste). Only meaningful while
@@ -1155,6 +1220,11 @@ impl App {
             self.status = "no comment thread here".into();
             return;
         };
+        self.toggle_resolved_thread(id);
+    }
+
+    /// Toggle resolved on a specific thread (used by the resolve button).
+    fn toggle_resolved_thread(&mut self, id: String) {
         match self.comments.toggle_resolved(&id) {
             Some(true) => self.status = "resolved thread".into(),
             Some(false) => self.status = "unresolved thread".into(),
@@ -1173,6 +1243,11 @@ impl App {
             self.status = "put the cursor on a comment to delete".into();
             return;
         };
+        self.delete_comment(thread_id, comment_id);
+    }
+
+    /// Delete a specific session-added comment (used by the delete button).
+    fn delete_comment(&mut self, thread_id: String, comment_id: String) {
         if self.base_comment_ids.contains(&comment_id) {
             self.status = "can't delete a comment from the input".into();
             return;
@@ -1920,15 +1995,51 @@ impl App {
             self.render_diff_scrollbar(f, diff_inner);
         }
 
-        // Status line.
+        // Footer: transient status on the left, a context key-hint legend on
+        // the right (so shortcuts like Tab are discoverable). Comment actions
+        // live on buttons now, so they're omitted from the legend.
+        let fw = chunks[1].width as usize;
+        let legend = self.footer_legend();
+        let sl = str_width(&self.status);
+        let ll = str_width(&legend);
+        let footer = if sl + ll + 2 <= fw {
+            Line::from(vec![
+                Span::styled(self.status.clone(), Style::default().fg(theme().muted)),
+                Span::raw(" ".repeat(fw - sl - ll)),
+                Span::styled(legend, Style::default().fg(theme().faint)),
+            ])
+        } else if sl > 0 {
+            // Not enough room for both: the transient status wins.
+            Line::from(Span::styled(
+                self.status.clone(),
+                Style::default().fg(theme().muted),
+            ))
+        } else {
+            Line::from(Span::styled(legend, Style::default().fg(theme().faint)))
+        };
         f.render_widget(
-            Paragraph::new(self.status.clone())
-                .style(Style::default().fg(theme().muted).bg(theme().bg)),
+            Paragraph::new(footer).style(Style::default().bg(theme().bg)),
             chunks[1],
         );
     }
 
+    /// Context-aware key-hint legend shown on the right of the footer.
+    fn footer_legend(&self) -> String {
+        if self.composer.is_some() {
+            return "ctrl+s submit · esc cancel".into();
+        }
+        match self.effective_focus() {
+            Focus::Sidebar => "j/k move · enter open · h/l fold · tab view · q quit".into(),
+            Focus::Diff => {
+                "j/k move · v select · n/N comments · [/] files · tab view · y copy · esc back · q quit"
+                    .into()
+            }
+        }
+    }
+
     fn render_diff(&self, f: &mut Frame, area: Rect) {
+        // Button hit regions are recreated each frame as the boxes render.
+        self.button_hits.borrow_mut().clear();
         match self.view {
             View::Unified => self.render_unified(f, area),
             View::Split => self.render_split(f, area),
@@ -2099,12 +2210,52 @@ impl App {
         for idx in top..end {
             let row = &self.rows[idx];
             let selected = self.in_selection(idx);
-            lines.push(self.row_to_line(row, selected, width));
+            let y = area.y + (idx - top) as u16;
+            let line = match &row.kind {
+                RowKind::Comment(cl) if matches!(cl.kind, CommentKind::Actions) => {
+                    let border = if cl.resolved {
+                        theme().muted
+                    } else {
+                        theme().border_unfocus
+                    };
+                    let btns = self.comment_buttons(cl);
+                    self.action_row_line(&btns, border, area.x, y, width, 0, width)
+                }
+                RowKind::Composer(c) if matches!(c.kind, ComposerKind::Hint) => {
+                    let btns = self.composer_buttons();
+                    self.action_row_line(&btns, theme().accent, area.x, y, width, 0, width)
+                }
+                RowKind::Line { .. } if self.show_add_button(idx) => {
+                    let base = self.row_to_line(row, selected, width).spans;
+                    self.append_right_button(
+                        base,
+                        width,
+                        "comment(i)",
+                        theme().accent,
+                        ButtonAction::AddComment,
+                        area.x,
+                        y,
+                    )
+                }
+                _ => self.row_to_line(row, selected, width),
+            };
+            lines.push(line);
         }
         f.render_widget(
             Paragraph::new(lines).style(Style::default().bg(theme().bg)),
             area,
         );
+    }
+
+    /// Whether the floating `comment(i)` button should appear on row `idx`: the
+    /// diff pane is focused, no composer is open, and `idx` is the *last* row of
+    /// the current selection. A new thread (and its composer) renders after the
+    /// last line of its range, so the button sits there too — right where the
+    /// comment box will open — not on a different end of a range selection.
+    fn show_add_button(&self, idx: usize) -> bool {
+        self.composer.is_none()
+            && self.effective_focus() == Focus::Diff
+            && idx == self.selection_bounds().1
     }
 
     fn render_split(&self, f: &mut Frame, area: Rect) {
@@ -2114,11 +2265,55 @@ impl App {
         let (start, file_end) = self.file_range();
         let top = self.scroll.max(start);
         let end = (top + self.height).min(file_end);
+        let dw = divider.chars().count();
         let mut lines: Vec<Line> = Vec::new();
         for idx in top..end {
             let row = &self.split_rows[idx];
             let selected = self.in_selection(idx);
-            lines.push(self.split_row_to_line(row, selected, side_w, divider));
+            let y = area.y + (idx - top) as u16;
+            let line = match &row.kind {
+                SplitRowKind::Comment { side, line: cl }
+                    if matches!(cl.kind, CommentKind::Actions) =>
+                {
+                    let border = if cl.resolved {
+                        theme().muted
+                    } else {
+                        theme().border_unfocus
+                    };
+                    let btns = self.comment_buttons(cl);
+                    let left = if matches!(side, Side::Old) {
+                        0
+                    } else {
+                        side_w + dw
+                    };
+                    self.action_row_line(&btns, border, area.x, y, total, left, side_w)
+                }
+                SplitRowKind::Composer { side, line: cl }
+                    if matches!(cl.kind, ComposerKind::Hint) =>
+                {
+                    let btns = self.composer_buttons();
+                    let left = if matches!(side, Side::Old) {
+                        0
+                    } else {
+                        side_w + dw
+                    };
+                    self.action_row_line(&btns, theme().accent, area.x, y, total, left, side_w)
+                }
+                SplitRowKind::Pair { .. } if self.show_add_button(idx) => {
+                    let base = self.split_row_to_line(row, selected, side_w, divider).spans;
+                    self.append_right_button(
+                        base,
+                        total,
+                        "comment(i)",
+                        theme().accent,
+                        ButtonAction::AddComment,
+                        area.x,
+                        y,
+                    )
+                }
+                _ => self.split_row_to_line(row, selected, side_w, divider),
+            };
+            lines.push(line);
         }
         f.render_widget(
             Paragraph::new(lines).style(Style::default().bg(theme().bg)),
@@ -2316,6 +2511,202 @@ impl App {
         }
     }
 
+    /// Buttons for a thread box's action row: reply, resolve/unresolve, and
+    /// (only when the focused comment is a session-added one in this thread)
+    /// delete. `(label-with-hotkey, action, label text color)` — the chip's
+    /// background is a uniform subtle surface; this color is its foreground.
+    fn comment_buttons(&self, cl: &CommentLine) -> Vec<(String, ButtonAction, Color)> {
+        let tid = cl.thread_id.clone();
+        let mut v = vec![(
+            "reply(r)".to_string(),
+            ButtonAction::Reply(tid.clone()),
+            theme().accent,
+        )];
+        if cl.resolved {
+            v.push((
+                "unresolve(R)".to_string(),
+                ButtonAction::ToggleResolve(tid.clone()),
+                theme().warn,
+            ));
+        } else {
+            v.push((
+                "resolve(R)".to_string(),
+                ButtonAction::ToggleResolve(tid.clone()),
+                theme().added,
+            ));
+        }
+        if let Some((ftid, fcid)) = self.focused_comment() {
+            if ftid == tid && !self.base_comment_ids.contains(&fcid) {
+                v.push((
+                    "delete(D)".to_string(),
+                    ButtonAction::Delete(tid, fcid),
+                    theme().removed,
+                ));
+            }
+        }
+        v
+    }
+
+    /// Buttons for the open composer's action row: submit and cancel.
+    fn composer_buttons(&self) -> Vec<(String, ButtonAction, Color)> {
+        vec![
+            (
+                "submit(ctrl+s)".to_string(),
+                ButtonAction::Submit,
+                theme().accent,
+            ),
+            (
+                "cancel(esc)".to_string(),
+                ButtonAction::Cancel,
+                theme().muted,
+            ),
+        ]
+    }
+
+    /// Build one full-width action-button row inside a box. The box (margin +
+    /// `│ … │` + button chips) is `box_w` cells wide and starts `left_pad`
+    /// cells into the row (for split-view side placement); the rest is padded
+    /// to `width`. Each chip is a subtle raised surface with the action's color
+    /// as its label text, and its on-screen rect is recorded (at `x0` + offset,
+    /// row `y`) for click hit-testing.
+    #[allow(clippy::too_many_arguments)]
+    fn action_row_line(
+        &self,
+        btns: &[(String, ButtonAction, Color)],
+        border: Color,
+        x0: u16,
+        y: u16,
+        width: usize,
+        left_pad: usize,
+        box_w: usize,
+    ) -> Line<'static> {
+        const MARGIN: usize = 2;
+        let bstyle = Style::default().fg(border);
+        if box_w <= MARGIN + 2 {
+            return Line::from(Span::raw(" ".repeat(width)));
+        }
+        let inner_w = box_w - MARGIN - 2;
+        let mut spans: Vec<Span<'static>> = Vec::new();
+        if left_pad > 0 {
+            spans.push(Span::raw(" ".repeat(left_pad)));
+        }
+        spans.push(Span::raw(" ".repeat(MARGIN)));
+        spans.push(Span::styled("│".to_string(), bstyle));
+        // Inner content: ` label ` chips packed left-to-right. Each chip is a
+        // subtle raised surface with the action's color as the *text* (a soft,
+        // toolbar-like button rather than a loud solid fill); the chip padding
+        // and distinct text colors keep them readable as separate buttons even
+        // packed tight, which matters in split view's narrow side column. Each
+        // chip's screen rect is recorded for click hit-testing.
+        let mut col = 0usize;
+        let base_x = x0 + (left_pad + MARGIN + 1) as u16;
+        let mut inner: Vec<Span<'static>> = Vec::new();
+        for (i, (label, action, color)) in btns.iter().enumerate() {
+            let chip = format!(" {label} ");
+            let w = str_width(&chip);
+            // A one-cell (box-background) gap before each chip after the first,
+            // so the raised surfaces read as separate buttons. The gap is part
+            // of the fit test, so it never dangles and drops the next chip.
+            let gap = usize::from(i > 0);
+            if col + gap + w > inner_w {
+                break;
+            }
+            if gap > 0 {
+                inner.push(Span::raw(" "));
+                col += 1;
+            }
+            self.button_hits.borrow_mut().push((
+                Rect {
+                    x: base_x + col as u16,
+                    y,
+                    width: w as u16,
+                    height: 1,
+                },
+                action.clone(),
+            ));
+            inner.push(Span::styled(
+                chip,
+                Style::default()
+                    .bg(theme().subtle)
+                    .fg(*color)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            col += w;
+        }
+        if col < inner_w {
+            inner.push(Span::raw(" ".repeat(inner_w - col)));
+        }
+        spans.extend(inner);
+        spans.push(Span::styled("│".to_string(), bstyle));
+        let used = left_pad + box_w;
+        if used < width {
+            spans.push(Span::raw(" ".repeat(width - used)));
+        }
+        Line::from(spans)
+    }
+
+    /// Overlay a right-aligned button chip on an already-built diff line: clip
+    /// the line's content to leave room, then append ` label `. Used to float a
+    /// `comment(i)` button at the end of the focused diff line (GitHub-style).
+    /// Records the chip's screen rect (at `x0` + offset, row `y`) for clicks.
+    #[allow(clippy::too_many_arguments)]
+    fn append_right_button(
+        &self,
+        spans: Vec<Span<'static>>,
+        width: usize,
+        label: &str,
+        color: Color,
+        action: ButtonAction,
+        x0: u16,
+        y: u16,
+    ) -> Line<'static> {
+        let chip = format!(" {label} ");
+        let cw = str_width(&chip);
+        if width <= cw {
+            return Line::from(spans);
+        }
+        let keep = width - cw;
+        // Clip the existing spans to `keep` display cells (preserving styles,
+        // so the line's selection tint carries up to the button).
+        let mut out: Vec<Span<'static>> = Vec::new();
+        let mut acc = 0usize;
+        for s in spans {
+            if acc >= keep {
+                break;
+            }
+            let sw = str_width(&s.content);
+            if acc + sw <= keep {
+                acc += sw;
+                out.push(s);
+            } else {
+                let (t, tw) = take_width(&s.content, keep - acc);
+                out.push(Span::styled(t, s.style));
+                acc += tw;
+                break;
+            }
+        }
+        if acc < keep {
+            out.push(Span::raw(" ".repeat(keep - acc)));
+        }
+        self.button_hits.borrow_mut().push((
+            Rect {
+                x: x0 + keep as u16,
+                y,
+                width: cw as u16,
+                height: 1,
+            },
+            action,
+        ));
+        out.push(Span::styled(
+            chip,
+            Style::default()
+                .bg(theme().subtle)
+                .fg(color)
+                .add_modifier(Modifier::BOLD),
+        ));
+        Line::from(out)
+    }
+
     /// Render one inline comment line as part of a rounded box spanning `width`
     /// (2-column left margin + `╭─╮`/`│ │`/`╰─╯` frame). `focused` is set for
     /// the rows of the message the cursor is on.
@@ -2348,6 +2739,15 @@ impl App {
             CommentKind::Bottom => Line::from(vec![
                 margin,
                 Span::styled(format!("╰{}╯", "─".repeat(inner_w)), bstyle),
+            ]),
+            // The action row is normally drawn by `action_row_line` straight
+            // from the render loop (it needs the screen position to record
+            // click rects); this is a blank-box fallback if it's ever reached.
+            CommentKind::Actions => Line::from(vec![
+                margin,
+                Span::styled("│".to_string(), bstyle),
+                Span::raw(" ".repeat(inner_w)),
+                Span::styled("│".to_string(), bstyle),
             ]),
             CommentKind::Author { name, date } => {
                 // Name on the left, date flush right (1-col gutter before the
@@ -3255,5 +3655,147 @@ mod tests {
             app.composer.as_ref().unwrap().textarea.lines().join("\n"),
             "x\n"
         );
+    }
+
+    // Render into a TestBackend and return the app (button hit rects are
+    // recorded during the draw).
+    fn render(app: &mut App, w: u16, h: u16) {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+        let mut term = Terminal::new(TestBackend::new(w, h)).unwrap();
+        term.draw(|f| app.draw(f)).unwrap();
+    }
+
+    fn click(app: &mut App, r: Rect) {
+        app.on_mouse(MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: r.x,
+            row: r.y,
+            modifiers: KeyModifiers::NONE,
+        });
+    }
+
+    #[test]
+    fn comment_box_records_reply_and_resolve_buttons() {
+        let (mut app, tid, _rid) = app_with_thread(2);
+        render(&mut app, 160, 40);
+        let hits = app.button_hits.borrow();
+        assert!(
+            hits.iter()
+                .any(|(_, a)| matches!(a, ButtonAction::Reply(t) if *t == tid)),
+            "reply button should be recorded"
+        );
+        assert!(
+            hits.iter()
+                .any(|(_, a)| matches!(a, ButtonAction::ToggleResolve(t) if *t == tid)),
+            "resolve button should be recorded"
+        );
+    }
+
+    #[test]
+    fn clicking_the_reply_button_opens_the_composer() {
+        let (mut app, tid, _rid) = app_with_thread(2);
+        render(&mut app, 160, 40);
+        let rect = app
+            .button_hits
+            .borrow()
+            .iter()
+            .find(|(_, a)| matches!(a, ButtonAction::Reply(t) if *t == tid))
+            .map(|(r, _)| *r)
+            .expect("reply button recorded");
+        click(&mut app, rect);
+        assert!(app.composer.is_some(), "clicking reply opens the composer");
+    }
+
+    #[test]
+    fn clicking_the_resolve_button_toggles_the_thread() {
+        let (mut app, _tid, _rid) = app_with_thread(2);
+        render(&mut app, 160, 40);
+        let before = app.comments.threads[0].resolved;
+        let rect = app
+            .button_hits
+            .borrow()
+            .iter()
+            .find(|(_, a)| matches!(a, ButtonAction::ToggleResolve(_)))
+            .map(|(r, _)| *r)
+            .expect("resolve button recorded");
+        click(&mut app, rect);
+        assert_ne!(
+            before, app.comments.threads[0].resolved,
+            "clicking resolve toggles the thread"
+        );
+    }
+
+    #[test]
+    fn range_comment_box_renders_after_the_last_line() {
+        // A New-side range 2..=4 should inject its box right after the row for
+        // line 4 (GitHub-style: below the last line), not after line 2.
+        let cs = parse_report(DIFF).0;
+        let mut store = CommentStore::default();
+        store.add_thread(
+            "f.rs".into(),
+            Side::New,
+            LineRange { start: 2, end: 4 },
+            Some("a".into()),
+            "msg".into(),
+        );
+        let app = App::with_comments(cs, store);
+        let line4 = app
+            .rows
+            .iter()
+            .position(|r| {
+                matches!(
+                    &r.kind,
+                    RowKind::Line {
+                        new_line: Some(4),
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        let top = app
+            .rows
+            .iter()
+            .position(
+                |r| matches!(&r.kind, RowKind::Comment(cl) if matches!(cl.kind, CommentKind::Top)),
+            )
+            .unwrap();
+        assert_eq!(
+            top,
+            line4 + 1,
+            "box should immediately follow the last range line"
+        );
+    }
+
+    #[test]
+    fn cursor_diff_line_shows_a_clickable_add_comment_button() {
+        let mut app = app_with(DIFF);
+        app.focus = Focus::Diff;
+        goto(&mut app, Side::New, 2);
+        render(&mut app, 120, 40);
+        let rect = app
+            .button_hits
+            .borrow()
+            .iter()
+            .find(|(_, a)| matches!(a, ButtonAction::AddComment))
+            .map(|(r, _)| *r)
+            .expect("add-comment button recorded on the cursor line");
+        click(&mut app, rect);
+        assert!(
+            app.composer.is_some(),
+            "clicking comment(i) opens a new-thread composer"
+        );
+    }
+
+    #[test]
+    fn composer_records_submit_and_cancel_buttons() {
+        let (mut app, _tid, _rid) = app_with_thread(2);
+        app.focus = Focus::Diff;
+        app.jump_comment(1);
+        app.open_reply();
+        render(&mut app, 160, 40);
+        let hits = app.button_hits.borrow();
+        assert!(hits.iter().any(|(_, a)| matches!(a, ButtonAction::Submit)));
+        assert!(hits.iter().any(|(_, a)| matches!(a, ButtonAction::Cancel)));
     }
 }

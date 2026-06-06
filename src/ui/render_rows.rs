@@ -2,7 +2,7 @@
 
 use crate::comments::model::{CommentStore, Thread};
 use crate::diff::model::{Changeset, LineKind, Side};
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use unicode_width::UnicodeWidthChar;
@@ -71,6 +71,8 @@ pub enum CommentKind {
     Body(String),
     /// Blank spacer between messages.
     Gap,
+    /// The action-button row (reply / resolve / delete) above the bottom border.
+    Actions,
     /// Bottom rounded border of the thread box.
     Bottom,
 }
@@ -286,6 +288,7 @@ pub fn thread_lines(t: &Thread, width: usize) -> Vec<CommentLine> {
             out.push(content(CommentKind::Gap, &c.id));
         }
     }
+    out.push(chrome(CommentKind::Actions));
     out.push(chrome(CommentKind::Bottom));
     out
 }
@@ -303,12 +306,50 @@ fn threads_by_path(comments: &CommentStore) -> ThreadsByPath<'_> {
     map
 }
 
+/// Map each thread (across the whole changeset, keyed by thread id) to the
+/// *last* `(side, line)` anchor within its range that is actually present in
+/// the diff. A range comment renders after this line, so its box sits below the
+/// last selected line (GitHub-style) rather than the first.
+fn last_anchor_lines(
+    changeset: &Changeset,
+    comments: &CommentStore,
+    by_path: &ThreadsByPath<'_>,
+) -> HashMap<String, (Side, u32)> {
+    let mut m = HashMap::new();
+    for file in &changeset.files {
+        let Some(indices) = by_path.get(Path::new(file.display_path())) else {
+            continue;
+        };
+        for &i in indices {
+            let t = &comments.threads[i];
+            let mut best: Option<u32> = None;
+            for line in file.hunks.iter().flat_map(|h| h.lines.iter()) {
+                let l = match t.side {
+                    Side::Old => line.old_line,
+                    Side::New => line.new_line,
+                };
+                if let Some(l) = l {
+                    if t.range.contains(l) {
+                        best = Some(best.map_or(l, |b| b.max(l)));
+                    }
+                }
+            }
+            if let Some(l) = best {
+                m.insert(t.id.clone(), (t.side, l));
+            }
+        }
+    }
+    m
+}
+
 /// Inline-comment lines to inject after a code row, for every thread whose
-/// anchor matches one of the row's `(side, line)` anchors.
+/// last in-diff anchor line (see [`last_anchor_lines`]) is one of the row's
+/// `(side, line)` anchors.
 #[allow(clippy::too_many_arguments)]
 fn comment_rows_for(
     comments: &CommentStore,
     by_path: &ThreadsByPath<'_>,
+    last: &HashMap<String, (Side, u32)>,
     emitted: &mut HashSet<String>,
     path: &str,
     anchors: &[(Side, u32)],
@@ -321,15 +362,14 @@ fn comment_rows_for(
     };
     for &i in indices {
         let t = &comments.threads[i];
-        // Emit each thread once, at the first line of its range present in the
-        // diff (anchor ranges can span several lines). `emitted` dedups across
-        // multiple matching anchor lines.
+        // Emit each thread once, at the last line of its range present in the
+        // diff. `emitted` guards against a repeated emit.
         if emitted.contains(&t.id) {
             continue;
         }
-        if anchors
-            .iter()
-            .any(|(s, l)| *s == t.side && t.range.contains(*l))
+        if last
+            .get(&t.id)
+            .is_some_and(|&(ts, tl)| anchors.iter().any(|&(s, l)| s == ts && l == tl))
         {
             emitted.insert(t.id.clone());
             out.extend(
@@ -533,6 +573,7 @@ pub fn build_split_rows(
     let mut emitted: HashSet<String> = HashSet::new();
     let mut composer_emitted = false;
     let by_path = threads_by_path(comments);
+    let last = last_anchor_lines(changeset, comments, &by_path);
     for (fi, file) in changeset.files.iter().enumerate() {
         let path = file.display_path();
         rows.push(SplitRow {
@@ -576,6 +617,7 @@ pub fn build_split_rows(
                             &mut rows,
                             comments,
                             &by_path,
+                            &last,
                             &mut emitted,
                             path,
                             width,
@@ -604,6 +646,7 @@ pub fn build_split_rows(
                         for (side, inj) in comment_rows_for(
                             comments,
                             &by_path,
+                            &last,
                             &mut emitted,
                             path,
                             &anchors,
@@ -645,6 +688,7 @@ pub fn build_split_rows(
                 &mut rows,
                 comments,
                 &by_path,
+                &last,
                 &mut emitted,
                 path,
                 width,
@@ -682,6 +726,7 @@ fn flush_pairs(
     rows: &mut Vec<SplitRow>,
     comments: &CommentStore,
     by_path: &ThreadsByPath<'_>,
+    last: &HashMap<String, (Side, u32)>,
     emitted: &mut HashSet<String>,
     path: &str,
     width: usize,
@@ -706,9 +751,9 @@ fn flush_pairs(
             kind: SplitRowKind::Pair { left, right },
             text: String::new(),
         });
-        for (side, inj) in
-            comment_rows_for(comments, by_path, emitted, path, &anchors, width, composer)
-        {
+        for (side, inj) in comment_rows_for(
+            comments, by_path, last, emitted, path, &anchors, width, composer,
+        ) {
             rows.push(SplitRow {
                 file_idx,
                 kind: split_injected(side, inj),
@@ -784,6 +829,7 @@ pub fn build_rows(
     let mut emitted: HashSet<String> = HashSet::new();
     let mut composer_emitted = false;
     let by_path = threads_by_path(comments);
+    let last = last_anchor_lines(changeset, comments, &by_path);
     for (fi, file) in changeset.files.iter().enumerate() {
         let path = file.display_path();
         rows.push(Row {
@@ -828,6 +874,7 @@ pub fn build_rows(
                     for (_, inj) in comment_rows_for(
                         comments,
                         &by_path,
+                        &last,
                         &mut emitted,
                         path,
                         &[(side, ln)],
