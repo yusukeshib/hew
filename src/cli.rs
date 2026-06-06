@@ -66,7 +66,7 @@ OUTPUT — action log (stdout), the minimal delta turning base into reviewed:
   - reply/resolve/unresolve reference a thread by thread_id, an opaque
     string echoing the base id verbatim (a base thread, or one add_comment-ed
     earlier in the same log).
-  - Compaction is automatic: an in-session add-then-delete and a
-    resolve-then-unresolve both cancel out of the log.
+  - Compaction is automatic: a thread created then removed in-session, or a
+    resolve toggled back, leaves no trace in the log.
 
 Note: hew parses plain unified diffs, not git format-patch mailbox output.";

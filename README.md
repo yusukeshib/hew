@@ -167,8 +167,8 @@ action types emitted:
 - `reply` / `resolve` / `unresolve` reference an existing thread by `thread_id`
   (a base thread, or one `add_comment`-ed earlier in the log).
 - `author` is omitted when unset; an untouched session prints `[]`.
-- **There is no `delete` action.** Input threads can't be deleted, and an
-  in-session add-then-delete (or resolve-then-unresolve) cancels out.
+- **There is no `delete` action.** Input threads can't be deleted; a thread
+  created then removed in-session, or a resolve toggled back, leaves no trace.
 
 ## GitHub bridge
 
