@@ -446,15 +446,11 @@ fn comment_rows_for(
 /// We expand tabs (4-col stops), drop CR/LF, strip ANSI CSI/OSC sequences, and
 /// drop any remaining control characters.
 pub fn sanitize_line(s: &str) -> String {
-    // Fast path: a line of only printable ASCII (0x20..=0x7e) needs no
-    // transformation — no tab to expand, no CR/LF/ESC/control to strip — so
-    // copy it in a single allocation instead of rebuilding it char-by-char.
-    // This is the common case for source diffs and dominates the cost of a row
-    // rebuild; the byte scan is vectorizable and far cheaper than the per-char
-    // decode + push loop below.
-    if is_clean_ascii(s) {
-        return s.to_string();
-    }
+    // Delegates to `sanitize_into`, whose fast path copies a clean printable-
+    // ASCII line (the common case for source diffs) in a single allocation
+    // instead of rebuilding it char-by-char. Scanning for cleanliness happens
+    // once, inside `sanitize_into` — duplicating the check here would re-scan
+    // every non-clean line before the (already expensive) char loop.
     let mut out = String::with_capacity(s.len());
     sanitize_into(&mut out, s);
     out
