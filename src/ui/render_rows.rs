@@ -652,6 +652,15 @@ pub fn build_split_rows(
                 &mut composer_emitted,
             );
         }
+        for (side, inj) in
+            orphan_thread_rows(comments, &by_path, &mut emitted, path, width, composer)
+        {
+            rows.push(SplitRow {
+                file_idx: fi,
+                kind: split_injected(side, inj),
+                text: String::new(),
+            });
+        }
     }
     rows
 }
@@ -719,6 +728,49 @@ fn flush_pairs(
             }
         }
     }
+}
+
+/// Threads on `path` that never matched a visible diff line. Their anchor sits
+/// outside every shown hunk — e.g. a review comment on an unchanged line, or one
+/// GitHub repositioned to an out-of-hunk line. Such a thread is still counted by
+/// the sidebar's comment dot, so without this it would be advertised yet
+/// unreachable. Emitted once, after the file's hunks, so every thread the
+/// sidebar promises is navigable. `emitted` dedups against inline threads.
+fn orphan_thread_rows(
+    comments: &CommentStore,
+    by_path: &ThreadsByPath<'_>,
+    emitted: &mut HashSet<String>,
+    path: &str,
+    width: usize,
+    composer: Option<&ComposerSpec>,
+) -> Vec<(Side, Injected)> {
+    let mut out = Vec::new();
+    let Some(indices) = by_path.get(Path::new(path)) else {
+        return out;
+    };
+    for &i in indices {
+        let t = &comments.threads[i];
+        if emitted.contains(t.id.as_str()) {
+            continue;
+        }
+        emitted.insert(t.id.clone());
+        out.extend(
+            thread_lines(t, width)
+                .into_iter()
+                .map(|cl| (t.side, Injected::Comment(cl))),
+        );
+        // A reply composer sits directly under the thread it replies to.
+        if let Some(spec) = composer {
+            if matches!(&spec.anchor, ComposerAnchor::Reply { thread_id } if *thread_id == t.id) {
+                out.extend(
+                    composer_lines(spec, width)
+                        .into_iter()
+                        .map(|cl| (t.side, Injected::Composer(cl))),
+                );
+            }
+        }
+    }
+    out
 }
 
 /// Build the unified (stack) row list.
@@ -804,6 +856,18 @@ pub fn build_rows(
                 }
             }
         }
+        for (_, inj) in orphan_thread_rows(comments, &by_path, &mut emitted, path, width, composer)
+        {
+            let kind = match inj {
+                Injected::Comment(cl) => RowKind::Comment(cl),
+                Injected::Composer(cl) => RowKind::Composer(cl),
+            };
+            rows.push(Row {
+                file_idx: fi,
+                kind,
+                text: String::new(),
+            });
+        }
     }
     rows
 }
@@ -883,6 +947,46 @@ mod tests {
             )),
             "new-side comment should be tagged Side::New"
         );
+    }
+
+    #[test]
+    fn thread_anchored_outside_any_hunk_is_still_emitted() {
+        // A comment on a line the diff never shows (new-side line 99, far past
+        // the only hunk) used to be counted by the sidebar yet never rendered.
+        // It must still appear, appended after the file's hunks, in both views.
+        let cs = parse_report(SIMPLE_DIFF).0;
+        let orphan = store_with(Side::New, 99);
+
+        let unified = build_rows(&cs, &orphan, 80, None);
+        assert!(
+            unified
+                .iter()
+                .any(|r| matches!(r.kind, RowKind::Comment(_))),
+            "an out-of-hunk thread must still render in the unified view"
+        );
+
+        let split = build_split_rows(&cs, &orphan, 80, None);
+        assert!(
+            split
+                .iter()
+                .any(|r| matches!(r.kind, SplitRowKind::Comment { .. })),
+            "an out-of-hunk thread must still render in the split view"
+        );
+    }
+
+    #[test]
+    fn in_hunk_thread_is_not_double_emitted_by_orphan_pass() {
+        // Dedup: a thread shown inline must not be re-emitted as an orphan.
+        let cs = parse_report(SIMPLE_DIFF).0;
+        let inhunk = store_with(Side::New, 2); // anchored to the added line 2
+        let rows = build_rows(&cs, &inhunk, 80, None);
+        let box_tops = rows
+            .iter()
+            .filter(
+                |r| matches!(&r.kind, RowKind::Comment(cl) if matches!(cl.kind, CommentKind::Top)),
+            )
+            .count();
+        assert_eq!(box_tops, 1, "thread emitted exactly once");
     }
 
     #[test]
