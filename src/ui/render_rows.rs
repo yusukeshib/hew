@@ -116,7 +116,7 @@ pub struct ComposerSpec {
 pub enum ComposerKind {
     /// Top rounded border, carrying the box title.
     Top { title: String },
-    /// A (pre-wrapped) body line; the last one carries the caret glyph.
+    /// A (pre-wrapped) body line; the line at the cursor carries the caret glyph.
     Body(String),
     /// The one-line key hint above the bottom border.
     Hint,
@@ -145,10 +145,10 @@ fn composer_lines(spec: &ComposerSpec, width: usize) -> Vec<ComposerLine> {
             title: spec.title.clone(),
         },
     }];
-    // Append the caret to the buffer so it tracks the insertion point as the
-    // body wraps. The caret glyph survives `sanitize_line` (not a control char).
-    let body = format!("{}\u{2588}", spec.body);
-    for raw in body.split('\n') {
+    // `spec.body` already carries the caret glyph at the cursor position (see
+    // `body_with_caret`); the glyph survives `sanitize_line` (not a control
+    // char) and wraps with the surrounding text.
+    for raw in spec.body.split('\n') {
         let s = sanitize_line(raw);
         if s.is_empty() {
             out.push(ComposerLine {

@@ -14,7 +14,8 @@ use crate::ui::sidebar::{
 use crate::ui::theme::theme;
 use anyhow::Result;
 use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
 use ratatui::prelude::*;
 use ratatui::widgets::{
@@ -24,6 +25,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use tui_textarea::TextArea;
 use uuid::Uuid;
 
 /// Diff layout: unified (stacked) or split (old | new, like `git delta`).
@@ -178,10 +180,34 @@ enum ComposeTarget {
     Reply { thread_id: Uuid },
 }
 
-/// In-progress comment text and where it lands.
+/// In-progress comment text and where it lands. The text + cursor live in a
+/// [`TextArea`], used purely as an edit model (readline/emacs keybindings,
+/// multi-line cursor, undo) — the box is drawn inline in the diff row stream,
+/// not via tui-textarea's own widget.
 struct Composer {
     target: ComposeTarget,
-    buf: String,
+    textarea: TextArea<'static>,
+}
+
+/// Caret glyph drawn at the composer's cursor (a printable block, so it
+/// survives `sanitize_line`).
+const COMPOSER_CARET: char = '\u{2588}';
+
+/// The composer body as a single string with the caret glyph inserted at the
+/// cursor position, ready for the row builder to wrap. A `TextArea` always has
+/// at least one line, so the cursor row is always valid.
+fn body_with_caret(ta: &TextArea<'static>) -> String {
+    let (row, col) = ta.cursor();
+    let mut lines: Vec<String> = ta.lines().to_vec();
+    let line = &mut lines[row];
+    // `col` is a char index; translate to a byte offset for `String::insert`.
+    let byte = line
+        .char_indices()
+        .nth(col)
+        .map(|(b, _)| b)
+        .unwrap_or(line.len());
+    line.insert(byte, COMPOSER_CARET);
+    lines.join("\n")
 }
 
 /// Diff/review TUI state. Comments are loaded from a sidecar (immutable),
@@ -847,7 +873,7 @@ impl App {
         Some(ComposerSpec {
             anchor,
             title,
-            body: c.buf.clone(),
+            body: body_with_caret(&c.textarea),
         })
     }
 
@@ -940,7 +966,7 @@ impl App {
                 start,
                 end,
             },
-            buf: String::new(),
+            textarea: TextArea::default(),
         });
         self.status = "new comment — enter for newline, ctrl+s to submit, esc to cancel".into();
         self.rebuild_rows();
@@ -958,7 +984,7 @@ impl App {
         self.sb_drag = None;
         self.composer = Some(Composer {
             target: ComposeTarget::Reply { thread_id: id },
-            buf: String::new(),
+            textarea: TextArea::default(),
         });
         self.status = "reply — enter for newline, ctrl+s to submit, esc to cancel".into();
         self.rebuild_rows();
@@ -973,25 +999,30 @@ impl App {
         let Some(c) = self.composer.as_mut() else {
             return;
         };
-        // Normalize newlines; the row builder splits the body on `\n`.
-        c.buf
-            .push_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
+        // Normalize newlines; `insert_str` splits on `\n` into the buffer at the
+        // cursor (which then sits after the inserted text).
+        c.textarea
+            .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
         self.rebuild_rows();
         self.ensure_composer_visible();
     }
 
-    /// Keystrokes while the composer modal is open.
+    /// Keystrokes while the composer modal is open. hew's own chords (submit /
+    /// cancel) are handled here; everything else is forwarded to the `TextArea`
+    /// model, which provides readline/emacs editing (Ctrl+A/E/B/F/K/U/W,
+    /// Alt+B/F, arrows, ↑/↓ line moves, Ctrl+D delete-forward, undo, …).
     fn on_key_compose(&mut self, code: KeyCode, mods: KeyModifiers) {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         match code {
-            // Esc or Ctrl-C/D cancels without saving.
+            // Esc or Ctrl-C cancels without saving. (Ctrl+D is left to the
+            // editor as delete-forward, per readline.)
             KeyCode::Esc => {
                 self.composer = None;
                 self.visual = false;
                 self.sel_anchor = None;
                 self.status = "cancelled".into();
             }
-            KeyCode::Char('c') | KeyCode::Char('d') if ctrl => {
+            KeyCode::Char('c') if ctrl => {
                 self.composer = None;
                 self.visual = false;
                 self.sel_anchor = None;
@@ -1004,29 +1035,23 @@ impl App {
             // keyboard-enhancement protocol (DISAMBIGUATE_ESCAPE_CODES, enabled
             // in `run`); under tmux that protocol is usually swallowed, which is
             // why a protocol-free fallback exists at all. A bare Enter inserts a
-            // newline (bodies are multi-line). Shift+Enter is intentionally not
+            // newline (handled by the editor). Shift+Enter is intentionally not
             // used: the protocol reports ctrl+key but not plain shift+key, so it
             // would be indistinguishable from a bare Enter.
             KeyCode::Char('s') if ctrl => self.submit_compose(),
             KeyCode::Enter if ctrl => self.submit_compose(),
-            KeyCode::Enter => {
-                if let Some(c) = self.composer.as_mut() {
-                    c.buf.push('\n');
+            // Everything else: hand the key to the edit model. Rebuild the row
+            // stream only when the editor actually consumed it.
+            _ => {
+                let consumed = self
+                    .composer
+                    .as_mut()
+                    .map(|c| c.textarea.input(KeyEvent::new(code, mods)))
+                    .unwrap_or(false);
+                if !consumed {
+                    return;
                 }
             }
-            KeyCode::Backspace => {
-                if let Some(c) = self.composer.as_mut() {
-                    c.buf.pop();
-                }
-            }
-            KeyCode::Char(ch) if !ctrl => {
-                if let Some(c) = self.composer.as_mut() {
-                    c.buf.push(ch);
-                }
-            }
-            // Unhandled keys change no state, so skip the row rebuild entirely
-            // (it walks the whole changeset — wasteful per keystroke).
-            _ => return,
         }
         // The composer is part of the row stream now, so any state change
         // (typed text, cancel) must rebuild rows to reflect it. `submit_compose`
@@ -1042,7 +1067,7 @@ impl App {
         let Some(c) = self.composer.take() else {
             return;
         };
-        let body = c.buf.trim().to_string();
+        let body = c.textarea.lines().join("\n").trim().to_string();
         if body.is_empty() {
             self.status = "empty comment discarded".into();
             return;
@@ -2766,7 +2791,7 @@ mod tests {
         open_composer(&mut app);
         app.on_paste("first line\r\nsecond line\rthird".into());
         assert_eq!(
-            app.composer.as_ref().unwrap().buf,
+            app.composer.as_ref().unwrap().textarea.lines().join("\n"),
             "first line\nsecond line\nthird"
         );
         assert!(app.composer.is_some(), "paste must not submit");
@@ -2892,6 +2917,60 @@ mod tests {
         assert!(app.composer.is_some(), "composer should be open");
     }
 
+    /// The current composer text (no caret), for assertions.
+    fn composer_text(app: &App) -> String {
+        app.composer.as_ref().unwrap().textarea.lines().join("\n")
+    }
+
+    #[test]
+    fn composer_supports_readline_cursor_editing() {
+        let mut app = app_with(DIFF);
+        open_composer(&mut app);
+        // Type "ac", move left (←), insert "b" between them — cursor editing.
+        app.on_key_compose(KeyCode::Char('a'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Char('c'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Left, KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Char('b'), KeyModifiers::NONE);
+        assert_eq!(composer_text(&app), "abc");
+
+        // Ctrl+A jumps to line start; typed text lands there.
+        app.on_key_compose(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        app.on_key_compose(KeyCode::Char('X'), KeyModifiers::NONE);
+        assert_eq!(composer_text(&app), "Xabc");
+
+        // Ctrl+E jumps to line end.
+        app.on_key_compose(KeyCode::Char('e'), KeyModifiers::CONTROL);
+        app.on_key_compose(KeyCode::Char('Z'), KeyModifiers::NONE);
+        assert_eq!(composer_text(&app), "XabcZ");
+    }
+
+    #[test]
+    fn composer_caret_renders_at_the_cursor() {
+        let mut app = app_with(DIFF);
+        open_composer(&mut app);
+        app.on_key_compose(KeyCode::Char('a'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Char('b'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Char('a'), KeyModifiers::CONTROL); // to start
+        let spec = app.composer_spec().expect("composer spec");
+        assert_eq!(
+            spec.body, "\u{2588}ab",
+            "caret renders at the cursor, not the end"
+        );
+    }
+
+    #[test]
+    fn ctrl_d_deletes_forward_and_does_not_cancel() {
+        // Ctrl+D is readline delete-forward now, not a cancel chord.
+        let mut app = app_with(DIFF);
+        open_composer(&mut app);
+        app.on_key_compose(KeyCode::Char('a'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Char('b'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Char('a'), KeyModifiers::CONTROL); // to start
+        app.on_key_compose(KeyCode::Char('d'), KeyModifiers::CONTROL); // delete 'a'
+        assert!(app.composer.is_some(), "Ctrl+D must not cancel");
+        assert_eq!(composer_text(&app), "b");
+    }
+
     #[test]
     fn composer_keeps_caret_visible_when_taller_than_viewport() {
         // Regression: typing a long comment scrolled the box's *top* into view
@@ -2966,7 +3045,10 @@ mod tests {
         app.on_key_compose(KeyCode::Char('b'), KeyModifiers::NONE);
         // A bare Enter must NOT submit — the composer stays open with a newline.
         assert!(app.composer.is_some(), "bare Enter should not submit");
-        assert_eq!(app.composer.as_ref().unwrap().buf, "a\nb");
+        assert_eq!(
+            app.composer.as_ref().unwrap().textarea.lines().join("\n"),
+            "a\nb"
+        );
     }
 
     #[test]
@@ -3009,6 +3091,9 @@ mod tests {
         app.on_key_compose(KeyCode::Char('x'), KeyModifiers::NONE);
         app.on_key_compose(KeyCode::Enter, KeyModifiers::SHIFT);
         assert!(app.composer.is_some(), "Shift+Enter must not submit");
-        assert_eq!(app.composer.as_ref().unwrap().buf, "x\n");
+        assert_eq!(
+            app.composer.as_ref().unwrap().textarea.lines().join("\n"),
+            "x\n"
+        );
     }
 }
