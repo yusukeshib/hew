@@ -26,8 +26,34 @@ type FileCache = HashMap<String, LineRuns>;
 /// eviction a single outer-key removal.
 type SharedCache = Arc<Mutex<HashMap<usize, FileCache>>>;
 
-/// How many files' worth of highlights to keep cached at once.
-const KEEP_FILES: usize = 3;
+/// How many files on each side of the focused file to pre-highlight in the
+/// background, so jumping to an adjacent file hits a warm cache instead of
+/// paying syntect's per-line parse on the first frame after the switch.
+const PREFETCH_RADIUS: usize = 2;
+
+/// How many files' worth of highlights to keep cached at once. Sized to hold
+/// the focused file plus the full prefetch window on both sides, so neighbor
+/// prefetches aren't immediately evicted.
+const KEEP_FILES: usize = 2 * PREFETCH_RADIUS + 1;
+
+/// Build the prefetch order for a focused file: the focused file first (it's
+/// what the render thread needs now), then alternating nearer neighbors
+/// outward (`+1, -1, +2, -2, …`) so the most likely next jump warms soonest.
+fn prefetch_order(focus: usize, n: usize) -> Vec<usize> {
+    let mut order = Vec::with_capacity(KEEP_FILES);
+    if focus < n {
+        order.push(focus);
+    }
+    for d in 1..=PREFETCH_RADIUS {
+        if focus + d < n {
+            order.push(focus + d);
+        }
+        if focus >= d && focus - d < n {
+            order.push(focus - d);
+        }
+    }
+    order
+}
 
 /// Lock the highlight cache, recovering from a poisoned mutex instead of
 /// panicking. The cached data is just colorized spans — a worker panic mid-
@@ -44,18 +70,23 @@ fn lock_cache(
 /// viewport so scrolling hits warm entries instead of paying syntect's per-
 /// line parse cost mid-scroll.
 ///
-/// Jobs are just file indices: collecting/sanitizing the lines happens here,
+/// Jobs are focus file indices: collecting/sanitizing the lines happens here,
 /// off the render thread. The worker always tracks the freshest job — if the
 /// user switches files while one is still warming, the newer request preempts
 /// the current one so we never burn cycles highlighting a file nobody views.
+///
+/// For each focus it warms the file itself first, then its neighbors (see
+/// [`prefetch_order`]), so the common next/prev-file jump lands on an already
+/// highlighted file and renders its first frame from cache.
 fn spawn_warm_worker(cache: SharedCache, changeset: Arc<Changeset>) -> Sender<usize> {
     let (tx, rx) = mpsc::channel::<usize>();
+    let n = changeset.files.len();
     std::thread::spawn(move || {
         let hl = Highlighter::new();
         let mut pending: Option<usize> = None;
-        loop {
-            // Take the freshest queued job (collapsing any backlog).
-            let mut file_idx = match pending.take() {
+        'jobs: loop {
+            // Take the freshest queued focus (collapsing any backlog).
+            let mut focus = match pending.take() {
                 Some(i) => i,
                 None => match rx.recv() {
                     Ok(i) => i,
@@ -63,38 +94,42 @@ fn spawn_warm_worker(cache: SharedCache, changeset: Arc<Changeset>) -> Sender<us
                 },
             };
             while let Ok(newer) = rx.try_recv() {
-                file_idx = newer;
+                focus = newer;
             }
-            let Some(file) = changeset.files.get(file_idx) else {
-                continue;
-            };
-            let syntax = hl.syntax_for(file.display_path());
-            'lines: for line in file.hunks.iter().flat_map(|h| h.lines.iter()) {
-                // A newer job means this file is stale: stash and restart.
-                match rx.try_recv() {
-                    Ok(newer) => {
-                        pending = Some(newer);
-                        break 'lines;
-                    }
-                    Err(mpsc::TryRecvError::Disconnected) => return,
-                    Err(mpsc::TryRecvError::Empty) => {}
-                }
-                let text = sanitize_line(&line.text);
-                if lock_cache(&cache)
-                    .get(&file_idx)
-                    .is_some_and(|m| m.contains_key(&text))
-                {
+            // Warm the focused file, then prefetch neighbors outward. A newer
+            // focus preempts at any point (between lines or files).
+            for file_idx in prefetch_order(focus, n) {
+                let Some(file) = changeset.files.get(file_idx) else {
                     continue;
+                };
+                let syntax = hl.syntax_for(file.display_path());
+                for line in file.hunks.iter().flat_map(|h| h.lines.iter()) {
+                    // A newer job means this work is stale: stash and restart.
+                    match rx.try_recv() {
+                        Ok(newer) => {
+                            pending = Some(newer);
+                            continue 'jobs;
+                        }
+                        Err(mpsc::TryRecvError::Disconnected) => return,
+                        Err(mpsc::TryRecvError::Empty) => {}
+                    }
+                    let text = sanitize_line(&line.text);
+                    if lock_cache(&cache)
+                        .get(&file_idx)
+                        .is_some_and(|m| m.contains_key(&text))
+                    {
+                        continue;
+                    }
+                    // Highlight outside the lock (it's the expensive part),
+                    // then insert without clobbering an entry the render thread
+                    // may have added in the meantime.
+                    let runs = Arc::new(hl.line(syntax, &text));
+                    lock_cache(&cache)
+                        .entry(file_idx)
+                        .or_default()
+                        .entry(text)
+                        .or_insert(runs);
                 }
-                // Highlight outside the lock (it's the expensive part), then
-                // insert without clobbering an entry the render thread may have
-                // added in the meantime.
-                let runs = Arc::new(hl.line(syntax, &text));
-                lock_cache(&cache)
-                    .entry(file_idx)
-                    .or_default()
-                    .entry(text)
-                    .or_insert(runs);
             }
         }
     });
@@ -112,9 +147,6 @@ pub struct HighlightCache {
     /// Last file we asked the worker to pre-highlight (so we only enqueue on
     /// change, not every frame).
     warmed_file: Option<usize>,
-    /// Most-recently-viewed files (most recent last), used to bound the cache:
-    /// entries for files outside this window are evicted.
-    warmed_recent: Vec<usize>,
 }
 
 impl HighlightCache {
@@ -127,7 +159,6 @@ impl HighlightCache {
             cache,
             tx,
             warmed_file: None,
-            warmed_recent: Vec::new(),
         }
     }
 
@@ -170,22 +201,20 @@ impl HighlightCache {
             return;
         }
         self.warmed_file = Some(file_idx);
-        self.touch_recent(file_idx);
+        self.evict_outside_prefetch_window(file_idx);
         // If the worker has gone away the render path still highlights lazily.
         let _ = self.tx.send(file_idx);
     }
 
-    /// Record `file_idx` as most-recently-viewed and evict cached highlights
-    /// for files that have fallen outside the retained window, so the shared
-    /// cache stays bounded regardless of how many files are visited.
-    fn touch_recent(&mut self, file_idx: usize) {
-        self.warmed_recent.retain(|&f| f != file_idx);
-        self.warmed_recent.push(file_idx);
-        if self.warmed_recent.len() > KEEP_FILES {
-            self.warmed_recent.remove(0);
-            let keep = self.warmed_recent.clone();
-            lock_cache(&self.cache).retain(|fi, _| keep.contains(fi));
-        }
+    /// Evict cached highlights for files outside the current prefetch window,
+    /// so the shared cache stays bounded as the user moves through the
+    /// changeset. The retained set mirrors exactly what the worker warms for
+    /// `file_idx` (the focused file plus its neighbors), so prefetched
+    /// neighbors survive instead of being evicted right after the worker fills
+    /// them.
+    fn evict_outside_prefetch_window(&mut self, file_idx: usize) {
+        let keep = prefetch_order(file_idx, self.changeset.files.len());
+        lock_cache(&self.cache).retain(|fi, _| keep.contains(fi));
     }
 }
 
@@ -243,7 +272,18 @@ mod tests {
     }
 
     #[test]
-    fn touch_recent_bounds_the_cache() {
+    fn prefetch_order_is_focus_then_outward_neighbors() {
+        // Interior file: focus first, then +1, -1, +2, -2 within bounds.
+        assert_eq!(prefetch_order(5, 10), vec![5, 6, 4, 7, 3]);
+        // Clamped at the edges: out-of-range neighbors are dropped.
+        assert_eq!(prefetch_order(0, 10), vec![0, 1, 2]);
+        assert_eq!(prefetch_order(9, 10), vec![9, 8, 7]);
+        // Out-of-range focus yields nothing.
+        assert!(prefetch_order(9, 0).is_empty());
+    }
+
+    #[test]
+    fn cache_is_bounded_by_prefetch_window() {
         let mut hc = HighlightCache::new(cs(10));
         // Populate + mark many files as viewed; only KEEP_FILES survive.
         for fi in 0..10 {
