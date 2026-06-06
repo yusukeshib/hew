@@ -156,7 +156,7 @@ fn composer_lines(spec: &ComposerSpec, width: usize) -> Vec<ComposerLine> {
                 kind: ComposerKind::Body(String::new()),
             });
         } else {
-            for wl in wrap_text(&s, width) {
+            for wl in wrap_preserve(&s, width) {
                 out.push(ComposerLine {
                     kind: ComposerKind::Body(wl),
                 });
@@ -239,6 +239,54 @@ fn wrap_text(s: &str, width: usize) -> Vec<String> {
     };
     for word in s.split_whitespace() {
         push_word(word, &mut out, &mut line, &mut w);
+    }
+    out.push(line);
+    out
+}
+
+/// Width-wrap that preserves every character verbatim — including runs of
+/// spaces and leading/trailing whitespace. Used by the comment composer, which
+/// is a live text buffer: unlike `wrap_text` (a display formatter that collapses
+/// whitespace via `split_whitespace`), the editor must render exactly what the
+/// user typed. Breaks greedily at the display-width boundary, preferring the
+/// last space on the line so words don't split mid-token when avoidable.
+fn wrap_preserve(s: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    let mut line = String::new();
+    let mut w = 0usize;
+    for ch in s.chars() {
+        let cw = char_width(ch);
+        if w + cw > width && !line.is_empty() {
+            // Try to break at the last space so a word isn't split needlessly.
+            if ch != ' ' {
+                if let Some(brk) = line.rfind(' ') {
+                    // Don't break on a trailing run of spaces (brk at end).
+                    let tail: String = line[brk + 1..].to_string();
+                    if !tail.is_empty() {
+                        // Keep the break space on the first visual line so no
+                        // character is dropped — this is a live edit buffer, and
+                        // the rendered text (and caret position) must match the
+                        // buffer verbatim.
+                        line.truncate(brk + 1);
+                        out.push(std::mem::take(&mut line));
+                        line = tail;
+                        w = str_width(&line);
+                    } else {
+                        out.push(std::mem::take(&mut line));
+                        w = 0;
+                    }
+                } else {
+                    out.push(std::mem::take(&mut line));
+                    w = 0;
+                }
+            } else {
+                out.push(std::mem::take(&mut line));
+                w = 0;
+            }
+        }
+        line.push(ch);
+        w += cw;
     }
     out.push(line);
     out
@@ -1080,6 +1128,31 @@ mod tests {
         let lines = wrap_text("日本", 1);
         assert_eq!(lines, vec!["日".to_string(), "本".to_string()]);
         assert!(lines.iter().all(|l| !l.is_empty()));
+    }
+
+    #[test]
+    fn wrap_preserve_keeps_runs_of_spaces() {
+        // Regression: the composer is a live buffer, so consecutive spaces must
+        // survive verbatim (wrap_text collapses them via split_whitespace).
+        let lines = wrap_preserve("a    b", 80);
+        assert_eq!(lines, vec!["a    b".to_string()]);
+    }
+
+    #[test]
+    fn wrap_preserve_breaks_at_word_boundary() {
+        // Greedy break prefers the last space so a word isn't split mid-token.
+        // The break space stays on the first line so the buffer is preserved
+        // verbatim (concatenating the visual lines reproduces the input).
+        let lines = wrap_preserve("hello world", 7);
+        assert_eq!(lines, vec!["hello ".to_string(), "world".to_string()]);
+        assert_eq!(lines.concat(), "hello world");
+    }
+
+    #[test]
+    fn wrap_preserve_hard_splits_an_overlong_token() {
+        // A token longer than the width has no space to break on, so it is split.
+        let lines = wrap_preserve("abcdef", 3);
+        assert_eq!(lines, vec!["abc".to_string(), "def".to_string()]);
     }
 
     #[test]
