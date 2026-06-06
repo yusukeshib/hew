@@ -132,7 +132,7 @@ pub fn run(changeset: Changeset, comments: CommentStore) -> Result<CommentStore>
     // truecolor terminals keep the authored 24-bit palette; everything else
     // (including tmux without truecolor passthrough) gets a 256-color
     // downsample so colors degrade gracefully instead of being mangled.
-    theme::init_theme(detect_truecolor());
+    theme::init_theme(&highlight::default_theme(), detect_truecolor());
 
     // The patch usually arrives on stdin (`git diff | hew`), which leaves fd 0
     // wired to a pipe rather than a terminal. Reconnect it to the controlling
