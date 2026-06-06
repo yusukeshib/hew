@@ -56,11 +56,13 @@ and only ones you add in the session (e.g. a reply you wrote) — never a whole
 input thread. So the log never contains a delete action (an in-session add and
 delete simply cancel to nothing); deleting a thread's last comment just drops it.
 
-> **Replay needs stable thread ids.** Actions reference threads by `id`. For the
-> log to be replayable against `base.json`, that base must carry stable `id`
-> values (a producer like a GitHub bridge writes them). A handwritten sidecar
-> that omits `id` gets fresh random ids at load, so its `resolve`/`reply`
-> actions won't match the on-disk base — fine for ad-hoc viewing, not for replay.
+> **`id` is an opaque string, kept verbatim.** Threads and comments carry an
+> `id` that is any string — a UUID, or a foreign id such as a GitHub comment id.
+> hew preserves it exactly as written, so the action log references the same ids
+> as `base.json` and is replayable (a producer like a GitHub bridge can use real
+> GitHub ids directly). A handwritten sidecar that omits `id` gets a fresh id at
+> load, so its `resolve`/`reply` actions won't match the on-disk base — fine for
+> ad-hoc viewing, not for replay.
 
 ### Options
 
@@ -169,11 +171,11 @@ emitted:
 
 ```json
 [
-  { "action": "add_comment", "thread_id": "<uuid>", "file": "src/main.rs",
+  { "action": "add_comment", "thread_id": "<id>", "file": "src/main.rs",
     "side": "new", "start_line": 18, "line": 22, "body": "This arm is unreachable.", "author": "you" },
-  { "action": "reply",     "thread_id": "<uuid>", "body": "Good catch.", "author": "you" },
-  { "action": "resolve",   "thread_id": "<uuid>" },
-  { "action": "unresolve", "thread_id": "<uuid>" }
+  { "action": "reply",     "thread_id": "<id>", "body": "Good catch.", "author": "you" },
+  { "action": "resolve",   "thread_id": "<id>" },
+  { "action": "unresolve", "thread_id": "<id>" }
 ]
 ```
 
@@ -182,8 +184,9 @@ emitted:
   multi-line range and omitted for a single line (matching GitHub's
   `start_line`/`line` review-comment shape). Its `thread_id` is reused by any
   `reply` to the same thread within the log.
-- `reply` / `resolve` / `unresolve` reference an existing thread by `thread_id`
-  (a base thread, or one `add_comment`-ed earlier in the same log).
+- `reply` / `resolve` / `unresolve` reference an existing thread by `thread_id`,
+  an opaque string echoing the base `id` verbatim (a base thread, or one
+  `add_comment`-ed earlier in the same log).
 - `author` is omitted when unset.
 - An untouched session prints `[]`.
 - There is no `delete` action: input threads can't be deleted, and an in-session
