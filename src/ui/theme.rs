@@ -70,34 +70,33 @@ pub struct Theme {
 /// focused cursor line, authored in truecolor. Resolved per-terminal by
 /// [`init_theme`]; read the resolved palette via [`theme()`].
 static MASTER: Theme = Theme {
-    // Dracula palette (https://draculatheme.com): bg #282a36, current-line
-    // #44475a, fg #f8f8f2, comment #6272a4, cyan #8be9fd, green #50fa7b, orange
-    // #ffb86c, purple #bd93f9, red #ff5555.
-    bg: Color::Rgb(40, 42, 54),
+    // TokyoNight (Night) palette (https://github.com/folke/tokyonight.nvim):
+    // bg #1a1b26, bg_highlight #292e42, fg #c0caf5, comment #565f89, blue
+    // #7aa2f7, cyan #7dcfff, green #9ece6a, red #f7768e, yellow #e0af68.
+    bg: Color::Rgb(26, 27, 38),
 
-    add_bg: Color::Rgb(34, 52, 43),
-    del_bg: Color::Rgb(63, 42, 49),
-    // Focused current line: a brighter blue-grey selection so the cursor row
-    // clearly stands out from the #282a36 bg. Unfocused uses Dracula's subtler
-    // current-line #44475a.
-    cursor_bg: Color::Rgb(92, 99, 140),
-    unfocus_bg: Color::Rgb(68, 71, 90),
-    file_header_bg: Color::Rgb(54, 57, 73),
-    comment_bg: Color::Rgb(45, 47, 61),
+    add_bg: Color::Rgb(32, 44, 38),
+    del_bg: Color::Rgb(55, 32, 42),
+    // Focused current line: a brighter blue selection so the cursor row clearly
+    // stands out from the #1a1b26 bg. Unfocused uses the subtler bg_highlight.
+    cursor_bg: Color::Rgb(54, 74, 124),
+    unfocus_bg: Color::Rgb(41, 46, 66),
+    file_header_bg: Color::Rgb(41, 46, 66),
+    comment_bg: Color::Rgb(31, 35, 53),
 
-    subtle: Color::Rgb(54, 57, 73),
-    scrollbar_thumb: Color::Rgb(98, 114, 164),
-    border_focus: Color::Rgb(189, 147, 249),
-    border_unfocus: Color::Rgb(98, 114, 164),
+    subtle: Color::Rgb(41, 46, 66),
+    scrollbar_thumb: Color::Rgb(86, 95, 137),
+    border_focus: Color::Rgb(122, 162, 247),
+    border_unfocus: Color::Rgb(86, 95, 137),
 
-    text: Color::Rgb(248, 248, 242),
-    text_strong: Color::Rgb(255, 255, 255),
-    muted: Color::Rgb(98, 114, 164),
-    faint: Color::Rgb(130, 142, 184),
-    accent: Color::Rgb(139, 233, 253),
-    warn: Color::Rgb(255, 184, 108),
-    added: Color::Rgb(80, 250, 123),
-    removed: Color::Rgb(255, 85, 85),
+    text: Color::Rgb(169, 177, 214),
+    text_strong: Color::Rgb(192, 202, 245),
+    muted: Color::Rgb(86, 95, 137),
+    faint: Color::Rgb(115, 122, 162),
+    accent: Color::Rgb(125, 207, 255),
+    warn: Color::Rgb(224, 175, 104),
+    added: Color::Rgb(158, 206, 106),
+    removed: Color::Rgb(247, 118, 142),
     none: Color::Reset,
 };
 

@@ -112,8 +112,8 @@ Unified stacks `-`/`+` lines; split shows old on the left and new on the right
 (like `git delta --side-by-side`), pairing changed lines across a divider.
 Toggling keeps the cursor on the same line.
 
-The UI uses a Dracula palette (chrome, background, and — via two-face — the
-syntax highlighting), authored in 24-bit truecolor. hew checks `COLORTERM` and,
+The UI uses a TokyoNight (Night) palette (chrome, background, and the syntax
+highlighting), authored in 24-bit truecolor. hew checks `COLORTERM` and,
 on a non-truecolor terminal (including tmux without truecolor passthrough), it
 automatically downsamples to the nearest xterm-256 colors so the look degrades
 gracefully. For the best fidelity, enable truecolor — e.g. in tmux:
@@ -214,7 +214,7 @@ integration, no patch apply/edit/merge, no structural (AST) diff, and no "save"
 — its inputs (the patch and the `--comments` base) are immutable, and it emits a
 compacted action log to stdout on exit. It offers unified and split layouts,
 in-app authoring (compose/reply/resolve/delete), syntax highlighting (syntect +
-two-face's bat syntax set for broad language coverage, Dracula theme,
+two-face's bat syntax set for broad language coverage, TokyoNight (Night) theme,
 pure-Rust fancy-regex), and sidecar comment threads.
 
 Because hew is a pure filter with a documented JSON contract (see *Comment
