@@ -920,20 +920,11 @@ impl App {
             ComposeTarget::NewThread {
                 file_idx,
                 side,
-                start,
+                start: _,
                 end,
             } => {
-                let path = self
-                    .changeset
-                    .files
-                    .get(*file_idx)
-                    .map(|f| f.display_path())
-                    .unwrap_or("?");
-                let title = if start == end {
-                    format!(" new comment — {path}:{start} ")
-                } else {
-                    format!(" new comment — {path}:{start}-{end} ")
-                };
+                // The box renders right under the selected line(s), so the
+                // file/range is obvious from context — keep the title bare.
                 (
                     ComposerAnchor::NewThread {
                         file_idx: *file_idx,
@@ -943,7 +934,7 @@ impl App {
                         // thread box renders (see `last_anchor_lines`).
                         line: *end,
                     },
-                    title,
+                    " new comment ".into(),
                 )
             }
             ComposeTarget::Reply { thread_id } => (
