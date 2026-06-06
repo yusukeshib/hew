@@ -1127,6 +1127,28 @@ mod tests {
     }
 
     #[test]
+    fn wrap_preserve_keeps_runs_of_spaces() {
+        // Regression: the composer is a live buffer, so consecutive spaces must
+        // survive verbatim (wrap_text collapses them via split_whitespace).
+        let lines = wrap_preserve("a    b", 80);
+        assert_eq!(lines, vec!["a    b".to_string()]);
+    }
+
+    #[test]
+    fn wrap_preserve_breaks_at_word_boundary() {
+        // Greedy break prefers the last space so a word isn't split mid-token.
+        let lines = wrap_preserve("hello world", 7);
+        assert_eq!(lines, vec!["hello".to_string(), "world".to_string()]);
+    }
+
+    #[test]
+    fn wrap_preserve_hard_splits_an_overlong_token() {
+        // A token longer than the width has no space to break on, so it is split.
+        let lines = wrap_preserve("abcdef", 3);
+        assert_eq!(lines, vec!["abc".to_string(), "def".to_string()]);
+    }
+
+    #[test]
     fn injects_inline_thread_rows() {
         let cs = load_patch(Some(Path::new("examples/rust-long-en.patch"))).unwrap();
         let comments = load_comments(Path::new("examples/rust-long-en.comments.json")).unwrap();
