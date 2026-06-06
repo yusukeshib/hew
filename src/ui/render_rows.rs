@@ -264,7 +264,11 @@ fn wrap_preserve(s: &str, width: usize) -> Vec<String> {
                     // Don't break on a trailing run of spaces (brk at end).
                     let tail: String = line[brk + 1..].to_string();
                     if !tail.is_empty() {
-                        line.truncate(brk);
+                        // Keep the break space on the first visual line so no
+                        // character is dropped — this is a live edit buffer, and
+                        // the rendered text (and caret position) must match the
+                        // buffer verbatim.
+                        line.truncate(brk + 1);
                         out.push(std::mem::take(&mut line));
                         line = tail;
                         w = str_width(&line);
@@ -1137,8 +1141,11 @@ mod tests {
     #[test]
     fn wrap_preserve_breaks_at_word_boundary() {
         // Greedy break prefers the last space so a word isn't split mid-token.
+        // The break space stays on the first line so the buffer is preserved
+        // verbatim (concatenating the visual lines reproduces the input).
         let lines = wrap_preserve("hello world", 7);
-        assert_eq!(lines, vec!["hello".to_string(), "world".to_string()]);
+        assert_eq!(lines, vec!["hello ".to_string(), "world".to_string()]);
+        assert_eq!(lines.concat(), "hello world");
     }
 
     #[test]

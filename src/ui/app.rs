@@ -2898,15 +2898,25 @@ impl App {
                     let mut chars = after.chars();
                     let under = chars.next();
                     let tail: String = chars.collect();
-                    let cursor_cell = under.map(|c| c.to_string()).unwrap_or_else(|| " ".into());
-                    let body = format!(" {pre}");
-                    let used = str_width(&body) + str_width(&cursor_cell) + str_width(&tail);
-                    spans.push(Span::styled(body, text_style));
+                    let mut cursor_cell =
+                        under.map(|c| c.to_string()).unwrap_or_else(|| " ".into());
+                    // Lay out exactly `inner_w` cells, honoring the same
+                    // pad/truncate contract as `fit`: reserve the cursor cell
+                    // first (so the caret is never the thing that gets clipped),
+                    // then fit the lead text and tail around it. A wide cursor
+                    // glyph wider than the whole box degrades to a space.
+                    if str_width(&cursor_cell) > inner_w {
+                        cursor_cell = " ".into();
+                    }
+                    let cursor_w = str_width(&cursor_cell);
+                    let (lead, lead_w) = take_width(&format!(" {pre}"), inner_w - cursor_w);
+                    let (tail, tail_w) = take_width(&tail, inner_w - lead_w - cursor_w);
+                    let pad = inner_w - lead_w - cursor_w - tail_w;
+                    spans.push(Span::styled(lead, text_style));
                     spans.push(Span::styled(
                         cursor_cell,
                         text_style.add_modifier(Modifier::REVERSED),
                     ));
-                    let pad = inner_w.saturating_sub(used);
                     spans.push(Span::styled(
                         format!("{tail}{}", " ".repeat(pad)),
                         text_style,
@@ -3531,6 +3541,23 @@ mod tests {
             spec.body,
             format!("{COMPOSER_CARET}ab"),
             "caret renders at the cursor, not the end"
+        );
+    }
+
+    #[test]
+    fn composer_body_overlay_fills_exactly_the_inner_width() {
+        // Regression: the caret-overlay path must honor the same width contract
+        // as `fit` — a body longer than the box is truncated, never overflowed.
+        let app = app_with(DIFF);
+        let width = 12; // inner_w = width - margin(2) - borders(2) = 8
+        let cl = ComposerLine {
+            kind: ComposerKind::Body(format!("{COMPOSER_CARET}abcdefghijklmnopqrstuvwxyz")),
+        };
+        let line = app.composer_line_to_line(&cl, width);
+        let total: usize = line.spans.iter().map(|s| str_width(&s.content)).sum();
+        assert_eq!(
+            total, width,
+            "composer body line must fill exactly the row width, even when truncated"
         );
     }
 
