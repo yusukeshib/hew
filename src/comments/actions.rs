@@ -45,8 +45,6 @@ pub enum Action {
     Resolve { thread_id: Uuid },
     /// Marked a thread unresolved.
     Unresolve { thread_id: Uuid },
-    /// Removed a thread that existed in the base.
-    Delete { thread_id: Uuid },
 }
 
 /// Emit the actions for a thread that is new relative to the base.
@@ -82,12 +80,15 @@ fn added_thread_actions(t: &Thread, out: &mut Vec<Action>) {
 /// external consumer against the base file**, that base must carry stable thread
 /// ids: actions reference the ids hew saw at load. A base sidecar that omits
 /// `id` gets fresh random ids at load time (see `model`'s serde defaults), so
-/// its `resolve`/`reply`/`delete` actions won't match anything in the on-disk
-/// base. Producers that care about replay (e.g. a GitHub bridge) must write
-/// stable ids; ad-hoc viewing without replay is unaffected.
+/// its `resolve`/`reply` actions won't match anything in the on-disk base.
+/// Producers that care about replay (e.g. a GitHub bridge) must write stable
+/// ids; ad-hoc viewing without replay is unaffected.
+///
+/// Note there is no delete action: base threads are immutable in the UI (only
+/// in-session threads can be removed, and those cancel out of the diff), so a
+/// base thread is never absent from `cur`.
 pub fn diff(base: &CommentStore, cur: &CommentStore) -> Vec<Action> {
     let base_by_id: HashMap<Uuid, &Thread> = base.threads.iter().map(|t| (t.id, t)).collect();
-    let cur_ids: HashSet<Uuid> = cur.threads.iter().map(|t| t.id).collect();
     let mut out = Vec::new();
 
     for t in &cur.threads {
@@ -113,11 +114,6 @@ pub fn diff(base: &CommentStore, cur: &CommentStore) -> Vec<Action> {
                 }
             }
         }
-    }
-
-    // Threads present in the base but gone from the final state.
-    for t in base.threads.iter().filter(|t| !cur_ids.contains(&t.id)) {
-        out.push(Action::Delete { thread_id: t.id });
     }
 
     out
@@ -217,21 +213,6 @@ mod tests {
         cur.toggle_resolved(id);
         let actions = diff(&base, &cur);
         assert_eq!(actions, vec![Action::Resolve { thread_id: id }]);
-    }
-
-    #[test]
-    fn delete_base_thread() {
-        let mut base = store();
-        let id = base.add_thread(
-            "a.rs".into(),
-            Side::New,
-            LineRange { start: 3, end: 3 },
-            None,
-            "x".into(),
-        );
-        let mut cur = base.clone();
-        cur.remove_thread(id);
-        assert_eq!(diff(&base, &cur), vec![Action::Delete { thread_id: id }]);
     }
 
     #[test]

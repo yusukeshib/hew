@@ -47,15 +47,18 @@ git diff | hew --comments base.json > actions.json
 ```
 
 The log is the minimal set of actions (`add_comment`, `reply`, `resolve`,
-`unresolve`, `delete`) that turn `base.json` into the reviewed state; a thread
-created then deleted, or a resolve toggled back, cancels out. An untouched
-session prints `[]`. A consumer (e.g. a GitHub bridge) replays the log against
-the same base.
+`unresolve`) that turn `base.json` into the reviewed state; a thread created then
+deleted, or a resolve toggled back, cancels out. An untouched session prints
+`[]`. A consumer (e.g. a GitHub bridge) replays the log against the same base.
+
+Threads loaded from `base.json` are immutable: `D` only deletes threads you add
+in the session, so the log never contains a delete action (an in-session add and
+delete simply cancel to nothing).
 
 > **Replay needs stable thread ids.** Actions reference threads by `id`. For the
 > log to be replayable against `base.json`, that base must carry stable `id`
 > values (a producer like a GitHub bridge writes them). A handwritten sidecar
-> that omits `id` gets fresh random ids at load, so its `resolve`/`reply`/`delete`
+> that omits `id` gets fresh random ids at load, so its `resolve`/`reply`
 > actions won't match the on-disk base — fine for ad-hoc viewing, not for replay.
 
 ### Options
@@ -80,7 +83,7 @@ the same base.
 | `i` | Write a new comment on the current line (or the visual/drag selection) |
 | `r` | Reply to the thread on the current line |
 | `R` | Resolve / unresolve the thread on the current line |
-| `D` | Delete the thread on the current line |
+| `D` | Delete the thread on the current line (only threads you added this session; input threads are immutable) |
 | `←` / `→` | Focus the file list / the diff pane |
 | `Ctrl-B` | Toggle the file list sidebar |
 | `Tab` / `s` | Toggle unified ↔ split (side-by-side) layout |
@@ -160,8 +163,7 @@ emitted:
     "side": "new", "start_line": 18, "line": 22, "body": "This arm is unreachable.", "author": "you" },
   { "action": "reply",     "thread_id": "<uuid>", "body": "Good catch.", "author": "you" },
   { "action": "resolve",   "thread_id": "<uuid>" },
-  { "action": "unresolve", "thread_id": "<uuid>" },
-  { "action": "delete",    "thread_id": "<uuid>" }
+  { "action": "unresolve", "thread_id": "<uuid>" }
 ]
 ```
 
@@ -170,11 +172,12 @@ emitted:
   multi-line range and omitted for a single line (matching GitHub's
   `start_line`/`line` review-comment shape). Its `thread_id` is reused by any
   `reply` to the same thread within the log.
-- `reply` / `resolve` / `unresolve` / `delete` reference an existing thread by
-  `thread_id` (a base thread, or one `add_comment`-ed earlier in the same log).
+- `reply` / `resolve` / `unresolve` reference an existing thread by `thread_id`
+  (a base thread, or one `add_comment`-ed earlier in the same log).
 - `author` is omitted when unset.
 - An untouched session prints `[]`.
-- Compaction is automatic: add-then-delete and resolve-then-unresolve cancel.
+- There is no `delete` action: input threads can't be deleted, and an in-session
+  add-then-delete cancels out. Resolve-then-unresolve cancels too.
 
 There is **no GitHub-specific code in hew** — the binary only speaks this JSON.
 The "bridge" to GitHub is whoever consumes the log: an agent that knows this
@@ -182,7 +185,7 @@ schema can read `gh api` PR threads into a base sidecar and replay the action
 log back through `gh`, with no wrapper binary required. Thin, convenience-only
 examples of both directions ship in `examples/`: `fetch_pr.sh` prepares the base
 sidecar from a PR, and `apply_actions.sh` replays the log's `add_comment`s via
-`gh` (reply/resolve/delete need the consumer's `thread_id`→GitHub-id mapping).
+`gh` (reply/resolve need the consumer's `thread_id`→GitHub-id mapping).
 
 ## Examples
 
