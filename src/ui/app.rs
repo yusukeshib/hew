@@ -2815,7 +2815,7 @@ impl App {
                         true,
                     ),
                     CommentKind::Body(b) => (
-                        format!("   {b}"),
+                        format!(" {b}"),
                         if cl.resolved {
                             theme().muted
                         } else {
@@ -3396,7 +3396,7 @@ mod tests {
         // Worst case (scrollbar present) side column, as render computes it.
         let side_w = (inner as usize).saturating_sub(1 + SPLIT_DIVIDER.len()) / 2;
         let inner_w = side_w - 2; // borders
-        let indent = 3; // the "   " body indent
+        let indent = 3; // columns reserved for the body indent in comment_wrap
 
         // Every wrapped body fragment must fit the rendered half-column with its
         // indent — i.e. it is never clipped by `take_width`.
