@@ -175,8 +175,13 @@ impl Theme {
 
         let comment = scope("comment").unwrap_or_else(|| mix(bg, fg, 0.45));
         let accent = s.accent.map(rgb).or_else(|| scope("keyword")).unwrap_or(fg);
-        let warn = scope("string")
-            .or_else(|| scope("constant.numeric"))
+        // A warm amber for "needs attention" chrome (modified-file marker, open
+        // comment dot, comment author). Prefer a numeric/constant scope over
+        // `string`: many vivid themes color strings green, which would collide
+        // with the green `added` marker and leave file statuses A/M
+        // indistinguishable. Fall back to string, then a fixed amber.
+        let warn = scope("constant.numeric")
+            .or_else(|| scope("string"))
             .unwrap_or((224, 175, 104));
         let added = scope("markup.inserted")
             .or_else(|| scope("diff.inserted"))
@@ -204,8 +209,8 @@ impl Theme {
         let t = |x: (u8, u8, u8)| Color::Rgb(x.0, x.1, x.2);
         Theme {
             bg: t(bg),
-            add_bg: t(mix(bg, added, 0.16)),
-            del_bg: t(mix(bg, removed, 0.16)),
+            add_bg: t(mix(bg, added, 0.22)),
+            del_bg: t(mix(bg, removed, 0.22)),
             cursor_bg: t(cursor_bg),
             unfocus_bg: t(mix(bg, fg, 0.10)),
             file_header_bg: t(mix(bg, fg, 0.12)),
@@ -213,11 +218,20 @@ impl Theme {
             subtle: t(mix(bg, fg, 0.12)),
             scrollbar_thumb: t(comment),
             border_focus: t(accent),
-            border_unfocus: t(comment),
+            // Unfocused borders sit well below the bright accent focus border so
+            // a selected comment box (or the focused diff panel) reads clearly
+            // against unselected ones: a dim neutral grey, not the lighter
+            // comment hue (which was too close to the accent at a glance).
+            border_unfocus: t(mix(bg, fg, 0.28)),
             text: t(mix(fg, bg, 0.12)),
             text_strong: t(fg),
-            muted: t(comment),
-            faint: t(mix(comment, fg, 0.25)),
+            // Secondary / "disabled" UI text (line numbers, status, dates) is a
+            // bg→fg blend, deliberately decoupled from the (often vividly
+            // colored) comment scope so it isn't tinted by the comment hue. It
+            // still carries whatever subtle tint bg/fg themselves have, which
+            // keeps it consistent with the rest of the chrome.
+            muted: t(mix(bg, fg, 0.45)),
+            faint: t(mix(bg, fg, 0.32)),
             accent: t(accent),
             warn: t(warn),
             added: t(added),

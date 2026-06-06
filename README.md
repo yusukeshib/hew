@@ -100,9 +100,9 @@ focus the sidebar with `←` and `j`/`k`/`g`/`G` move between files; `→` (or
 right (like `git delta --side-by-side`). Toggling keeps the cursor on the same
 line.
 
-The UI uses the **GitHub Dark High Contrast** theme. The whole palette — chrome
-and background — is *derived from the syntax theme*, so the look comes from one
-source. Colors are 24-bit truecolor; on a non-truecolor terminal (including tmux
+The UI uses **Hew Dark**, our own vivid, high-contrast palette over a deep
+navy-slate background. The whole palette — chrome and background — is *derived
+from the syntax theme*, so the look comes from one source. Colors are 24-bit truecolor; on a non-truecolor terminal (including tmux
 without RGB passthrough) hew downsamples to xterm-256 via `COLORTERM`. For best
 fidelity enable truecolor — e.g. in tmux: `set -ga terminal-features "*:RGB"`.
 

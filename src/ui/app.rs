@@ -1976,8 +1976,8 @@ impl App {
                     };
                     lines.push(Line::from(vec![
                         Span::styled(indent, wbg(Style::default())),
-                        Span::styled(arrow, wbg(Style::default().fg(theme().faint))),
-                        Span::styled(label, wbg(Style::default().fg(theme().faint))),
+                        Span::styled(arrow, wbg(Style::default().fg(theme().muted))),
+                        Span::styled(label, wbg(Style::default().fg(theme().muted))),
                     ]));
                 }
                 SbRow::File { idx: fi, depth } => {
