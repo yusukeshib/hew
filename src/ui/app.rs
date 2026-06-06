@@ -341,7 +341,7 @@ impl App {
             selected: 0,
             scroll: 0,
             height: 1,
-            status: "q quit  j/k move  i comment  r reply  R resolve  D delete".into(),
+            status: String::new(),
             needs_clear: false,
             show_sidebar: true,
             sidebar_width: SIDEBAR_WIDTH,
@@ -2004,12 +2004,46 @@ impl App {
             self.render_diff_scrollbar(f, diff_inner);
         }
 
-        // Status line.
+        // Footer: transient status on the left, a context key-hint legend on
+        // the right (so shortcuts like Tab are discoverable). Comment actions
+        // live on buttons now, so they're omitted from the legend.
+        let fw = chunks[1].width as usize;
+        let legend = self.footer_legend();
+        let sl = str_width(&self.status);
+        let ll = str_width(&legend);
+        let footer = if sl + ll + 2 <= fw {
+            Line::from(vec![
+                Span::styled(self.status.clone(), Style::default().fg(theme().muted)),
+                Span::raw(" ".repeat(fw - sl - ll)),
+                Span::styled(legend, Style::default().fg(theme().faint)),
+            ])
+        } else if sl > 0 {
+            // Not enough room for both: the transient status wins.
+            Line::from(Span::styled(
+                self.status.clone(),
+                Style::default().fg(theme().muted),
+            ))
+        } else {
+            Line::from(Span::styled(legend, Style::default().fg(theme().faint)))
+        };
         f.render_widget(
-            Paragraph::new(self.status.clone())
-                .style(Style::default().fg(theme().muted).bg(theme().bg)),
+            Paragraph::new(footer).style(Style::default().bg(theme().bg)),
             chunks[1],
         );
+    }
+
+    /// Context-aware key-hint legend shown on the right of the footer.
+    fn footer_legend(&self) -> String {
+        if self.composer.is_some() {
+            return "ctrl+s submit · esc cancel".into();
+        }
+        match self.effective_focus() {
+            Focus::Sidebar => "j/k move · enter open · h/l fold · tab view · q quit".into(),
+            Focus::Diff => {
+                "j/k move · v select · n/N comments · [/] files · tab view · y copy · esc back · q quit"
+                    .into()
+            }
+        }
     }
 
     fn render_diff(&self, f: &mut Frame, area: Rect) {
@@ -3714,12 +3748,31 @@ mod tests {
             "msg".into(),
         );
         let app = App::with_comments(cs, store);
-        let pos = |pred: &dyn Fn(&Row) -> bool| app.rows.iter().position(|r| pred(r)).unwrap();
-        let line4 = pos(&|r| matches!(&r.kind, RowKind::Line { new_line: Some(4), .. }));
-        let top = pos(&|r| {
-            matches!(&r.kind, RowKind::Comment(cl) if matches!(cl.kind, CommentKind::Top))
-        });
-        assert_eq!(top, line4 + 1, "box should immediately follow the last range line");
+        let line4 = app
+            .rows
+            .iter()
+            .position(|r| {
+                matches!(
+                    &r.kind,
+                    RowKind::Line {
+                        new_line: Some(4),
+                        ..
+                    }
+                )
+            })
+            .unwrap();
+        let top = app
+            .rows
+            .iter()
+            .position(
+                |r| matches!(&r.kind, RowKind::Comment(cl) if matches!(cl.kind, CommentKind::Top)),
+            )
+            .unwrap();
+        assert_eq!(
+            top,
+            line4 + 1,
+            "box should immediately follow the last range line"
+        );
     }
 
     #[test]
