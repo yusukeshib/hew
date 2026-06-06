@@ -265,12 +265,12 @@ mod tests {
     }
 
     #[test]
-    fn adapt_downsamples_rgb_fields_but_keeps_named() {
+    fn adapt_downsamples_rgb_fields_but_keeps_non_rgb() {
         let dark = MASTER.adapt(false);
         // Rgb fields become Indexed...
         assert!(matches!(dark.cursor_bg, Color::Indexed(_)));
         assert!(matches!(dark.removed, Color::Indexed(_)));
-        // ...while a non-Rgb color (Reset) is preserved.
+        // ...while a non-Rgb color (Reset) is passed through unchanged.
         assert_eq!(dark.none, Color::Reset);
         // Truecolor adapt is a faithful pass-through.
         let bright = MASTER.adapt(true);
