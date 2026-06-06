@@ -233,6 +233,8 @@ fn body_with_caret(ta: &TextArea<'static>) -> String {
 /// where the keyboard cursor currently sits.
 #[derive(Clone, Debug)]
 enum ButtonAction {
+    /// Start a new comment on the current diff-line selection (same as `i`).
+    AddComment,
     /// Submit the open composer (same as Ctrl+S).
     Submit,
     /// Cancel the open composer (same as Esc).
@@ -497,6 +499,7 @@ impl App {
     /// Run a clicked button's action.
     fn dispatch_button(&mut self, action: ButtonAction) {
         match action {
+            ButtonAction::AddComment => self.open_new_thread(),
             ButtonAction::Submit => self.submit_compose(),
             ButtonAction::Cancel => self.cancel_compose(),
             ButtonAction::Reply(tid) => self.open_reply_to(tid),
@@ -2194,6 +2197,18 @@ impl App {
                     let btns = self.composer_buttons();
                     self.action_row_line(&btns, theme().accent, area.x, y, width, 0, width)
                 }
+                RowKind::Line { .. } if self.show_add_button(idx) => {
+                    let base = self.row_to_line(row, selected, width).spans;
+                    self.append_right_button(
+                        base,
+                        width,
+                        "comment(i)",
+                        theme().accent,
+                        ButtonAction::AddComment,
+                        area.x,
+                        y,
+                    )
+                }
                 _ => self.row_to_line(row, selected, width),
             };
             lines.push(line);
@@ -2202,6 +2217,12 @@ impl App {
             Paragraph::new(lines).style(Style::default().bg(theme().bg)),
             area,
         );
+    }
+
+    /// Whether the floating `comment(i)` button should appear on row `idx`: the
+    /// diff pane is focused, no composer is open, and `idx` is the cursor line.
+    fn show_add_button(&self, idx: usize) -> bool {
+        self.composer.is_none() && self.effective_focus() == Focus::Diff && idx == self.selected
     }
 
     fn render_split(&self, f: &mut Frame, area: Rect) {
@@ -2244,6 +2265,18 @@ impl App {
                         side_w + dw
                     };
                     self.action_row_line(&btns, theme().accent, area.x, y, total, left, side_w)
+                }
+                SplitRowKind::Pair { .. } if self.show_add_button(idx) => {
+                    let base = self.split_row_to_line(row, selected, side_w, divider).spans;
+                    self.append_right_button(
+                        base,
+                        total,
+                        "comment(i)",
+                        theme().accent,
+                        ButtonAction::AddComment,
+                        area.x,
+                        y,
+                    )
                 }
                 _ => self.split_row_to_line(row, selected, side_w, divider),
             };
@@ -2576,6 +2609,68 @@ impl App {
             spans.push(Span::raw(" ".repeat(width - used)));
         }
         Line::from(spans)
+    }
+
+    /// Overlay a right-aligned button chip on an already-built diff line: clip
+    /// the line's content to leave room, then append ` label `. Used to float a
+    /// `comment(i)` button at the end of the focused diff line (GitHub-style).
+    /// Records the chip's screen rect (at `x0` + offset, row `y`) for clicks.
+    #[allow(clippy::too_many_arguments)]
+    fn append_right_button(
+        &self,
+        spans: Vec<Span<'static>>,
+        width: usize,
+        label: &str,
+        color: Color,
+        action: ButtonAction,
+        x0: u16,
+        y: u16,
+    ) -> Line<'static> {
+        let chip = format!(" {label} ");
+        let cw = str_width(&chip);
+        if width <= cw {
+            return Line::from(spans);
+        }
+        let keep = width - cw;
+        // Clip the existing spans to `keep` display cells (preserving styles,
+        // so the line's selection tint carries up to the button).
+        let mut out: Vec<Span<'static>> = Vec::new();
+        let mut acc = 0usize;
+        for s in spans {
+            if acc >= keep {
+                break;
+            }
+            let sw = str_width(&s.content);
+            if acc + sw <= keep {
+                acc += sw;
+                out.push(s);
+            } else {
+                let (t, tw) = take_width(&s.content, keep - acc);
+                out.push(Span::styled(t, s.style));
+                acc += tw;
+                break;
+            }
+        }
+        if acc < keep {
+            out.push(Span::raw(" ".repeat(keep - acc)));
+        }
+        self.button_hits.borrow_mut().push((
+            Rect {
+                x: x0 + keep as u16,
+                y,
+                width: cw as u16,
+                height: 1,
+            },
+            action,
+        ));
+        out.push(Span::styled(
+            chip,
+            Style::default()
+                .bg(theme().subtle)
+                .fg(color)
+                .add_modifier(Modifier::BOLD),
+        ));
+        Line::from(out)
     }
 
     /// Render one inline comment line as part of a rounded box spanning `width`
@@ -3594,6 +3689,26 @@ mod tests {
         assert_ne!(
             before, app.comments.threads[0].resolved,
             "clicking resolve toggles the thread"
+        );
+    }
+
+    #[test]
+    fn cursor_diff_line_shows_a_clickable_add_comment_button() {
+        let mut app = app_with(DIFF);
+        app.focus = Focus::Diff;
+        goto(&mut app, Side::New, 2);
+        render(&mut app, 120, 40);
+        let rect = app
+            .button_hits
+            .borrow()
+            .iter()
+            .find(|(_, a)| matches!(a, ButtonAction::AddComment))
+            .map(|(r, _)| *r)
+            .expect("add-comment button recorded on the cursor line");
+        click(&mut app, rect);
+        assert!(
+            app.composer.is_some(),
+            "clicking comment(i) opens a new-thread composer"
         );
     }
 

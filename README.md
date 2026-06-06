@@ -114,10 +114,11 @@ inserts a newline, `Ctrl-S` (or `Ctrl-Enter`) submits, `Esc` (or `Ctrl-C`)
 cancels.
 
 Every comment action is also a **clickable button** with its hotkey on the
-label, so the mouse and keyboard reach the same actions. Each thread box has a
-`reply(r)` / `resolve(R)` (and `delete(D)` for a comment you added this session)
-row along its bottom, and the composer shows `submit(ctrl+s)` / `cancel(esc)`
-below the input.
+label, so the mouse and keyboard reach the same actions. The focused diff line
+floats a `comment(i)` button at its right edge (it acts on the current line or
+multi-line selection); each thread box has a `reply(r)` / `resolve(R)` (and
+`delete(D)` for a comment you added this session) row along its bottom; and the
+composer shows `submit(ctrl+s)` / `cancel(esc)` below the input.
 
 ## Comment sidecar format
 
