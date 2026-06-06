@@ -51,9 +51,10 @@ The log is the minimal set of actions (`add_comment`, `reply`, `resolve`,
 deleted, or a resolve toggled back, cancels out. An untouched session prints
 `[]`. A consumer (e.g. a GitHub bridge) replays the log against the same base.
 
-Threads loaded from `base.json` are immutable: `D` only deletes threads you add
-in the session, so the log never contains a delete action (an in-session add and
-delete simply cancel to nothing).
+Comments loaded from `base.json` are immutable: `D` deletes a single comment,
+and only ones you add in the session (e.g. a reply you wrote) — never a whole
+input thread. So the log never contains a delete action (an in-session add and
+delete simply cancel to nothing); deleting a thread's last comment just drops it.
 
 > **Replay needs stable thread ids.** Actions reference threads by `id`. For the
 > log to be replayable against `base.json`, that base must carry stable `id`
@@ -83,7 +84,7 @@ delete simply cancel to nothing).
 | `i` | Write a new comment on the current line (or the visual/drag selection) |
 | `r` | Reply to the thread on the current line |
 | `R` | Resolve / unresolve the thread on the current line |
-| `D` | Delete the thread on the current line (only threads you added this session; input threads are immutable) |
+| `D` | Delete the focused comment (only ones you added this session; input comments are immutable) |
 | `←` / `→` | Focus the file list / the diff pane |
 | `Ctrl-B` | Toggle the file list sidebar |
 | `Tab` / `s` | Toggle unified ↔ split (side-by-side) layout |
@@ -120,7 +121,8 @@ the session). Semantic accents and the background still follow your terminal's
 ANSI palette either way.
 
 Comments are loaded from a sidecar (immutable) and displayed (gutter markers +
-inline popup). You can compose/reply/resolve/delete threads in-app; on exit hew
+inline popup). You can compose/reply/resolve threads and delete your own
+comments in-app; on exit hew
 prints the compacted action log to stdout (the inputs are never written).
 
 ## Comment sidecar format

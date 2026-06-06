@@ -187,7 +187,10 @@ mod tests {
             None,
             "x".into(),
         );
-        cur.remove_thread(id);
+        // Deleting the lone comment empties (and drops) the in-session thread,
+        // so the add and delete cancel to an empty log.
+        let cid = cur.threads[0].comments[0].id;
+        cur.remove_comment(id, cid);
         assert!(diff(&base, &cur).is_empty());
     }
 

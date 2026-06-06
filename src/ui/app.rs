@@ -192,10 +192,11 @@ pub struct App {
     changeset: Arc<Changeset>,
     rows: Vec<Row>,
     comments: CommentStore,
-    /// Thread ids present at load (from the input sidecar). These are immutable:
-    /// `D` can only delete threads added in-session, so a base thread is never
-    /// removed and the action log never emits a delete.
-    base_thread_ids: HashSet<Uuid>,
+    /// Comment ids present at load (from the input sidecar). These are
+    /// immutable: `D` deletes a single comment, and only ones added in-session,
+    /// so an input comment is never removed and the action log never emits a
+    /// delete (an in-session add+delete cancels out of the diff).
+    base_comment_ids: HashSet<Uuid>,
     split_rows: Vec<SplitRow>,
     view: View,
     selected: usize, // index into the active row list
@@ -245,9 +246,14 @@ impl App {
         // Comment threads always render expanded inline.
         let rows = build_rows(&changeset, &comments, 0, None);
         let split_rows = build_split_rows(&changeset, &comments, 0, None);
-        // Snapshot the loaded thread ids: these came from the input sidecar and
-        // are protected from deletion (only in-session threads can be removed).
-        let base_thread_ids: HashSet<Uuid> = comments.threads.iter().map(|t| t.id).collect();
+        // Snapshot every loaded comment id: these came from the input sidecar
+        // and are protected from deletion (only in-session comments can be
+        // removed).
+        let base_comment_ids: HashSet<Uuid> = comments
+            .threads
+            .iter()
+            .flat_map(|t| t.comments.iter().map(|c| c.id))
+            .collect();
         let stats = file_stats(&changeset);
         let collapsed = HashSet::new();
         let (sidebar_rows, file_to_sbrow) = build_sidebar_rows(&changeset, &collapsed);
@@ -259,7 +265,7 @@ impl App {
             split_rows,
             view: View::Split,
             comments,
-            base_thread_ids,
+            base_comment_ids,
             selected: 0,
             scroll: 0,
             height: 1,
@@ -1104,20 +1110,22 @@ impl App {
         self.rebuild_rows();
     }
 
-    /// Delete the focused thread — but only if it was added in this session.
-    /// Threads loaded from the input sidecar are immutable, so `D` on one is a
-    /// no-op; this is what keeps the action log free of delete actions.
-    fn delete_current_thread(&mut self) {
-        let Some(id) = self.focused_thread_id() else {
-            self.status = "no comment thread here".into();
+    /// Delete the focused *comment* — but only if it was added in this session.
+    /// The unit of deletion is a single comment (e.g. a reply you wrote), never
+    /// a whole thread; removing a thread's last comment drops the thread.
+    /// Comments loaded from the input sidecar are immutable, so `D` on one is a
+    /// no-op — which is what keeps the action log free of delete actions.
+    fn delete_current_comment(&mut self) {
+        let Some((thread_id, comment_id)) = self.focused_comment() else {
+            self.status = "put the cursor on a comment to delete".into();
             return;
         };
-        if self.base_thread_ids.contains(&id) {
-            self.status = "can't delete a thread from the input".into();
+        if self.base_comment_ids.contains(&comment_id) {
+            self.status = "can't delete a comment from the input".into();
             return;
         }
-        if self.comments.remove_thread(id) {
-            self.status = "deleted thread".into();
+        if self.comments.remove_comment(thread_id, comment_id) {
+            self.status = "deleted comment".into();
             self.rebuild_rows();
         }
     }
@@ -1505,9 +1513,10 @@ impl App {
             KeyCode::Char('i') => self.open_new_thread(),
             KeyCode::Char('r') => self.open_reply(),
 
-            // Resolve/unresolve (R) or delete (D) the thread on this line.
+            // Resolve/unresolve (R) the thread on this line, or delete (D) the
+            // focused comment.
             KeyCode::Char('R') => self.resolve_current_thread(),
-            KeyCode::Char('D') => self.delete_current_thread(),
+            KeyCode::Char('D') => self.delete_current_comment(),
 
             // Jump between files.
             KeyCode::Char(']') => self.jump_file(1),
@@ -2655,29 +2664,70 @@ mod tests {
     }
 
     #[test]
-    fn delete_protects_input_threads_but_removes_session_threads() {
-        // A thread loaded from the input sidecar is immutable: `D` is a no-op.
-        let (mut app, tid, _reply) = app_with_thread(3);
-        goto(&mut app, Side::New, 3);
-        app.delete_current_thread();
+    fn delete_targets_session_comments_only() {
+        // Both the root and the reply here come from the input sidecar.
+        let (mut app, tid, base_reply_id) = app_with_thread(3);
+
+        // Cursor on an input comment: `D` is a no-op.
+        app.selected = comment_head(&app, base_reply_id);
+        app.delete_current_comment();
+        assert_eq!(app.status, "can't delete a comment from the input");
+        assert_eq!(
+            app.comments.threads[0].comments.len(),
+            2,
+            "an input comment must survive D"
+        );
+
+        // Add a reply this session (to the same base thread), then delete it.
+        app.selected = comment_head(&app, base_reply_id);
+        app.open_reply();
+        app.on_key_compose(KeyCode::Char('y'), KeyModifiers::NONE);
+        app.submit_compose();
+        assert_eq!(app.comments.threads[0].comments.len(), 3);
+        let new_reply_id = app.comments.threads[0].comments[2].id;
+
+        app.selected = comment_head(&app, new_reply_id);
+        app.delete_current_comment();
+        assert_eq!(app.status, "deleted comment");
+        assert_eq!(
+            app.comments.threads[0].comments.len(),
+            2,
+            "only the session reply is removed"
+        );
         assert!(
             app.comments.threads.iter().any(|t| t.id == tid),
-            "an input thread must survive D"
+            "the thread (and its input comments) survives"
         );
-        assert_eq!(app.status, "can't delete a thread from the input");
+    }
 
-        // A thread added in-session can be deleted.
+    #[test]
+    fn deleting_a_session_thread_last_comment_drops_the_thread() {
+        // A wholly in-session thread: deleting its only comment removes it.
+        let (mut app, _tid, _reply) = app_with_thread(3);
         goto(&mut app, Side::New, 1);
         app.open_new_thread();
         app.on_key_compose(KeyCode::Char('x'), KeyModifiers::NONE);
         app.submit_compose();
-        let before = app.comments.threads.len();
-        goto(&mut app, Side::New, 1);
-        app.delete_current_thread();
-        assert_eq!(
-            app.comments.threads.len(),
-            before - 1,
-            "a session-added thread should be deleted"
+        let new_tid = app
+            .comments
+            .threads
+            .iter()
+            .find(|t| t.range.contains(1) && t.side == Side::New)
+            .expect("new thread")
+            .id;
+        let cid = app
+            .comments
+            .threads
+            .iter()
+            .find(|t| t.id == new_tid)
+            .unwrap()
+            .comments[0]
+            .id;
+        app.selected = comment_head(&app, cid);
+        app.delete_current_comment();
+        assert!(
+            !app.comments.threads.iter().any(|t| t.id == new_tid),
+            "emptying a thread drops it"
         );
     }
 
