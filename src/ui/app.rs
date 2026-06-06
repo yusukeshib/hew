@@ -2513,7 +2513,8 @@ impl App {
 
     /// Buttons for a thread box's action row: reply, resolve/unresolve, and
     /// (only when the focused comment is a session-added one in this thread)
-    /// delete. `(label-with-hotkey, action, button background)`.
+    /// delete. `(label-with-hotkey, action, label text color)` — the chip's
+    /// background is a uniform subtle surface; this color is its foreground.
     fn comment_buttons(&self, cl: &CommentLine) -> Vec<(String, ButtonAction, Color)> {
         let tid = cl.thread_id.clone();
         let mut v = vec![(
@@ -2563,11 +2564,11 @@ impl App {
     }
 
     /// Build one full-width action-button row inside a box. The box (margin +
-    /// `│ … │` + filled buttons) is `box_w` cells wide and starts `left_pad`
+    /// `│ … │` + button chips) is `box_w` cells wide and starts `left_pad`
     /// cells into the row (for split-view side placement); the rest is padded
-    /// to `width`. Buttons render button-like — a bright fill with dark text —
-    /// and each one's on-screen rect is recorded (at `x0` + offset, row `y`)
-    /// for click hit-testing.
+    /// to `width`. Each chip is a subtle raised surface with the action's color
+    /// as its label text, and its on-screen rect is recorded (at `x0` + offset,
+    /// row `y`) for click hit-testing.
     #[allow(clippy::too_many_arguments)]
     fn action_row_line(
         &self,

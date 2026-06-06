@@ -306,10 +306,10 @@ fn threads_by_path(comments: &CommentStore) -> ThreadsByPath<'_> {
     map
 }
 
-/// For every thread on `path`, the *last* `(side, line)` anchor within its
-/// range that is actually present in the diff. A range comment renders after
-/// this line, so its box sits below the last selected line (GitHub-style)
-/// rather than the first.
+/// Map each thread (across the whole changeset, keyed by thread id) to the
+/// *last* `(side, line)` anchor within its range that is actually present in
+/// the diff. A range comment renders after this line, so its box sits below the
+/// last selected line (GitHub-style) rather than the first.
 fn last_anchor_lines(
     changeset: &Changeset,
     comments: &CommentStore,
