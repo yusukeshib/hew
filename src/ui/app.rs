@@ -851,6 +851,29 @@ impl App {
         }
     }
 
+    /// Whether the active row at `i` is the composer's caret line — a `Body`
+    /// row. The caret glyph is appended to the buffer, so it rides the *last*
+    /// such row; `Hint`/`Bottom` chrome sits below it.
+    fn is_composer_body_at(&self, i: usize) -> bool {
+        match self.view {
+            View::Unified => matches!(
+                self.rows.get(i).map(|r| &r.kind),
+                Some(RowKind::Composer(ComposerLine {
+                    kind: ComposerKind::Body(_)
+                }))
+            ),
+            View::Split => matches!(
+                self.split_rows.get(i).map(|r| &r.kind),
+                Some(SplitRowKind::Composer {
+                    line: ComposerLine {
+                        kind: ComposerKind::Body(_)
+                    },
+                    ..
+                })
+            ),
+        }
+    }
+
     /// Scroll so the (contiguous) inline composer box is in view. The caret
     /// lives on the last body line (text is appended at the end), so when the
     /// box is taller than the viewport we anchor to its bottom — keeping the
@@ -864,13 +887,20 @@ impl App {
             .take_while(|&i| self.is_composer_at(i))
             .last()
             .unwrap_or(first);
+        // The caret rides the last body row; chrome (`Hint`/`Bottom`) sits below
+        // it, so anchor scroll to the body row — not `last` — to keep the line
+        // being typed on screen even on a very short viewport.
+        let caret = (first..=last)
+            .rev()
+            .find(|&i| self.is_composer_body_at(i))
+            .unwrap_or(last);
         let height = self.height.max(1);
-        // Keep the bottom (where the caret sits) visible.
-        if last >= self.scroll + height {
-            self.scroll = (last + 1).saturating_sub(height).max(s);
+        // Keep the caret line visible (scroll down if it fell below the fold).
+        if caret >= self.scroll + height {
+            self.scroll = (caret + 1).saturating_sub(height).max(s);
         }
         // Pull the top into view only when the whole box fits; otherwise stay
-        // anchored to the bottom so the caret line doesn't scroll off below.
+        // anchored to the caret so the line being typed doesn't scroll off.
         let fits = last - first < height;
         if first < self.scroll && fits {
             self.scroll = first.max(s);
@@ -2723,8 +2753,9 @@ mod tests {
         // and pushed the caret (its bottom body line) off-screen below. The
         // viewport must follow the caret instead.
         let mut app = app_with(DIFF);
-        app.view = View::Unified;
         app.height = 6; // viewport far shorter than the box
+        app.toggle_view(); // default Split -> Unified (refreshes file span)
+        assert!(matches!(app.view, View::Unified));
         open_composer(&mut app);
         for _ in 0..200 {
             app.on_key_compose(KeyCode::Enter, KeyModifiers::NONE);
@@ -2748,6 +2779,34 @@ mod tests {
         assert!(
             caret >= app.scroll && caret < app.scroll + app.height,
             "caret row {caret} must stay within view [{}, {})",
+            app.scroll,
+            app.scroll + app.height
+        );
+    }
+
+    #[test]
+    fn composer_caret_visible_on_a_tiny_viewport() {
+        // The caret sits on the last Body row, with Hint+Bottom chrome below it.
+        // Anchoring to the box's bottom border (height < 3) would leave the
+        // caret off-screen, so the scroll must follow the body row instead.
+        let mut app = app_with(DIFF);
+        app.height = 2;
+        app.toggle_view(); // default Split -> Unified
+        open_composer(&mut app);
+        for _ in 0..50 {
+            app.on_key_compose(KeyCode::Enter, KeyModifiers::NONE);
+        }
+        app.on_key_compose(KeyCode::Char('x'), KeyModifiers::NONE);
+        app.ensure_composer_visible();
+
+        let (s, e) = app.file_range();
+        let caret = (s..e)
+            .rev()
+            .find(|&i| app.is_composer_body_at(i))
+            .expect("composer body row");
+        assert!(
+            caret >= app.scroll && caret < app.scroll + app.height,
+            "caret row {caret} must stay within view [{}, {}) on a tiny viewport",
             app.scroll,
             app.scroll + app.height
         );
