@@ -226,8 +226,10 @@ impl Theme {
             text: t(mix(fg, bg, 0.12)),
             text_strong: t(fg),
             // Secondary / "disabled" UI text (line numbers, status, dates) is a
-            // neutral bg→fg grey — deliberately decoupled from the (often
-            // colored) comment scope so disabled text never inherits a hue.
+            // bg→fg blend, deliberately decoupled from the (often vividly
+            // colored) comment scope so it isn't tinted by the comment hue. It
+            // still carries whatever subtle tint bg/fg themselves have, which
+            // keeps it consistent with the rest of the chrome.
             muted: t(mix(bg, fg, 0.45)),
             faint: t(mix(bg, fg, 0.32)),
             accent: t(accent),
