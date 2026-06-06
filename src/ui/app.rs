@@ -851,8 +851,10 @@ impl App {
         }
     }
 
-    /// Scroll so the (contiguous) inline composer box is fully in view, biased
-    /// to keep its top visible when it's taller than the viewport.
+    /// Scroll so the (contiguous) inline composer box is in view. The caret
+    /// lives on the last body line (text is appended at the end), so when the
+    /// box is taller than the viewport we anchor to its bottom — keeping the
+    /// line being typed on screen — rather than pinning the top.
     fn ensure_composer_visible(&mut self) {
         let (s, e) = self.file_range();
         let Some(first) = (s..e).find(|&i| self.is_composer_at(i)) else {
@@ -863,10 +865,14 @@ impl App {
             .last()
             .unwrap_or(first);
         let height = self.height.max(1);
+        // Keep the bottom (where the caret sits) visible.
         if last >= self.scroll + height {
             self.scroll = (last + 1).saturating_sub(height).max(s);
         }
-        if first < self.scroll {
+        // Pull the top into view only when the whole box fits; otherwise stay
+        // anchored to the bottom so the caret line doesn't scroll off below.
+        let fits = last - first < height;
+        if first < self.scroll && fits {
             self.scroll = first.max(s);
         }
     }
@@ -2709,6 +2715,42 @@ mod tests {
         goto(app, Side::New, 3);
         app.open_new_thread();
         assert!(app.composer.is_some(), "composer should be open");
+    }
+
+    #[test]
+    fn composer_keeps_caret_visible_when_taller_than_viewport() {
+        // Regression: typing a long comment scrolled the box's *top* into view
+        // and pushed the caret (its bottom body line) off-screen below. The
+        // viewport must follow the caret instead.
+        let mut app = app_with(DIFF);
+        app.view = View::Unified;
+        app.height = 6; // viewport far shorter than the box
+        open_composer(&mut app);
+        for _ in 0..200 {
+            app.on_key_compose(KeyCode::Enter, KeyModifiers::NONE);
+        }
+        app.on_key_compose(KeyCode::Char('x'), KeyModifiers::NONE);
+        app.ensure_composer_visible();
+
+        let (s, e) = app.file_range();
+        // The caret rides the last composer Body row.
+        let caret = (s..e)
+            .rev()
+            .find(|&i| {
+                matches!(
+                    app.rows.get(i).map(|r| &r.kind),
+                    Some(RowKind::Composer(ComposerLine {
+                        kind: ComposerKind::Body(_)
+                    }))
+                )
+            })
+            .expect("composer body row");
+        assert!(
+            caret >= app.scroll && caret < app.scroll + app.height,
+            "caret row {caret} must stay within view [{}, {})",
+            app.scroll,
+            app.scroll + app.height
+        );
     }
 
     #[test]
