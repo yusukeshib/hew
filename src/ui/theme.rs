@@ -216,8 +216,11 @@ impl Theme {
             border_unfocus: t(comment),
             text: t(mix(fg, bg, 0.12)),
             text_strong: t(fg),
-            muted: t(comment),
-            faint: t(mix(comment, fg, 0.25)),
+            // Secondary / "disabled" UI text (line numbers, status, dates) is a
+            // neutral bg→fg grey — deliberately decoupled from the (often
+            // colored) comment scope so disabled text never inherits a hue.
+            muted: t(mix(bg, fg, 0.45)),
+            faint: t(mix(bg, fg, 0.32)),
             accent: t(accent),
             warn: t(warn),
             added: t(added),
