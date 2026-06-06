@@ -9,15 +9,13 @@ pipe a diff in.
 
 ## Install
 
-The binary is `hew` (the crate is `hewdiff` because `hew` was taken on
-crates.io).
+The crate is `hewdiff` (the `hew` name was taken on crates.io); the installed
+binary is `hew`.
 
-**From source** (requires a Rust toolchain):
+**From crates.io:**
 
 ```sh
-cargo install --path .            # installs `hew` into ~/.cargo/bin
-# or, to build without installing:
-cargo build --release             # → target/release/hew
+cargo install hewdiff             # installs the `hew` binary into ~/.cargo/bin
 ```
 
 **With Nix** (flake):
@@ -25,6 +23,13 @@ cargo build --release             # → target/release/hew
 ```sh
 nix run github:yusukeshib/hew -- change.patch   # run without installing
 nix profile install github:yusukeshib/hew       # install `hew`
+```
+
+**From source:**
+
+```sh
+git clone https://github.com/yusukeshib/hew && cd hew
+cargo install --path .           # or: cargo build --release → target/release/hew
 ```
 
 ## Usage
