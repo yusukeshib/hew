@@ -10,23 +10,14 @@ use std::path::PathBuf;
 use std::time::SystemTime;
 use uuid::Uuid;
 
-/// Deserialize a thread/comment `id` that may be absent, a real UUID string, or
-/// a foreign id minted by another system. PR-sourced sidecars carry GitHub ids
-/// (numeric REST ids, GraphQL node ids like `PRRT_kwD…`) that are not UUIDs;
-/// rather than reject the whole file, any non-UUID value is mapped to a fresh
-/// UUID. The base store is loaded once and cloned into the working store, so
-/// the minted id is shared by both sides and the exit diff still correlates.
-fn flexible_id<'de, D>(de: D) -> Result<Uuid, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    let v = serde_json::Value::deserialize(de)?;
-    if let serde_json::Value::String(s) = &v {
-        if let Ok(u) = Uuid::parse_str(s) {
-            return Ok(u);
-        }
-    }
-    Ok(Uuid::new_v4())
+/// Mint a fresh, unique id for a thread/comment that arrives without one.
+/// Ids that ARE present in the sidecar JSON are kept verbatim (the `id` fields
+/// are plain `String`s, not `Uuid`s): the action log emitted on exit must
+/// reference the same ids the base sidecar used, so a PR-sourced sidecar
+/// carrying foreign GitHub ids (numeric REST ids, GraphQL node ids like
+/// `PRRT_kwD…`) stays replayable instead of being rewritten to random UUIDs.
+fn new_id() -> String {
+    Uuid::new_v4().to_string()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -44,8 +35,8 @@ impl LineRange {
 /// A single message in a thread (root or reply).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Comment {
-    #[serde(default = "Uuid::new_v4", deserialize_with = "flexible_id")]
-    pub id: Uuid,
+    #[serde(default = "new_id")]
+    pub id: String,
     #[serde(default)]
     pub author: Option<String>,
     pub body: String,
@@ -57,8 +48,8 @@ pub struct Comment {
 /// A review thread anchored to a line range. `comments[0]` is the root.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Thread {
-    #[serde(default = "Uuid::new_v4", deserialize_with = "flexible_id")]
-    pub id: Uuid,
+    #[serde(default = "new_id")]
+    pub id: String,
     pub file: PathBuf,
     pub side: Side,
     pub range: LineRange,
@@ -84,16 +75,16 @@ impl CommentStore {
         range: LineRange,
         author: Option<String>,
         body: String,
-    ) -> Uuid {
-        let id = Uuid::new_v4();
+    ) -> String {
+        let id = new_id();
         self.threads.push(Thread {
-            id,
+            id: id.clone(),
             file,
             side,
             range,
             resolved: false,
             comments: vec![Comment {
-                id: Uuid::new_v4(),
+                id: new_id(),
                 author,
                 body,
                 created_at: SystemTime::now(),
@@ -104,11 +95,11 @@ impl CommentStore {
 
     /// Append a reply to the thread with `thread_id`. Returns `false` when no
     /// such thread exists.
-    pub fn reply(&mut self, thread_id: Uuid, author: Option<String>, body: String) -> bool {
+    pub fn reply(&mut self, thread_id: &str, author: Option<String>, body: String) -> bool {
         match self.threads.iter_mut().find(|t| t.id == thread_id) {
             Some(t) => {
                 t.comments.push(Comment {
-                    id: Uuid::new_v4(),
+                    id: new_id(),
                     author,
                     body,
                     created_at: SystemTime::now(),
@@ -123,7 +114,7 @@ impl CommentStore {
     /// leaves the thread empty, the thread is dropped too. Returns `true` when a
     /// comment was removed. This is the only delete path used by the TUI — the
     /// unit of deletion is a comment, never a whole thread.
-    pub fn remove_comment(&mut self, thread_id: Uuid, comment_id: Uuid) -> bool {
+    pub fn remove_comment(&mut self, thread_id: &str, comment_id: &str) -> bool {
         let Some(t) = self.threads.iter_mut().find(|t| t.id == thread_id) else {
             return false;
         };
@@ -140,7 +131,7 @@ impl CommentStore {
 
     /// Flip the resolved flag on the thread with `id`, returning the new state
     /// (or `None` when no such thread exists).
-    pub fn toggle_resolved(&mut self, id: Uuid) -> Option<bool> {
+    pub fn toggle_resolved(&mut self, id: &str) -> Option<bool> {
         let t = self.threads.iter_mut().find(|t| t.id == id)?;
         t.resolved = !t.resolved;
         Some(t.resolved)
@@ -184,12 +175,12 @@ mod tests {
         assert_eq!(store.threads[0].comments.len(), 1);
         assert!(!store.threads[0].resolved);
 
-        assert!(store.reply(id, Some("you".into()), "good catch".into()));
+        assert!(store.reply(&id, Some("you".into()), "good catch".into()));
         assert_eq!(store.threads[0].comments.len(), 2);
         assert_eq!(store.threads[0].comments[1].body, "good catch");
 
         // Replying to an unknown thread is a no-op.
-        assert!(!store.reply(Uuid::new_v4(), None, "x".into()));
+        assert!(!store.reply("nonexistent", None, "x".into()));
         assert_eq!(store.threads[0].comments.len(), 2);
     }
 
@@ -197,29 +188,29 @@ mod tests {
     fn toggle_resolved_flips_and_reports_missing() {
         let mut store = CommentStore::default();
         let id = store.add_thread("f".into(), Side::Old, range(1, 1), None, "hi".into());
-        assert_eq!(store.toggle_resolved(id), Some(true));
+        assert_eq!(store.toggle_resolved(&id), Some(true));
         assert!(store.threads[0].resolved);
-        assert_eq!(store.toggle_resolved(id), Some(false));
+        assert_eq!(store.toggle_resolved(&id), Some(false));
         assert!(!store.threads[0].resolved);
         // Unknown ids report failure without panicking.
-        assert_eq!(store.toggle_resolved(Uuid::new_v4()), None);
+        assert_eq!(store.toggle_resolved("nonexistent"), None);
     }
 
     #[test]
     fn remove_comment_drops_reply_then_thread() {
         let mut store = CommentStore::default();
         let id = store.add_thread("f".into(), Side::New, range(2, 2), None, "root".into());
-        store.reply(id, Some("you".into()), "reply".into());
-        let root_id = store.threads[0].comments[0].id;
-        let reply_id = store.threads[0].comments[1].id;
+        store.reply(&id, Some("you".into()), "reply".into());
+        let root_id = store.threads[0].comments[0].id.clone();
+        let reply_id = store.threads[0].comments[1].id.clone();
 
         // Removing the reply keeps the thread (root remains).
-        assert!(store.remove_comment(id, reply_id));
+        assert!(store.remove_comment(&id, &reply_id));
         assert_eq!(store.threads[0].comments.len(), 1);
         // Removing an unknown comment is a no-op.
-        assert!(!store.remove_comment(id, reply_id));
+        assert!(!store.remove_comment(&id, &reply_id));
         // Removing the last comment drops the now-empty thread.
-        assert!(store.remove_comment(id, root_id));
+        assert!(store.remove_comment(&id, &root_id));
         assert!(store.threads.is_empty());
     }
 }

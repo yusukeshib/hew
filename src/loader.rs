@@ -133,10 +133,11 @@ mod tests {
     }
 
     #[test]
-    fn loads_comments_with_non_uuid_ids() {
-        // PR-sourced sidecars carry GitHub ids (numeric REST ids, GraphQL node
-        // ids) in the `id` field. These aren't UUIDs and must not fail the
-        // parse — they're remapped to fresh UUIDs on load.
+    fn preserves_non_uuid_ids_verbatim_and_deterministically() {
+        // PR-sourced sidecars carry foreign GitHub ids (numeric REST ids,
+        // GraphQL node ids) in the `id` field. These aren't UUIDs, but they
+        // must be kept VERBATIM so the exit action log is replayable against
+        // the base file. Loading the same file twice must yield identical ids.
         let json = r#"{
           "threads": [
             {
@@ -144,16 +145,26 @@ mod tests {
               "file": "a.rs", "side": "new",
               "range": { "start": 1, "end": 1 },
               "comments": [
-                { "id": 1234567890, "author": "x", "body": "hi" }
+                { "id": "1234567890", "author": "x", "body": "hi" }
               ]
             }
           ]
         }"#;
         let path = unique_temp("non_uuid_ids");
         std::fs::write(&path, json).unwrap();
-        let store = load_comments(&path).unwrap();
-        assert_eq!(store.threads.len(), 1);
-        assert_eq!(store.threads[0].comments.len(), 1);
+
+        let a = load_comments(&path).unwrap();
+        assert_eq!(a.threads.len(), 1);
+        assert_eq!(a.threads[0].comments.len(), 1);
+        // Verbatim: ids equal exactly what the file carried.
+        assert_eq!(a.threads[0].id, "PRRT_kwDOS");
+        assert_eq!(a.threads[0].comments[0].id, "1234567890");
+
+        // Deterministic: a second load of the same file yields identical ids.
+        let b = load_comments(&path).unwrap();
+        assert_eq!(a.threads[0].id, b.threads[0].id);
+        assert_eq!(a.threads[0].comments[0].id, b.threads[0].comments[0].id);
+
         let _ = std::fs::remove_file(&path);
     }
 

@@ -6,7 +6,6 @@ use std::collections::HashSet;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 use unicode_width::UnicodeWidthChar;
-use uuid::Uuid;
 
 /// Terminal display width of a string in cells (wide/CJK glyphs count as 2,
 /// zero-width/control as 0). The whole TUI lays text out in fixed cells, so
@@ -86,8 +85,8 @@ pub enum CommentKind {
 pub struct CommentLine {
     pub kind: CommentKind,
     pub resolved: bool,
-    pub thread_id: Uuid,
-    pub comment_id: Option<Uuid>,
+    pub thread_id: String,
+    pub comment_id: Option<String>,
 }
 
 /// Where an open inline composer attaches in the row stream.
@@ -100,7 +99,7 @@ pub enum ComposerAnchor {
         line: u32,
     },
     /// A reply, injected just below an existing thread's box.
-    Reply { thread_id: Uuid },
+    Reply { thread_id: String },
 }
 
 /// An open inline composer to inject into the row stream while typing.
@@ -250,14 +249,14 @@ pub fn thread_lines(t: &Thread, width: usize) -> Vec<CommentLine> {
     let chrome = |kind: CommentKind| CommentLine {
         kind,
         resolved: t.resolved,
-        thread_id: t.id,
+        thread_id: t.id.clone(),
         comment_id: None,
     };
-    let content = |kind: CommentKind, cid: Uuid| CommentLine {
+    let content = |kind: CommentKind, cid: &str| CommentLine {
         kind,
         resolved: t.resolved,
-        thread_id: t.id,
-        comment_id: Some(cid),
+        thread_id: t.id.clone(),
+        comment_id: Some(cid.to_string()),
     };
     let mut out = vec![
         chrome(CommentKind::Top),
@@ -271,20 +270,20 @@ pub fn thread_lines(t: &Thread, width: usize) -> Vec<CommentLine> {
                 name: c.author.clone().unwrap_or_else(|| "?".into()),
                 date: fmt_date(c.created_at),
             },
-            c.id,
+            &c.id,
         ));
         for raw in c.body.split('\n') {
             let s = sanitize_line(raw);
             if s.is_empty() {
-                out.push(content(CommentKind::Body(String::new()), c.id));
+                out.push(content(CommentKind::Body(String::new()), &c.id));
             } else {
                 for wl in wrap_text(&s, width) {
-                    out.push(content(CommentKind::Body(wl), c.id));
+                    out.push(content(CommentKind::Body(wl), &c.id));
                 }
             }
         }
         if i + 1 < t.comments.len() {
-            out.push(content(CommentKind::Gap, c.id));
+            out.push(content(CommentKind::Gap, &c.id));
         }
     }
     out.push(chrome(CommentKind::Bottom));
@@ -310,7 +309,7 @@ fn threads_by_path(comments: &CommentStore) -> ThreadsByPath<'_> {
 fn comment_rows_for(
     comments: &CommentStore,
     by_path: &ThreadsByPath<'_>,
-    emitted: &mut HashSet<Uuid>,
+    emitted: &mut HashSet<String>,
     path: &str,
     anchors: &[(Side, u32)],
     width: usize,
@@ -332,7 +331,7 @@ fn comment_rows_for(
             .iter()
             .any(|(s, l)| *s == t.side && t.range.contains(*l))
         {
-            emitted.insert(t.id);
+            emitted.insert(t.id.clone());
             out.extend(
                 thread_lines(t, width)
                     .into_iter()
@@ -340,7 +339,8 @@ fn comment_rows_for(
             );
             // A reply composer sits directly under the thread it replies to.
             if let Some(spec) = composer {
-                if matches!(spec.anchor, ComposerAnchor::Reply { thread_id } if thread_id == t.id) {
+                if matches!(&spec.anchor, ComposerAnchor::Reply { thread_id } if *thread_id == t.id)
+                {
                     out.extend(
                         composer_lines(spec, width)
                             .into_iter()
@@ -530,7 +530,7 @@ pub fn build_split_rows(
     composer: Option<&ComposerSpec>,
 ) -> Vec<SplitRow> {
     let mut rows = Vec::new();
-    let mut emitted: HashSet<Uuid> = HashSet::new();
+    let mut emitted: HashSet<String> = HashSet::new();
     let mut composer_emitted = false;
     let by_path = threads_by_path(comments);
     for (fi, file) in changeset.files.iter().enumerate() {
@@ -673,7 +673,7 @@ fn flush_pairs(
     rows: &mut Vec<SplitRow>,
     comments: &CommentStore,
     by_path: &ThreadsByPath<'_>,
-    emitted: &mut HashSet<Uuid>,
+    emitted: &mut HashSet<String>,
     path: &str,
     width: usize,
     composer: Option<&ComposerSpec>,
@@ -729,7 +729,7 @@ pub fn build_rows(
     composer: Option<&ComposerSpec>,
 ) -> Vec<Row> {
     let mut rows = Vec::new();
-    let mut emitted: HashSet<Uuid> = HashSet::new();
+    let mut emitted: HashSet<String> = HashSet::new();
     let mut composer_emitted = false;
     let by_path = threads_by_path(comments);
     for (fi, file) in changeset.files.iter().enumerate() {
@@ -1007,7 +1007,7 @@ mod tests {
     fn reply_composer_injects_under_its_thread() {
         let cs = parse_report(SIMPLE_DIFF).0;
         let store = store_with(Side::New, 2);
-        let thread_id = store.threads[0].id;
+        let thread_id = store.threads[0].id.clone();
         let spec = ComposerSpec {
             anchor: ComposerAnchor::Reply { thread_id },
             title: " reply ".into(),
