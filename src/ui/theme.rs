@@ -175,8 +175,13 @@ impl Theme {
 
         let comment = scope("comment").unwrap_or_else(|| mix(bg, fg, 0.45));
         let accent = s.accent.map(rgb).or_else(|| scope("keyword")).unwrap_or(fg);
-        let warn = scope("string")
-            .or_else(|| scope("constant.numeric"))
+        // A warm amber for "needs attention" chrome (modified-file marker, open
+        // comment dot, comment author). Prefer a numeric/constant scope over
+        // `string`: many vivid themes color strings green, which would collide
+        // with the green `added` marker and leave file statuses A/M
+        // indistinguishable. Fall back to string, then a fixed amber.
+        let warn = scope("constant.numeric")
+            .or_else(|| scope("string"))
             .unwrap_or((224, 175, 104));
         let added = scope("markup.inserted")
             .or_else(|| scope("diff.inserted"))
