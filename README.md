@@ -7,16 +7,24 @@ displaying GitHub-PR-style threaded comments loaded from a sidecar JSON file.
 Source selection (working tree, revs, two files) is delegated to git — you just
 pipe a diff in.
 
-> *hew* = to cut/shape a block with an axe. Same "chunk/block" lineage as a diff
-> `hunk`. Three letters, fast to type. Inspired by [hunk](https://github.com/modem-dev/hunk),
-> rebuilt from zero as a native single binary.
-
 ## Install
 
+The binary is `hew` (the crate is `hewdiff` because `hew` was taken on
+crates.io).
+
+**From source** (requires a Rust toolchain):
+
 ```sh
-cargo install --path .
-# or
-cargo build --release   # → target/release/hew
+cargo install --path .            # installs `hew` into ~/.cargo/bin
+# or, to build without installing:
+cargo build --release             # → target/release/hew
+```
+
+**With Nix** (flake):
+
+```sh
+nix run github:yusukeshib/hew -- change.patch   # run without installing
+nix profile install github:yusukeshib/hew       # install `hew`
 ```
 
 ## Usage
