@@ -8,13 +8,19 @@
 
 use ratatui::style::Color;
 use syntect::easy::HighlightLines;
-use syntect::highlighting::{Theme, ThemeSet};
+use syntect::highlighting::Theme;
 use syntect::parsing::{SyntaxReference, SyntaxSet};
+use two_face::theme::EmbeddedThemeName;
 
-/// TokyoNight (Night) as a TextMate theme, vendored from
-/// `folke/tokyonight.nvim` (`extras/sublime/tokyonight_night.tmTheme`) so the
-/// default palette matches the editor theme without a runtime dependency.
-const TOKYONIGHT_TMTHEME: &str = include_str!("../../assets/themes/tokyonight_night.tmTheme");
+/// The default syntax theme. This is the single source of truth for the whole
+/// look: the chrome/background palette is *derived* from it (see
+/// [`crate::ui::theme::Theme::from_syntect`]), so changing this one line
+/// rethemes the entire UI.
+pub fn default_theme() -> Theme {
+    two_face::theme::extra()
+        .get(EmbeddedThemeName::MonokaiExtendedBright)
+        .clone()
+}
 
 pub struct Highlighter {
     ps: SyntaxSet,
@@ -23,13 +29,10 @@ pub struct Highlighter {
 
 impl Highlighter {
     pub fn new() -> Self {
-        // two-face ships bat's extended syntax set (TS/TSX, TOML, Dockerfile, …);
-        // `_no_newlines` matches our line-by-line highlighting. The default
-        // theme is TokyoNight (Night) to mirror the common editor palette.
+        // two-face ships bat's extended syntax set (TS/TSX, TOML, Dockerfile, …)
+        // and themes; `_no_newlines` matches our line-by-line highlighting.
         let ps = two_face::syntax::extra_no_newlines();
-        let mut cursor = std::io::Cursor::new(TOKYONIGHT_TMTHEME);
-        let theme = ThemeSet::load_from_reader(&mut cursor)
-            .expect("embedded TokyoNight tmTheme must parse");
+        let theme = default_theme();
         Highlighter { ps, theme }
     }
 
