@@ -204,8 +204,8 @@ impl Theme {
         let t = |x: (u8, u8, u8)| Color::Rgb(x.0, x.1, x.2);
         Theme {
             bg: t(bg),
-            add_bg: t(mix(bg, added, 0.16)),
-            del_bg: t(mix(bg, removed, 0.16)),
+            add_bg: t(mix(bg, added, 0.22)),
+            del_bg: t(mix(bg, removed, 0.22)),
             cursor_bg: t(cursor_bg),
             unfocus_bg: t(mix(bg, fg, 0.10)),
             file_header_bg: t(mix(bg, fg, 0.12)),
