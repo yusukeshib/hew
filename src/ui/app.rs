@@ -189,9 +189,12 @@ struct Composer {
     textarea: TextArea<'static>,
 }
 
-/// Caret glyph drawn at the composer's cursor (a printable block, so it
-/// survives `sanitize_line`).
-const COMPOSER_CARET: char = '\u{2588}';
+/// Zero-width marker spliced in at the composer's cursor position. It is a
+/// non-control format char, so it survives `sanitize_line`; being zero-width,
+/// it never consumes a cell during wrapping (so moving the cursor can't reflow
+/// the text) and it is never emitted to the terminal — the renderer finds it,
+/// drops it, and draws the cursor as a *reversed* overlay on the cell under it.
+const COMPOSER_CARET: char = '\u{2060}';
 
 /// The composer body as a single string with the caret glyph spliced in at the
 /// cursor position, ready for the row builder to wrap. A `TextArea` always has
@@ -1134,6 +1137,22 @@ impl App {
             // would be indistinguishable from a bare Enter.
             KeyCode::Char('s') if ctrl => self.submit_compose(),
             KeyCode::Enter if ctrl => self.submit_compose(),
+            // Line start / end. tui-textarea binds these to Ctrl+A / Ctrl+E,
+            // but its match arms require a lowercase `Char('a')` with no Alt;
+            // some terminals (kitty keyboard protocol) report the chord with
+            // the Shift bit set or as uppercase, which slips through and does
+            // nothing. Drive the move ourselves so the binding is deterministic
+            // regardless of how the terminal encodes it.
+            KeyCode::Char('a') | KeyCode::Char('A') if ctrl => {
+                if let Some(c) = self.composer.as_mut() {
+                    c.textarea.move_cursor(tui_textarea::CursorMove::Head);
+                }
+            }
+            KeyCode::Char('e') | KeyCode::Char('E') if ctrl => {
+                if let Some(c) = self.composer.as_mut() {
+                    c.textarea.move_cursor(tui_textarea::CursorMove::End);
+                }
+            }
             // Everything else: hand the key to the edit model. We always rebuild
             // afterward (below) rather than keying off `input()`'s return value:
             // it reports whether the *text* changed, so cursor-only moves (←/→,
@@ -1566,9 +1585,9 @@ impl App {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         // Global keys, independent of the focused pane.
         match code {
-            // Quit only on q / Ctrl-C / Ctrl-D (never Esc).
+            // Quit only on q / Ctrl-C (never Esc; Ctrl-D is half-page down).
             KeyCode::Char('q') => return self.quit = true,
-            KeyCode::Char('c') | KeyCode::Char('d') if ctrl => return self.quit = true,
+            KeyCode::Char('c') if ctrl => return self.quit = true,
             KeyCode::Tab | KeyCode::Char('s') => return self.toggle_view(),
             KeyCode::Char('b') if ctrl => {
                 self.show_sidebar = !self.show_sidebar;
@@ -1621,7 +1640,8 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => self.move_by(1, 1),
             KeyCode::Char('k') | KeyCode::Up => self.move_by(-1, 1),
 
-            // Half-page up: Ctrl-U (Ctrl-D is reserved for quit).
+            // Half-page down / up: Ctrl-D / Ctrl-U.
+            KeyCode::Char('d') if ctrl => self.move_by(1, half),
             KeyCode::Char('u') if ctrl => self.move_by(-1, half),
 
             // Full page: Space / Ctrl-F / PageDown forward, b / PageUp back.
@@ -2865,12 +2885,38 @@ impl App {
                 margin,
                 Span::styled(format!("╰{}╯", "─".repeat(inner_w)), bstyle),
             ]),
-            ComposerKind::Body(b) => Line::from(vec![
-                margin,
-                Span::styled("│".to_string(), bstyle),
-                Span::styled(fit(&format!(" {b}")), Style::default().fg(theme().text)),
-                Span::styled("│".to_string(), bstyle),
-            ]),
+            ComposerKind::Body(b) => {
+                let text_style = Style::default().fg(theme().text);
+                let mut spans = vec![margin, Span::styled("│".to_string(), bstyle)];
+                // The caret is an *overlay*, not a character: render the cell at
+                // the cursor with a reversed (block) style instead of splicing a
+                // glyph in, so the surrounding text never shifts.
+                if let Some(idx) = b.find(COMPOSER_CARET) {
+                    let pre = &b[..idx];
+                    let after = &b[idx + COMPOSER_CARET.len_utf8()..];
+                    // The character sitting under the cursor (or a space at EOL).
+                    let mut chars = after.chars();
+                    let under = chars.next();
+                    let tail: String = chars.collect();
+                    let cursor_cell = under.map(|c| c.to_string()).unwrap_or_else(|| " ".into());
+                    let body = format!(" {pre}");
+                    let used = str_width(&body) + str_width(&cursor_cell) + str_width(&tail);
+                    spans.push(Span::styled(body, text_style));
+                    spans.push(Span::styled(
+                        cursor_cell,
+                        text_style.add_modifier(Modifier::REVERSED),
+                    ));
+                    let pad = inner_w.saturating_sub(used);
+                    spans.push(Span::styled(
+                        format!("{tail}{}", " ".repeat(pad)),
+                        text_style,
+                    ));
+                } else {
+                    spans.push(Span::styled(fit(&format!(" {b}")), text_style));
+                }
+                spans.push(Span::styled("│".to_string(), bstyle));
+                Line::from(spans)
+            }
             ComposerKind::Hint => Line::from(vec![
                 margin,
                 Span::styled("│".to_string(), bstyle),
@@ -3466,7 +3512,11 @@ mod tests {
                 _ => None,
             })
             .expect("a composer body row carrying the caret");
-        assert_eq!(body, "a\u{2588}b", "the drawn caret must follow the cursor");
+        assert_eq!(
+            body,
+            format!("a{COMPOSER_CARET}b"),
+            "the caret marker must follow the cursor"
+        );
     }
 
     #[test]
@@ -3478,7 +3528,7 @@ mod tests {
         app.on_key_compose(KeyCode::Char('a'), KeyModifiers::CONTROL); // to start
         let spec = app.composer_spec().expect("composer spec");
         assert_eq!(
-            spec.body, "\u{2588}ab",
+            spec.body, format!("{COMPOSER_CARET}ab"),
             "caret renders at the cursor, not the end"
         );
     }

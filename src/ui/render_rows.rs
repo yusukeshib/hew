@@ -156,7 +156,7 @@ fn composer_lines(spec: &ComposerSpec, width: usize) -> Vec<ComposerLine> {
                 kind: ComposerKind::Body(String::new()),
             });
         } else {
-            for wl in wrap_text(&s, width) {
+            for wl in wrap_preserve(&s, width) {
                 out.push(ComposerLine {
                     kind: ComposerKind::Body(wl),
                 });
@@ -239,6 +239,50 @@ fn wrap_text(s: &str, width: usize) -> Vec<String> {
     };
     for word in s.split_whitespace() {
         push_word(word, &mut out, &mut line, &mut w);
+    }
+    out.push(line);
+    out
+}
+
+/// Width-wrap that preserves every character verbatim — including runs of
+/// spaces and leading/trailing whitespace. Used by the comment composer, which
+/// is a live text buffer: unlike `wrap_text` (a display formatter that collapses
+/// whitespace via `split_whitespace`), the editor must render exactly what the
+/// user typed. Breaks greedily at the display-width boundary, preferring the
+/// last space on the line so words don't split mid-token when avoidable.
+fn wrap_preserve(s: &str, width: usize) -> Vec<String> {
+    let width = width.max(1);
+    let mut out = Vec::new();
+    let mut line = String::new();
+    let mut w = 0usize;
+    for ch in s.chars() {
+        let cw = char_width(ch);
+        if w + cw > width && !line.is_empty() {
+            // Try to break at the last space so a word isn't split needlessly.
+            if ch != ' ' {
+                if let Some(brk) = line.rfind(' ') {
+                    // Don't break on a trailing run of spaces (brk at end).
+                    let tail: String = line[brk + 1..].to_string();
+                    if !tail.is_empty() {
+                        line.truncate(brk);
+                        out.push(std::mem::take(&mut line));
+                        line = tail;
+                        w = str_width(&line);
+                    } else {
+                        out.push(std::mem::take(&mut line));
+                        w = 0;
+                    }
+                } else {
+                    out.push(std::mem::take(&mut line));
+                    w = 0;
+                }
+            } else {
+                out.push(std::mem::take(&mut line));
+                w = 0;
+            }
+        }
+        line.push(ch);
+        w += cw;
     }
     out.push(line);
     out
