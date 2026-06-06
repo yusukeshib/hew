@@ -270,6 +270,10 @@ pub struct App {
     hl: HighlightCache,
     /// Cached `[start, end)` row span of `current_file` (see `file_range`).
     file_span: (usize, usize),
+    /// `[start, end)` row span of every file in the *active* row list, indexed
+    /// by file_idx. Rebuilt in one O(rows) pass whenever the row list or view
+    /// changes, so a file switch is an O(1) lookup instead of a full scan.
+    file_spans: Vec<(usize, usize)>,
     composer: Option<Composer>,
     /// Visual line-select mode: movement keeps `sel_anchor` so the user can
     /// grow a multi-line selection (then `i` anchors a comment to the range).
@@ -339,10 +343,12 @@ impl App {
             sb_drag: None,
             hl,
             file_span: (0, 0),
+            file_spans: Vec::new(),
             composer: None,
             visual: false,
             quit: false,
         };
+        app.rebuild_file_spans();
         app.recompute_file_span();
         app.selected = app.first_selectable().unwrap_or(0);
         app
@@ -813,8 +819,9 @@ impl App {
             self.comment_wrap,
             composer.as_ref(),
         );
-        // Rows changed; refresh the cached span (for the current file) before
-        // first_selectable/ensure_visible read it.
+        // Rows changed; recompute every file's span, then the current one,
+        // before first_selectable/ensure_visible read it.
+        self.rebuild_file_spans();
         self.recompute_file_span();
         let target = key.as_ref().and_then(|k| self.find_sel_key(k));
         self.selected = target
@@ -1329,16 +1336,32 @@ impl App {
     /// reads `file_range` (navigation, scrolling, rendering).
     fn recompute_file_span(&mut self) {
         let len = self.active_len();
-        let (mut start, mut end) = (len, len);
+        self.file_span = self
+            .file_spans
+            .get(self.current_file)
+            .copied()
+            .unwrap_or((len, len));
+    }
+
+    /// Recompute the `[start, end)` row span of *every* file in the active row
+    /// list in a single pass. Files emit contiguous row blocks (build order),
+    /// so one sweep fills them all; call this whenever the active row list or
+    /// view changes. Keeps per-file-switch span lookup O(1).
+    fn rebuild_file_spans(&mut self) {
+        let n = self.changeset.files.len();
+        let len = self.active_len();
+        let mut spans = vec![(len, len); n];
         for i in 0..len {
-            if self.row_file_idx(i) == Some(self.current_file) {
-                if start == len {
-                    start = i;
+            if let Some(fi) = self.row_file_idx(i) {
+                if let Some(span) = spans.get_mut(fi) {
+                    if span.0 == len {
+                        span.0 = i;
+                    }
+                    span.1 = i + 1;
                 }
-                end = i + 1;
             }
         }
-        self.file_span = (start, end);
+        self.file_spans = spans;
     }
 
     /// Switch the diff pane to the next/prev file.
@@ -1405,8 +1428,9 @@ impl App {
             View::Unified => View::Split,
             View::Split => View::Unified,
         };
-        // The active list switched; refresh the cached span before
-        // first_selectable reads it.
+        // The active list switched (unified/split spans differ); recompute all
+        // file spans, then the current one, before first_selectable reads it.
+        self.rebuild_file_spans();
         self.recompute_file_span();
         // Re-find the same line / comment message in the other layout.
         let target = key.as_ref().and_then(|k| self.find_sel_key(k));
@@ -2479,6 +2503,37 @@ mod tests {
         let mut app = App::with_comments(cs, CommentStore::default());
         app.height = 4; // deterministic viewport for scroll math
         app
+    }
+
+    #[test]
+    fn precomputed_file_spans_match_a_full_scan() {
+        // The O(1) per-file-switch span lookup must agree with a brute-force
+        // scan of the active row list, in both layouts.
+        let mut app = app_with(TWO_FILES);
+        for toggled in [false, true] {
+            if toggled {
+                app.toggle_view();
+            }
+            let len = app.active_len();
+            for fi in 0..app.changeset.files.len() {
+                app.current_file = fi;
+                app.recompute_file_span();
+                let (mut s, mut e) = (len, len);
+                for i in 0..len {
+                    if app.row_file_idx(i) == Some(fi) {
+                        if s == len {
+                            s = i;
+                        }
+                        e = i + 1;
+                    }
+                }
+                assert_eq!(
+                    app.file_span,
+                    (s, e),
+                    "file {fi} span mismatch (toggled={toggled})"
+                );
+            }
+        }
     }
 
     /// Move the cursor onto the row anchored at `(current_file, side, line)`.
