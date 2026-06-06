@@ -193,21 +193,38 @@ struct Composer {
 /// survives `sanitize_line`).
 const COMPOSER_CARET: char = '\u{2588}';
 
-/// The composer body as a single string with the caret glyph inserted at the
+/// The composer body as a single string with the caret glyph spliced in at the
 /// cursor position, ready for the row builder to wrap. A `TextArea` always has
 /// at least one line, so the cursor row is always valid.
+///
+/// Built in one pass over `ta.lines()` (pushing line slices, not cloning each
+/// line into a `Vec<String>`): this runs on every row rebuild — i.e. per
+/// keystroke — so the per-line clone + join is worth avoiding.
 fn body_with_caret(ta: &TextArea<'static>) -> String {
     let (row, col) = ta.cursor();
-    let mut lines: Vec<String> = ta.lines().to_vec();
-    let line = &mut lines[row];
-    // `col` is a char index; translate to a byte offset for `String::insert`.
-    let byte = line
-        .char_indices()
-        .nth(col)
-        .map(|(b, _)| b)
-        .unwrap_or(line.len());
-    line.insert(byte, COMPOSER_CARET);
-    lines.join("\n")
+    let lines = ta.lines();
+    let cap =
+        lines.iter().map(|l| l.len()).sum::<usize>() + lines.len() + COMPOSER_CARET.len_utf8();
+    let mut out = String::with_capacity(cap);
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        if i == row {
+            // `col` is a char index; translate to a byte offset to splice.
+            let byte = line
+                .char_indices()
+                .nth(col)
+                .map(|(b, _)| b)
+                .unwrap_or(line.len());
+            out.push_str(&line[..byte]);
+            out.push(COMPOSER_CARET);
+            out.push_str(&line[byte..]);
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
 }
 
 /// Diff/review TUI state. Comments are loaded from a sidecar (immutable),
@@ -891,33 +908,35 @@ impl App {
         }
     }
 
-    /// Whether the active row at `i` is the composer's caret line — a `Body`
-    /// row. The caret glyph is appended to the buffer, so it rides the *last*
-    /// such row; `Hint`/`Bottom` chrome sits below it.
-    fn is_composer_body_at(&self, i: usize) -> bool {
-        match self.view {
-            View::Unified => matches!(
-                self.rows.get(i).map(|r| &r.kind),
+    /// Whether the active row at `i` is the composer body row that carries the
+    /// caret glyph. With cursor movement the caret can sit on any wrapped body
+    /// line (not just the last), so scrolling keys off the glyph itself.
+    fn is_composer_caret_at(&self, i: usize) -> bool {
+        let body = match self.view {
+            View::Unified => match self.rows.get(i).map(|r| &r.kind) {
                 Some(RowKind::Composer(ComposerLine {
-                    kind: ComposerKind::Body(_)
-                }))
-            ),
-            View::Split => matches!(
-                self.split_rows.get(i).map(|r| &r.kind),
+                    kind: ComposerKind::Body(s),
+                })) => s,
+                _ => return false,
+            },
+            View::Split => match self.split_rows.get(i).map(|r| &r.kind) {
                 Some(SplitRowKind::Composer {
-                    line: ComposerLine {
-                        kind: ComposerKind::Body(_)
-                    },
+                    line:
+                        ComposerLine {
+                            kind: ComposerKind::Body(s),
+                        },
                     ..
-                })
-            ),
-        }
+                }) => s,
+                _ => return false,
+            },
+        };
+        body.contains(COMPOSER_CARET)
     }
 
-    /// Scroll so the (contiguous) inline composer box is in view. The caret
-    /// lives on the last body line (text is appended at the end), so when the
-    /// box is taller than the viewport we anchor to its bottom — keeping the
-    /// line being typed on screen — rather than pinning the top.
+    /// Scroll so the (contiguous) inline composer box is in view, anchored to
+    /// the body row carrying the caret. The cursor can be on any line now, so
+    /// when the box is taller than the viewport we keep the caret row on screen
+    /// rather than pinning the top or the bottom.
     fn ensure_composer_visible(&mut self) {
         let (s, e) = self.file_range();
         let Some(first) = (s..e).find(|&i| self.is_composer_at(i)) else {
@@ -927,20 +946,23 @@ impl App {
             .take_while(|&i| self.is_composer_at(i))
             .last()
             .unwrap_or(first);
-        // The caret rides the last body row; chrome (`Hint`/`Bottom`) sits below
-        // it, so anchor scroll to the body row — not `last` — to keep the line
-        // being typed on screen even on a very short viewport.
+        // Anchor scroll to the row carrying the caret glyph (the cursor line),
+        // wherever it is in the box — falling back to the last row if the glyph
+        // somehow isn't found, so we never leave the box fully off-screen.
         let caret = (first..=last)
-            .rev()
-            .find(|&i| self.is_composer_body_at(i))
+            .find(|&i| self.is_composer_caret_at(i))
             .unwrap_or(last);
         let height = self.height.max(1);
-        // Keep the caret line visible (scroll down if it fell below the fold).
+        // Caret below the fold: scroll down so it's the last visible row.
         if caret >= self.scroll + height {
             self.scroll = (caret + 1).saturating_sub(height).max(s);
         }
-        // Pull the top into view only when the whole box fits; otherwise stay
-        // anchored to the caret so the line being typed doesn't scroll off.
+        // Caret above the viewport (cursor moved up in a tall box): scroll up to
+        // it.
+        if caret < self.scroll {
+            self.scroll = caret.max(s);
+        }
+        // When the whole box fits, prefer showing its top.
         let fits = last - first < height;
         if first < self.scroll && fits {
             self.scroll = first.max(s);
@@ -3051,12 +3073,47 @@ mod tests {
 
         let (s, e) = app.file_range();
         let caret = (s..e)
-            .rev()
-            .find(|&i| app.is_composer_body_at(i))
-            .expect("composer body row");
+            .find(|&i| app.is_composer_caret_at(i))
+            .expect("composer caret row");
         assert!(
             caret >= app.scroll && caret < app.scroll + app.height,
             "caret row {caret} must stay within view [{}, {}) on a tiny viewport",
+            app.scroll,
+            app.scroll + app.height
+        );
+    }
+
+    #[test]
+    fn ensure_composer_visible_follows_caret_upward() {
+        // Regression: scrolling anchored to the *last* body row, so with the
+        // cursor moved up in a box taller than the viewport, a bottom-anchored
+        // scroll left the caret off-screen above. The pass must pull the
+        // viewport up to the caret row.
+        let mut app = app_with(DIFF);
+        app.height = 4;
+        app.toggle_view(); // Split -> Unified
+        open_composer(&mut app);
+        app.comment_wrap = 40;
+        for _ in 0..40 {
+            app.on_key_compose(KeyCode::Enter, KeyModifiers::NONE);
+        }
+        app.on_key_compose(KeyCode::Char('x'), KeyModifiers::NONE);
+        // Cursor to the top of the buffer, then force the viewport to the
+        // bottom (as if we'd just been typing at the end) and re-run the pass.
+        for _ in 0..45 {
+            app.on_key_compose(KeyCode::Up, KeyModifiers::NONE);
+        }
+        let (_, e) = app.file_range();
+        app.scroll = e.saturating_sub(app.height); // bottom-anchored
+        app.ensure_composer_visible();
+
+        let (s, e) = app.file_range();
+        let caret = (s..e)
+            .find(|&i| app.is_composer_caret_at(i))
+            .expect("composer caret row");
+        assert!(
+            caret >= app.scroll && caret < app.scroll + app.height,
+            "caret row {caret} must stay within view [{}, {}) when the cursor is up",
             app.scroll,
             app.scroll + app.height
         );
