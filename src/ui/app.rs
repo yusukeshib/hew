@@ -14,7 +14,8 @@ use crate::ui::sidebar::{
 use crate::ui::theme::theme;
 use anyhow::Result;
 use crossterm::event::{
-    self, Event, KeyCode, KeyEventKind, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
+    self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers, MouseButton, MouseEvent,
+    MouseEventKind,
 };
 use ratatui::prelude::*;
 use ratatui::widgets::{
@@ -24,6 +25,7 @@ use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use tui_textarea::TextArea;
 use uuid::Uuid;
 
 /// Diff layout: unified (stacked) or split (old | new, like `git delta`).
@@ -178,10 +180,51 @@ enum ComposeTarget {
     Reply { thread_id: Uuid },
 }
 
-/// In-progress comment text and where it lands.
+/// In-progress comment text and where it lands. The text + cursor live in a
+/// [`TextArea`], used purely as an edit model (readline/emacs keybindings,
+/// multi-line cursor, undo) — the box is drawn inline in the diff row stream,
+/// not via tui-textarea's own widget.
 struct Composer {
     target: ComposeTarget,
-    buf: String,
+    textarea: TextArea<'static>,
+}
+
+/// Caret glyph drawn at the composer's cursor (a printable block, so it
+/// survives `sanitize_line`).
+const COMPOSER_CARET: char = '\u{2588}';
+
+/// The composer body as a single string with the caret glyph spliced in at the
+/// cursor position, ready for the row builder to wrap. A `TextArea` always has
+/// at least one line, so the cursor row is always valid.
+///
+/// Built in one pass over `ta.lines()` (pushing line slices, not cloning each
+/// line into a `Vec<String>`): this runs on every row rebuild — i.e. per
+/// keystroke — so the per-line clone + join is worth avoiding.
+fn body_with_caret(ta: &TextArea<'static>) -> String {
+    let (row, col) = ta.cursor();
+    let lines = ta.lines();
+    let cap =
+        lines.iter().map(|l| l.len()).sum::<usize>() + lines.len() + COMPOSER_CARET.len_utf8();
+    let mut out = String::with_capacity(cap);
+    for (i, line) in lines.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        if i == row {
+            // `col` is a char index; translate to a byte offset to splice.
+            let byte = line
+                .char_indices()
+                .nth(col)
+                .map(|(b, _)| b)
+                .unwrap_or(line.len());
+            out.push_str(&line[..byte]);
+            out.push(COMPOSER_CARET);
+            out.push_str(&line[byte..]);
+        } else {
+            out.push_str(line);
+        }
+    }
+    out
 }
 
 /// Diff/review TUI state. Comments are loaded from a sidecar (immutable),
@@ -847,7 +890,7 @@ impl App {
         Some(ComposerSpec {
             anchor,
             title,
-            body: c.buf.clone(),
+            body: body_with_caret(&c.textarea),
         })
     }
 
@@ -865,33 +908,35 @@ impl App {
         }
     }
 
-    /// Whether the active row at `i` is the composer's caret line — a `Body`
-    /// row. The caret glyph is appended to the buffer, so it rides the *last*
-    /// such row; `Hint`/`Bottom` chrome sits below it.
-    fn is_composer_body_at(&self, i: usize) -> bool {
-        match self.view {
-            View::Unified => matches!(
-                self.rows.get(i).map(|r| &r.kind),
+    /// Whether the active row at `i` is the composer body row that carries the
+    /// caret glyph. With cursor movement the caret can sit on any wrapped body
+    /// line (not just the last), so scrolling keys off the glyph itself.
+    fn is_composer_caret_at(&self, i: usize) -> bool {
+        let body = match self.view {
+            View::Unified => match self.rows.get(i).map(|r| &r.kind) {
                 Some(RowKind::Composer(ComposerLine {
-                    kind: ComposerKind::Body(_)
-                }))
-            ),
-            View::Split => matches!(
-                self.split_rows.get(i).map(|r| &r.kind),
+                    kind: ComposerKind::Body(s),
+                })) => s,
+                _ => return false,
+            },
+            View::Split => match self.split_rows.get(i).map(|r| &r.kind) {
                 Some(SplitRowKind::Composer {
-                    line: ComposerLine {
-                        kind: ComposerKind::Body(_)
-                    },
+                    line:
+                        ComposerLine {
+                            kind: ComposerKind::Body(s),
+                        },
                     ..
-                })
-            ),
-        }
+                }) => s,
+                _ => return false,
+            },
+        };
+        body.contains(COMPOSER_CARET)
     }
 
-    /// Scroll so the (contiguous) inline composer box is in view. The caret
-    /// lives on the last body line (text is appended at the end), so when the
-    /// box is taller than the viewport we anchor to its bottom — keeping the
-    /// line being typed on screen — rather than pinning the top.
+    /// Scroll so the (contiguous) inline composer box is in view, anchored to
+    /// the body row carrying the caret. The cursor can be on any line now, so
+    /// when the box is taller than the viewport we keep the caret row on screen
+    /// rather than pinning the top or the bottom.
     fn ensure_composer_visible(&mut self) {
         let (s, e) = self.file_range();
         let Some(first) = (s..e).find(|&i| self.is_composer_at(i)) else {
@@ -901,20 +946,23 @@ impl App {
             .take_while(|&i| self.is_composer_at(i))
             .last()
             .unwrap_or(first);
-        // The caret rides the last body row; chrome (`Hint`/`Bottom`) sits below
-        // it, so anchor scroll to the body row — not `last` — to keep the line
-        // being typed on screen even on a very short viewport.
+        // Anchor scroll to the row carrying the caret glyph (the cursor line),
+        // wherever it is in the box — falling back to the last row if the glyph
+        // somehow isn't found, so we never leave the box fully off-screen.
         let caret = (first..=last)
-            .rev()
-            .find(|&i| self.is_composer_body_at(i))
+            .find(|&i| self.is_composer_caret_at(i))
             .unwrap_or(last);
         let height = self.height.max(1);
-        // Keep the caret line visible (scroll down if it fell below the fold).
+        // Caret below the fold: scroll down so it's the last visible row.
         if caret >= self.scroll + height {
             self.scroll = (caret + 1).saturating_sub(height).max(s);
         }
-        // Pull the top into view only when the whole box fits; otherwise stay
-        // anchored to the caret so the line being typed doesn't scroll off.
+        // Caret above the viewport (cursor moved up in a tall box): scroll up to
+        // it.
+        if caret < self.scroll {
+            self.scroll = caret.max(s);
+        }
+        // When the whole box fits, prefer showing its top.
         let fits = last - first < height;
         if first < self.scroll && fits {
             self.scroll = first.max(s);
@@ -940,7 +988,7 @@ impl App {
                 start,
                 end,
             },
-            buf: String::new(),
+            textarea: TextArea::default(),
         });
         self.status = "new comment — enter for newline, ctrl+s to submit, esc to cancel".into();
         self.rebuild_rows();
@@ -958,7 +1006,7 @@ impl App {
         self.sb_drag = None;
         self.composer = Some(Composer {
             target: ComposeTarget::Reply { thread_id: id },
-            buf: String::new(),
+            textarea: TextArea::default(),
         });
         self.status = "reply — enter for newline, ctrl+s to submit, esc to cancel".into();
         self.rebuild_rows();
@@ -973,25 +1021,30 @@ impl App {
         let Some(c) = self.composer.as_mut() else {
             return;
         };
-        // Normalize newlines; the row builder splits the body on `\n`.
-        c.buf
-            .push_str(&text.replace("\r\n", "\n").replace('\r', "\n"));
+        // Normalize newlines; `insert_str` splits on `\n` into the buffer at the
+        // cursor (which then sits after the inserted text).
+        c.textarea
+            .insert_str(text.replace("\r\n", "\n").replace('\r', "\n"));
         self.rebuild_rows();
         self.ensure_composer_visible();
     }
 
-    /// Keystrokes while the composer modal is open.
+    /// Keystrokes while the composer modal is open. hew's own chords (submit /
+    /// cancel) are handled here; everything else is forwarded to the `TextArea`
+    /// model, which provides readline/emacs editing (Ctrl+A/E/B/F/K/U/W,
+    /// Alt+B/F, arrows, ↑/↓ line moves, Ctrl+D delete-forward, undo, …).
     fn on_key_compose(&mut self, code: KeyCode, mods: KeyModifiers) {
         let ctrl = mods.contains(KeyModifiers::CONTROL);
         match code {
-            // Esc or Ctrl-C/D cancels without saving.
+            // Esc or Ctrl-C cancels without saving. (Ctrl+D is left to the
+            // editor as delete-forward, per readline.)
             KeyCode::Esc => {
                 self.composer = None;
                 self.visual = false;
                 self.sel_anchor = None;
                 self.status = "cancelled".into();
             }
-            KeyCode::Char('c') | KeyCode::Char('d') if ctrl => {
+            KeyCode::Char('c') if ctrl => {
                 self.composer = None;
                 self.visual = false;
                 self.sel_anchor = None;
@@ -1004,29 +1057,22 @@ impl App {
             // keyboard-enhancement protocol (DISAMBIGUATE_ESCAPE_CODES, enabled
             // in `run`); under tmux that protocol is usually swallowed, which is
             // why a protocol-free fallback exists at all. A bare Enter inserts a
-            // newline (bodies are multi-line). Shift+Enter is intentionally not
+            // newline (handled by the editor). Shift+Enter is intentionally not
             // used: the protocol reports ctrl+key but not plain shift+key, so it
             // would be indistinguishable from a bare Enter.
             KeyCode::Char('s') if ctrl => self.submit_compose(),
             KeyCode::Enter if ctrl => self.submit_compose(),
-            KeyCode::Enter => {
-                if let Some(c) = self.composer.as_mut() {
-                    c.buf.push('\n');
-                }
+            // Everything else: hand the key to the edit model. We always rebuild
+            // afterward (below) rather than keying off `input()`'s return value:
+            // it reports whether the *text* changed, so cursor-only moves (←/→,
+            // Ctrl+A/E, ↑/↓, …) return false even though the caret moved and the
+            // row stream needs to redraw it.
+            _ => {
+                let Some(c) = self.composer.as_mut() else {
+                    return;
+                };
+                c.textarea.input(KeyEvent::new(code, mods));
             }
-            KeyCode::Backspace => {
-                if let Some(c) = self.composer.as_mut() {
-                    c.buf.pop();
-                }
-            }
-            KeyCode::Char(ch) if !ctrl => {
-                if let Some(c) = self.composer.as_mut() {
-                    c.buf.push(ch);
-                }
-            }
-            // Unhandled keys change no state, so skip the row rebuild entirely
-            // (it walks the whole changeset — wasteful per keystroke).
-            _ => return,
         }
         // The composer is part of the row stream now, so any state change
         // (typed text, cancel) must rebuild rows to reflect it. `submit_compose`
@@ -1042,7 +1088,7 @@ impl App {
         let Some(c) = self.composer.take() else {
             return;
         };
-        let body = c.buf.trim().to_string();
+        let body = c.textarea.lines().join("\n").trim().to_string();
         if body.is_empty() {
             self.status = "empty comment discarded".into();
             return;
@@ -2766,7 +2812,7 @@ mod tests {
         open_composer(&mut app);
         app.on_paste("first line\r\nsecond line\rthird".into());
         assert_eq!(
-            app.composer.as_ref().unwrap().buf,
+            app.composer.as_ref().unwrap().textarea.lines().join("\n"),
             "first line\nsecond line\nthird"
         );
         assert!(app.composer.is_some(), "paste must not submit");
@@ -2892,6 +2938,87 @@ mod tests {
         assert!(app.composer.is_some(), "composer should be open");
     }
 
+    /// The current composer text (no caret), for assertions.
+    fn composer_text(app: &App) -> String {
+        app.composer.as_ref().unwrap().textarea.lines().join("\n")
+    }
+
+    #[test]
+    fn composer_supports_readline_cursor_editing() {
+        let mut app = app_with(DIFF);
+        open_composer(&mut app);
+        // Type "ac", move left (←), insert "b" between them — cursor editing.
+        app.on_key_compose(KeyCode::Char('a'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Char('c'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Left, KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Char('b'), KeyModifiers::NONE);
+        assert_eq!(composer_text(&app), "abc");
+
+        // Ctrl+A jumps to line start; typed text lands there.
+        app.on_key_compose(KeyCode::Char('a'), KeyModifiers::CONTROL);
+        app.on_key_compose(KeyCode::Char('X'), KeyModifiers::NONE);
+        assert_eq!(composer_text(&app), "Xabc");
+
+        // Ctrl+E jumps to line end.
+        app.on_key_compose(KeyCode::Char('e'), KeyModifiers::CONTROL);
+        app.on_key_compose(KeyCode::Char('Z'), KeyModifiers::NONE);
+        assert_eq!(composer_text(&app), "XabcZ");
+    }
+
+    #[test]
+    fn cursor_move_rebuilds_the_rendered_composer() {
+        // Regression: a cursor-only key (←) doesn't change the text, so
+        // TextArea::input returns false. The row stream must still be rebuilt,
+        // or the drawn caret would stay put while the real cursor moved.
+        let mut app = app_with(DIFF);
+        app.toggle_view(); // Split -> Unified, so the caret rides a `Row`
+        open_composer(&mut app);
+        // Tests never draw, so `comment_wrap` would be 0 and wrap each glyph
+        // onto its own line; give the body a real width so it stays one line.
+        app.comment_wrap = 40;
+        app.on_key_compose(KeyCode::Char('a'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Char('b'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Left, KeyModifiers::NONE);
+        let body = app
+            .rows
+            .iter()
+            .find_map(|r| match &r.kind {
+                RowKind::Composer(ComposerLine {
+                    kind: ComposerKind::Body(s),
+                }) if s.contains(COMPOSER_CARET) => Some(s.clone()),
+                _ => None,
+            })
+            .expect("a composer body row carrying the caret");
+        assert_eq!(body, "a\u{2588}b", "the drawn caret must follow the cursor");
+    }
+
+    #[test]
+    fn composer_caret_renders_at_the_cursor() {
+        let mut app = app_with(DIFF);
+        open_composer(&mut app);
+        app.on_key_compose(KeyCode::Char('a'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Char('b'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Char('a'), KeyModifiers::CONTROL); // to start
+        let spec = app.composer_spec().expect("composer spec");
+        assert_eq!(
+            spec.body, "\u{2588}ab",
+            "caret renders at the cursor, not the end"
+        );
+    }
+
+    #[test]
+    fn ctrl_d_deletes_forward_and_does_not_cancel() {
+        // Ctrl+D is readline delete-forward now, not a cancel chord.
+        let mut app = app_with(DIFF);
+        open_composer(&mut app);
+        app.on_key_compose(KeyCode::Char('a'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Char('b'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Char('a'), KeyModifiers::CONTROL); // to start
+        app.on_key_compose(KeyCode::Char('d'), KeyModifiers::CONTROL); // delete 'a'
+        assert!(app.composer.is_some(), "Ctrl+D must not cancel");
+        assert_eq!(composer_text(&app), "b");
+    }
+
     #[test]
     fn composer_keeps_caret_visible_when_taller_than_viewport() {
         // Regression: typing a long comment scrolled the box's *top* into view
@@ -2946,12 +3073,47 @@ mod tests {
 
         let (s, e) = app.file_range();
         let caret = (s..e)
-            .rev()
-            .find(|&i| app.is_composer_body_at(i))
-            .expect("composer body row");
+            .find(|&i| app.is_composer_caret_at(i))
+            .expect("composer caret row");
         assert!(
             caret >= app.scroll && caret < app.scroll + app.height,
             "caret row {caret} must stay within view [{}, {}) on a tiny viewport",
+            app.scroll,
+            app.scroll + app.height
+        );
+    }
+
+    #[test]
+    fn ensure_composer_visible_follows_caret_upward() {
+        // Regression: scrolling anchored to the *last* body row, so with the
+        // cursor moved up in a box taller than the viewport, a bottom-anchored
+        // scroll left the caret off-screen above. The pass must pull the
+        // viewport up to the caret row.
+        let mut app = app_with(DIFF);
+        app.height = 4;
+        app.toggle_view(); // Split -> Unified
+        open_composer(&mut app);
+        app.comment_wrap = 40;
+        for _ in 0..40 {
+            app.on_key_compose(KeyCode::Enter, KeyModifiers::NONE);
+        }
+        app.on_key_compose(KeyCode::Char('x'), KeyModifiers::NONE);
+        // Cursor to the top of the buffer, then force the viewport to the
+        // bottom (as if we'd just been typing at the end) and re-run the pass.
+        for _ in 0..45 {
+            app.on_key_compose(KeyCode::Up, KeyModifiers::NONE);
+        }
+        let (_, e) = app.file_range();
+        app.scroll = e.saturating_sub(app.height); // bottom-anchored
+        app.ensure_composer_visible();
+
+        let (s, e) = app.file_range();
+        let caret = (s..e)
+            .find(|&i| app.is_composer_caret_at(i))
+            .expect("composer caret row");
+        assert!(
+            caret >= app.scroll && caret < app.scroll + app.height,
+            "caret row {caret} must stay within view [{}, {}) when the cursor is up",
             app.scroll,
             app.scroll + app.height
         );
@@ -2966,7 +3128,10 @@ mod tests {
         app.on_key_compose(KeyCode::Char('b'), KeyModifiers::NONE);
         // A bare Enter must NOT submit — the composer stays open with a newline.
         assert!(app.composer.is_some(), "bare Enter should not submit");
-        assert_eq!(app.composer.as_ref().unwrap().buf, "a\nb");
+        assert_eq!(
+            app.composer.as_ref().unwrap().textarea.lines().join("\n"),
+            "a\nb"
+        );
     }
 
     #[test]
@@ -3009,6 +3174,9 @@ mod tests {
         app.on_key_compose(KeyCode::Char('x'), KeyModifiers::NONE);
         app.on_key_compose(KeyCode::Enter, KeyModifiers::SHIFT);
         assert!(app.composer.is_some(), "Shift+Enter must not submit");
-        assert_eq!(app.composer.as_ref().unwrap().buf, "x\n");
+        assert_eq!(
+            app.composer.as_ref().unwrap().textarea.lines().join("\n"),
+            "x\n"
+        );
     }
 }

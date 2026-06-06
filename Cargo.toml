@@ -20,6 +20,11 @@ anyhow = "1"
 clap = { version = "4", features = ["derive"] }
 ratatui = "0.29"
 crossterm = "0.28"
+# Multiline edit model for the comment composer (readline/emacs-style keys).
+# Used as a state/edit model only — the composer is drawn inline in the diff
+# row stream, not via tui-textarea's own widget. Pinned to the crossterm-0.28
+# line (its From<KeyEvent> impl breaks on crossterm 0.29).
+tui-textarea = "0.7"
 patch = "0.7"
 syntect = { version = "5", default-features = false, features = ["default-fancy"] }
 two-face = { version = "0.4", default-features = false, features = ["syntect-fancy"] }

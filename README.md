@@ -125,6 +125,13 @@ inline popup). You can compose/reply/resolve threads and delete your own
 comments in-app; on exit hew
 prints the compacted action log to stdout (the inputs are never written).
 
+The comment composer is a multi-line editor with readline/emacs-style keys:
+`Ctrl-A`/`Ctrl-E` (line start/end), `Ctrl-B`/`Ctrl-F` and `←`/`→` (char),
+`Alt-B`/`Alt-F` (word), `↑`/`↓` (line), `Ctrl-K`/`Ctrl-U` (kill to end/start),
+`Ctrl-W` (delete word), `Ctrl-D` (delete forward), plus undo/redo. `Enter`
+inserts a newline, `Ctrl-S` (or `Ctrl-Enter`) submits, `Esc` (or `Ctrl-C`)
+cancels.
+
 ## Comment sidecar format
 
 ```json
