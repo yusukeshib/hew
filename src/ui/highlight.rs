@@ -50,7 +50,10 @@ impl Highlighter {
                 .into_iter()
                 .map(|(st, s)| {
                     let c = st.foreground;
-                    (Color::Rgb(c.r, c.g, c.b), s.to_string())
+                    // Downsample to xterm-256 on non-truecolor terminals so the
+                    // syntax palette degrades gracefully (see `theme`).
+                    let fg = crate::ui::theme::adapt_color(Color::Rgb(c.r, c.g, c.b));
+                    (fg, s.to_string())
                 })
                 .collect(),
             Err(_) => vec![(Color::Gray, text.to_string())],

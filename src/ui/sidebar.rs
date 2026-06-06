@@ -4,7 +4,7 @@
 
 use crate::comments::model::CommentStore;
 use crate::diff::model::{Changeset, DiffFile};
-use crate::ui::theme::THEME;
+use crate::ui::theme::theme;
 use ratatui::style::Color;
 use std::collections::HashSet;
 use std::path::Path;
@@ -28,13 +28,13 @@ pub fn file_status(f: &DiffFile) -> (char, Color) {
     let added = f.old_path == "/dev/null" || f.old_path.is_empty();
     let deleted = f.new_path == "/dev/null" || f.new_path.is_empty();
     if added {
-        ('A', THEME.added)
+        ('A', theme().added)
     } else if deleted {
-        ('D', THEME.removed)
+        ('D', theme().removed)
     } else if f.old_path != f.new_path {
-        ('R', THEME.accent)
+        ('R', theme().accent)
     } else {
-        ('M', THEME.warn)
+        ('M', theme().warn)
     }
 }
 

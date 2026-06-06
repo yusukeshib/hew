@@ -2,11 +2,21 @@
 //!
 //! Every non-syntax color the TUI draws lives here so the look can be tuned in
 //! one place. (Code-token colors come separately from the syntect theme in
-//! [`crate::ui::highlight`].) Access the active palette through [`THEME`].
+//! [`crate::ui::highlight`].) Access the active palette through [`theme()`].
+//!
+//! The master palette ([`MASTER`]) is authored in 24-bit truecolor. At startup
+//! [`init_theme`] resolves it against the detected terminal: on a truecolor
+//! terminal the RGB values pass through unchanged; otherwise each `Rgb` is
+//! downsampled to the nearest xterm-256 index ([`adapt_color`]) so the look
+//! degrades gracefully instead of being mangled by tmux's own conversion.
+//! Named ANSI colors (e.g. `Red`, `Cyan`) are left alone so they keep tracking
+//! the user's terminal/tmux palette.
 
 use ratatui::style::Color;
+use std::sync::OnceLock;
 
 /// Semantic colors for the diff viewer's chrome and text.
+#[derive(Clone, Copy)]
 pub struct Theme {
     // Diff line backgrounds.
     /// Added line tint.
@@ -53,9 +63,10 @@ pub struct Theme {
     pub none: Color,
 }
 
-/// The active palette: a dark theme tuned for low-contrast chrome with a
-/// vivid focused cursor line.
-pub const THEME: Theme = Theme {
+/// The master palette: a dark theme tuned for low-contrast chrome with a vivid
+/// focused cursor line, authored in truecolor. Resolved per-terminal by
+/// [`init_theme`]; read the resolved palette via [`theme()`].
+const MASTER: Theme = Theme {
     add_bg: Color::Rgb(20, 42, 24),
     del_bg: Color::Rgb(48, 24, 26),
     cursor_bg: Color::Rgb(38, 116, 180),
@@ -78,3 +89,156 @@ pub const THEME: Theme = Theme {
     removed: Color::Red,
     none: Color::Reset,
 };
+
+/// Whether the active terminal was detected as truecolor-capable. Drives the
+/// dynamic downsampling of syntect token colors in [`adapt_color`]. Defaults to
+/// `true` (no downsampling) until [`init_theme`] runs — so unit tests and any
+/// pre-init access keep the authored palette.
+static TRUECOLOR: OnceLock<bool> = OnceLock::new();
+/// The palette resolved for the active terminal (see [`init_theme`]).
+static ACTIVE: OnceLock<Theme> = OnceLock::new();
+
+/// Resolve and cache the active palette for the detected terminal. Call once at
+/// startup, before the first render. Idempotent: later calls are ignored.
+pub fn init_theme(truecolor: bool) {
+    let _ = TRUECOLOR.set(truecolor);
+    let _ = ACTIVE.set(MASTER.adapt(truecolor));
+}
+
+/// The active palette. Falls back to the authored truecolor master if
+/// [`init_theme`] hasn't run (e.g. in tests).
+pub fn theme() -> &'static Theme {
+    ACTIVE.get_or_init(|| MASTER)
+}
+
+/// Adapt a *dynamically produced* color (e.g. a syntect token's RGB) to the
+/// active terminal: pass truecolor through, otherwise downsample `Rgb` to the
+/// nearest xterm-256 index. Named/indexed colors are returned unchanged.
+pub fn adapt_color(c: Color) -> Color {
+    down(c, *TRUECOLOR.get().unwrap_or(&true))
+}
+
+impl Theme {
+    /// Build a copy with every `Rgb` field downsampled for a non-truecolor
+    /// terminal (a no-op when `truecolor`). Named colors are preserved.
+    fn adapt(&self, truecolor: bool) -> Theme {
+        let d = |c: Color| down(c, truecolor);
+        Theme {
+            add_bg: d(self.add_bg),
+            del_bg: d(self.del_bg),
+            cursor_bg: d(self.cursor_bg),
+            unfocus_bg: d(self.unfocus_bg),
+            file_header_bg: d(self.file_header_bg),
+            comment_bg: d(self.comment_bg),
+            subtle: d(self.subtle),
+            scrollbar_thumb: d(self.scrollbar_thumb),
+            border_focus: d(self.border_focus),
+            border_unfocus: d(self.border_unfocus),
+            text: d(self.text),
+            text_strong: d(self.text_strong),
+            muted: d(self.muted),
+            faint: d(self.faint),
+            accent: d(self.accent),
+            warn: d(self.warn),
+            added: d(self.added),
+            removed: d(self.removed),
+            none: d(self.none),
+        }
+    }
+}
+
+/// Downsample a single `Rgb` color to the nearest xterm-256 index when the
+/// terminal isn't truecolor; pass everything else through untouched.
+fn down(c: Color, truecolor: bool) -> Color {
+    match c {
+        Color::Rgb(r, g, b) if !truecolor => Color::Indexed(rgb_to_ansi256(r, g, b)),
+        other => other,
+    }
+}
+
+/// Nearest xterm-256 palette index for a 24-bit color. Considers both the
+/// 6×6×6 color cube (indices 16..=231) and the 24-step grayscale ramp
+/// (232..=255), returning whichever is closest by squared Euclidean distance.
+/// The first 16 slots are skipped: they're terminal-defined, so their RGB is
+/// unknown and can't be matched reliably.
+fn rgb_to_ansi256(r: u8, g: u8, b: u8) -> u8 {
+    // Sample levels for each cube axis (xterm's standard 6-step ramp).
+    const CUBE: [i32; 6] = [0, 95, 135, 175, 215, 255];
+    let nearest_cube = |v: i32| -> usize {
+        CUBE.iter()
+            .enumerate()
+            .min_by_key(|(_, &lvl)| (v - lvl).abs())
+            .map(|(i, _)| i)
+            .unwrap()
+    };
+    let (r, g, b) = (r as i32, g as i32, b as i32);
+    let dist = |a: (i32, i32, i32), x: (i32, i32, i32)| {
+        let (dr, dg, db) = (a.0 - x.0, a.1 - x.1, a.2 - x.2);
+        dr * dr + dg * dg + db * db
+    };
+
+    // Best match within the color cube.
+    let (ci, cj, ck) = (nearest_cube(r), nearest_cube(g), nearest_cube(b));
+    let cube_rgb = (CUBE[ci], CUBE[cj], CUBE[ck]);
+    let cube_idx = 16 + 36 * ci + 6 * cj + ck;
+
+    // Best match within the grayscale ramp: gray N (0..=23) is 8 + 10*N.
+    let gray_n = (((r + g + b) / 3) - 8).clamp(0, 230) / 10;
+    let gray_v = 8 + 10 * gray_n;
+    let gray_idx = 232 + gray_n as usize;
+
+    if dist((r, g, b), cube_rgb) <= dist((r, g, b), (gray_v, gray_v, gray_v)) {
+        cube_idx as u8
+    } else {
+        gray_idx as u8
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn truecolor_passes_rgb_through_unchanged() {
+        assert_eq!(down(Color::Rgb(20, 42, 24), true), Color::Rgb(20, 42, 24));
+        // Named colors are never touched, in either mode.
+        assert_eq!(down(Color::Red, false), Color::Red);
+        assert_eq!(down(Color::Reset, false), Color::Reset);
+    }
+
+    #[test]
+    fn non_truecolor_downsamples_rgb_to_indexed() {
+        // Pure colors land on their cube corners.
+        assert_eq!(down(Color::Rgb(0, 0, 0), false), Color::Indexed(16));
+        assert_eq!(down(Color::Rgb(255, 255, 255), false), Color::Indexed(231));
+        assert_eq!(down(Color::Rgb(255, 0, 0), false), Color::Indexed(196));
+        assert_eq!(down(Color::Rgb(0, 255, 0), false), Color::Indexed(46));
+        assert_eq!(down(Color::Rgb(0, 0, 255), false), Color::Indexed(21));
+    }
+
+    #[test]
+    fn mid_gray_prefers_the_grayscale_ramp() {
+        // A neutral gray is closer to the 24-step ramp than any cube corner.
+        let idx = match down(Color::Rgb(128, 128, 128), false) {
+            Color::Indexed(i) => i,
+            other => panic!("expected indexed, got {other:?}"),
+        };
+        assert!(
+            (232..=255).contains(&idx),
+            "expected grayscale ramp, got {idx}"
+        );
+    }
+
+    #[test]
+    fn adapt_downsamples_rgb_fields_but_keeps_named() {
+        let dark = MASTER.adapt(false);
+        // An Rgb field becomes Indexed...
+        assert!(matches!(dark.cursor_bg, Color::Indexed(_)));
+        // ...while a named field is preserved.
+        assert_eq!(dark.removed, Color::Red);
+        assert_eq!(dark.none, Color::Reset);
+        // Truecolor adapt is a faithful pass-through.
+        let bright = MASTER.adapt(true);
+        assert_eq!(bright.cursor_bg, MASTER.cursor_bg);
+    }
+}
