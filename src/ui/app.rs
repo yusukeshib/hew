@@ -1532,11 +1532,17 @@ impl App {
     }
 
     /// Extend the line selection by one row (Shift+Up/Down). Moves only across
-    /// selectable *diff lines* (skipping comment/collapsed rows): a line
-    /// selection must stay anchored on diff lines, or `selection_range()` —
-    /// which reads `anchor_at(selected)` — would return `None` and `i` (new
-    /// thread) would have nothing to anchor to. A no-op when there is no diff
-    /// line in that direction, so it never enters visual mode pointlessly.
+    /// selectable *diff lines* (skipping comment rows): a line selection must
+    /// stay anchored on diff lines, or `selection_range()` — which reads
+    /// `anchor_at(selected)` — would return `None` and `i` (new thread) would
+    /// have nothing to anchor to. A no-op when there is no diff line in that
+    /// direction.
+    ///
+    /// Unlike `v`, this does NOT enter persistent visual mode: terminals can't
+    /// report Shift key-release, so the heuristic is that the *next* unmodified
+    /// movement (plain `j`/`k`) collapses the range (via `move_selection`'s
+    /// `!visual` branch). Consecutive Shift+arrows keep growing it because the
+    /// anchor survives between presses.
     fn extend_selection(&mut self, dir: isize) {
         let (start, end) = self.file_range();
         let mut i = self.selected as isize + dir;
@@ -1549,13 +1555,15 @@ impl App {
             }
             i += dir;
         };
-        if !self.visual {
-            self.visual = true;
+        // Anchor the range at the current line on the first Shift+arrow; keep it
+        // on subsequent ones (so the span grows). A prior plain move will have
+        // cleared it, starting a fresh range here.
+        if self.sel_anchor.is_none() {
             self.sel_anchor = Some(self.selected);
         }
         self.selected = target;
         self.ensure_visible();
-        self.status = "visual — shift+↑/↓ to extend, i to comment, esc to cancel".into();
+        self.status = "shift+↑/↓ to extend · i to comment · move to clear".into();
     }
 
     /// The (file, side, line-range) covered by the current selection, matching
@@ -2454,14 +2462,15 @@ mod tests {
     #[test]
     fn shift_arrows_extend_a_line_selection() {
         // Shift+Down/Up builds a multi-line selection without entering `v`
-        // visual mode first, anchoring at the starting line.
+        // visual mode, anchoring at the starting line. `visual` stays false so
+        // a later unmodified move collapses the range.
         let mut app = app_with(DIFF);
         goto(&mut app, Side::New, 2);
         assert!(!app.visual && app.sel_anchor.is_none());
 
         app.on_key_diff(KeyCode::Down, false, true);
         app.on_key_diff(KeyCode::Down, false, true);
-        assert!(app.visual && app.sel_anchor.is_some());
+        assert!(!app.visual && app.sel_anchor.is_some());
         assert_eq!(
             app.selection_range().unwrap(),
             (app.current_file, Side::New, 2, 4)
@@ -2472,6 +2481,40 @@ mod tests {
         assert_eq!(
             app.selection_range().unwrap(),
             (app.current_file, Side::New, 2, 3)
+        );
+    }
+
+    #[test]
+    fn unmodified_move_collapses_a_shift_selection() {
+        // Regression: Shift+arrow used to flip on persistent visual mode, so the
+        // multi-select stayed active after releasing Shift (terminals can't
+        // report Shift key-up). A plain j/k must collapse the range back to a
+        // single line.
+        let mut app = app_with(DIFF);
+        goto(&mut app, Side::New, 2);
+        app.on_key_diff(KeyCode::Down, false, true);
+        app.on_key_diff(KeyCode::Down, false, true);
+        assert_eq!(
+            app.selection_range().unwrap(),
+            (app.current_file, Side::New, 2, 4),
+            "shift extended the range"
+        );
+
+        // A plain (no-shift) Down collapses to the single cursor line.
+        app.on_key_diff(KeyCode::Down, false, false);
+        assert!(app.sel_anchor.is_none(), "plain move must drop the anchor");
+        let (_, side, lo, hi) = app.selection_range().unwrap();
+        assert_eq!(
+            (side, lo, hi),
+            (Side::New, 5, 5),
+            "range collapsed to one line"
+        );
+
+        // A fresh Shift+arrow starts a brand-new range from here.
+        app.on_key_diff(KeyCode::Down, false, true);
+        assert_eq!(
+            app.selection_range().unwrap(),
+            (app.current_file, Side::New, 5, 6)
         );
     }
 
