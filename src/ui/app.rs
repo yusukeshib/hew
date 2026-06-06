@@ -1040,17 +1040,16 @@ impl App {
             // would be indistinguishable from a bare Enter.
             KeyCode::Char('s') if ctrl => self.submit_compose(),
             KeyCode::Enter if ctrl => self.submit_compose(),
-            // Everything else: hand the key to the edit model. Rebuild the row
-            // stream only when the editor actually consumed it.
+            // Everything else: hand the key to the edit model. We always rebuild
+            // afterward (below) rather than keying off `input()`'s return value:
+            // it reports whether the *text* changed, so cursor-only moves (←/→,
+            // Ctrl+A/E, ↑/↓, …) return false even though the caret moved and the
+            // row stream needs to redraw it.
             _ => {
-                let consumed = self
-                    .composer
-                    .as_mut()
-                    .map(|c| c.textarea.input(KeyEvent::new(code, mods)))
-                    .unwrap_or(false);
-                if !consumed {
+                let Some(c) = self.composer.as_mut() else {
                     return;
-                }
+                };
+                c.textarea.input(KeyEvent::new(code, mods));
             }
         }
         // The composer is part of the row stream now, so any state change
@@ -2942,6 +2941,33 @@ mod tests {
         app.on_key_compose(KeyCode::Char('e'), KeyModifiers::CONTROL);
         app.on_key_compose(KeyCode::Char('Z'), KeyModifiers::NONE);
         assert_eq!(composer_text(&app), "XabcZ");
+    }
+
+    #[test]
+    fn cursor_move_rebuilds_the_rendered_composer() {
+        // Regression: a cursor-only key (←) doesn't change the text, so
+        // TextArea::input returns false. The row stream must still be rebuilt,
+        // or the drawn caret would stay put while the real cursor moved.
+        let mut app = app_with(DIFF);
+        app.toggle_view(); // Split -> Unified, so the caret rides a `Row`
+        open_composer(&mut app);
+        // Tests never draw, so `comment_wrap` would be 0 and wrap each glyph
+        // onto its own line; give the body a real width so it stays one line.
+        app.comment_wrap = 40;
+        app.on_key_compose(KeyCode::Char('a'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Char('b'), KeyModifiers::NONE);
+        app.on_key_compose(KeyCode::Left, KeyModifiers::NONE);
+        let body = app
+            .rows
+            .iter()
+            .find_map(|r| match &r.kind {
+                RowKind::Composer(ComposerLine {
+                    kind: ComposerKind::Body(s),
+                }) if s.contains(COMPOSER_CARET) => Some(s.clone()),
+                _ => None,
+            })
+            .expect("a composer body row carrying the caret");
+        assert_eq!(body, "a\u{2588}b", "the drawn caret must follow the cursor");
     }
 
     #[test]
