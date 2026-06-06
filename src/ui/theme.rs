@@ -213,7 +213,11 @@ impl Theme {
             subtle: t(mix(bg, fg, 0.12)),
             scrollbar_thumb: t(comment),
             border_focus: t(accent),
-            border_unfocus: t(comment),
+            // Unfocused borders sit well below the bright accent focus border so
+            // a selected comment box (or the focused diff panel) reads clearly
+            // against unselected ones: a dim neutral grey, not the lighter
+            // comment hue (which was too close to the accent at a glance).
+            border_unfocus: t(mix(bg, fg, 0.28)),
             text: t(mix(fg, bg, 0.12)),
             text_strong: t(fg),
             // Secondary / "disabled" UI text (line numbers, status, dates) is a
