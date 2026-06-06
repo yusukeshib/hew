@@ -18,7 +18,7 @@ use two_face::theme::EmbeddedThemeName;
 /// rethemes the entire UI.
 pub fn default_theme() -> Theme {
     two_face::theme::extra()
-        .get(EmbeddedThemeName::DarkNeon)
+        .get(EmbeddedThemeName::TwoDark)
         .clone()
 }
 
