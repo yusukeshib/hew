@@ -932,7 +932,7 @@ mod tests {
     }
 
     #[test]
-    fn injects_expanded_thread_rows() {
+    fn injects_inline_thread_rows() {
         let cs = load_patch(Some(Path::new("examples/rust-long-en.patch"))).unwrap();
         let comments = load_comments(Path::new("examples/rust-long-en.comments.json")).unwrap();
         let base = build_rows(&cs, &CommentStore::default(), 80, None);

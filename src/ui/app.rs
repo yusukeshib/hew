@@ -738,7 +738,7 @@ impl App {
         }
     }
 
-    /// Rebuild the diff row lists from the changeset + inline-expanded threads,
+    /// Rebuild the diff row lists from the changeset + inline comment threads,
     /// keeping the cursor on the same (file, side, line) anchor.
     fn rebuild_rows(&mut self) {
         let key = self.sel_key();
@@ -1132,9 +1132,8 @@ impl App {
         Some((cl.thread_id, cl.comment_id?))
     }
 
-    /// A "stop" is a place the cursor can land: a diff line, the *first* row of
-    /// a comment message (so a multi-line message is a single stop), or a
-    /// collapsed thread's single summary row.
+    /// A "stop" is a place the cursor can land: a diff line, or the *first* row
+    /// of a comment message (so a multi-line message is a single stop).
     fn is_stop_at(&self, i: usize) -> bool {
         if self.is_selectable_at(i) {
             return true;
