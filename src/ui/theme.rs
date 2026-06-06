@@ -77,8 +77,11 @@ static MASTER: Theme = Theme {
 
     add_bg: Color::Rgb(34, 52, 43),
     del_bg: Color::Rgb(63, 42, 49),
-    cursor_bg: Color::Rgb(68, 71, 90),
-    unfocus_bg: Color::Rgb(52, 54, 68),
+    // Focused current line: a brighter blue-grey selection so the cursor row
+    // clearly stands out from the #282a36 bg. Unfocused uses Dracula's subtler
+    // current-line #44475a.
+    cursor_bg: Color::Rgb(92, 99, 140),
+    unfocus_bg: Color::Rgb(68, 71, 90),
     file_header_bg: Color::Rgb(54, 57, 73),
     comment_bg: Color::Rgb(45, 47, 61),
 
