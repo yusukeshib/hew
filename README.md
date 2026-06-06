@@ -112,7 +112,7 @@ Unified stacks `-`/`+` lines; split shows old on the left and new on the right
 (like `git delta --side-by-side`), pairing changed lines across a divider.
 Toggling keeps the cursor on the same line.
 
-The UI uses the Monokai (Extended Bright) theme. The whole palette — chrome
+The UI uses the Dark Neon theme. The whole palette — chrome
 (sidebar, borders, headers, cursor line, status) and background — is *derived
 from the syntax theme*, so the entire look comes from one source. Colors are
 24-bit truecolor; hew checks `COLORTERM` and, on a non-truecolor terminal
@@ -215,7 +215,7 @@ integration, no patch apply/edit/merge, no structural (AST) diff, and no "save"
 — its inputs (the patch and the `--comments` base) are immutable, and it emits a
 compacted action log to stdout on exit. It offers unified and split layouts,
 in-app authoring (compose/reply/resolve/delete), syntax highlighting (syntect +
-two-face's bat syntax set for broad language coverage, Monokai theme (chrome
+two-face's bat syntax set for broad language coverage, Dark Neon theme (chrome
 palette derived from it),
 pure-Rust fancy-regex), and sidecar comment threads.
 
