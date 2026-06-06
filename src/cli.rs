@@ -59,13 +59,14 @@ OUTPUT — action log (stdout), the minimal delta turning base into reviewed:
     \"side\":\"new\",\"start_line\":10,\"line\":12,\"body\":\"...\",\"author\":\"you\"},
    {\"action\":\"reply\",\"thread_id\":\"<id>\",\"body\":\"...\"},
    {\"action\":\"resolve\",\"thread_id\":\"<id>\"},
-   {\"action\":\"unresolve\",\"thread_id\":\"<id>\"},
-   {\"action\":\"delete\",\"thread_id\":\"<id>\"}]
+   {\"action\":\"unresolve\",\"thread_id\":\"<id>\"}]
+  - These four are the only action types; there is no `delete` action.
   - add_comment's `line` is the thread's last line; `start_line` appears only
     for a multi-line range (omitted for a single line) — GitHub's shape.
-  - reply/resolve/unresolve/delete reference a thread by thread_id, an opaque
+  - reply/resolve/unresolve reference a thread by thread_id, an opaque
     string echoing the base id verbatim (a base thread, or one add_comment-ed
     earlier in the same log).
-  - Compaction is automatic: add-then-delete and resolve-then-unresolve cancel.
+  - Compaction is automatic: an in-session add-then-delete and a
+    resolve-then-unresolve both cancel out of the log.
 
 Note: hew parses plain unified diffs, not git format-patch mailbox output.";
