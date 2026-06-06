@@ -446,7 +446,35 @@ fn comment_rows_for(
 /// We expand tabs (4-col stops), drop CR/LF, strip ANSI CSI/OSC sequences, and
 /// drop any remaining control characters.
 pub fn sanitize_line(s: &str) -> String {
+    // Delegates to `sanitize_into`, whose fast path copies a clean printable-
+    // ASCII line (the common case for source diffs) in a single allocation
+    // instead of rebuilding it char-by-char. Scanning for cleanliness happens
+    // once, inside `sanitize_into` — duplicating the check here would re-scan
+    // every non-clean line before the (already expensive) char loop.
     let mut out = String::with_capacity(s.len());
+    sanitize_into(&mut out, s);
+    out
+}
+
+/// True when every byte is printable ASCII (`0x20..=0x7e`), so the string needs
+/// no sanitization. Single vectorizable byte scan.
+#[inline]
+fn is_clean_ascii(s: &str) -> bool {
+    s.bytes().all(|b| b.wrapping_sub(0x20) < 0x5f)
+}
+
+/// Sanitize `s` and append the result to `out` (see [`sanitize_line`]). Lets a
+/// caller that already needs an owned buffer (e.g. a line prefixed with a diff
+/// sign) avoid a second allocation + copy. Tab stops are measured from the start
+/// of `s` (column 0), independent of whatever `out` already holds, so a one-char
+/// diff-sign prefix doesn't shift tab alignment — identical to sanitizing `s`
+/// alone and then prepending the sign.
+fn sanitize_into(out: &mut String, s: &str) {
+    // Fast path: append a clean ASCII line wholesale (single memcpy).
+    if is_clean_ascii(s) {
+        out.push_str(s);
+        return;
+    }
     let mut col = 0usize;
     let mut chars = s.chars().peekable();
     while let Some(c) = chars.next() {
@@ -493,7 +521,6 @@ pub fn sanitize_line(s: &str) -> String {
             }
         }
     }
-    out
 }
 
 #[derive(Debug, Clone)]
@@ -675,10 +702,13 @@ pub fn build_split_rows(
                         rows.push(SplitRow {
                             file_idx: fi,
                             kind: SplitRowKind::Pair {
+                                // Context lines are identical on both sides;
+                                // reuse the already-sanitized text instead of
+                                // re-scanning `line.text` a second time.
                                 left: Some(SideCell {
                                     kind: LineKind::Context,
                                     line: line.old_line,
-                                    text: sanitize_line(&line.text),
+                                    text: cell.text.clone(),
                                 }),
                                 right: Some(cell),
                             },
@@ -905,6 +935,12 @@ pub fn build_rows(
                     LineKind::Deletion => '-',
                     LineKind::Context => ' ',
                 };
+                // Build `"{prefix}{sanitized}"` in one allocation: push the
+                // diff sign, then sanitize straight into the same buffer
+                // (avoids the extra alloc+copy a `format!` would do).
+                let mut text = String::with_capacity(line.text.len() + 1);
+                text.push(prefix);
+                sanitize_into(&mut text, &line.text);
                 rows.push(Row {
                     file_idx: fi,
                     kind: RowKind::Line {
@@ -912,7 +948,7 @@ pub fn build_rows(
                         old_line: line.old_line,
                         new_line: line.new_line,
                     },
-                    text: format!("{prefix}{}", sanitize_line(&line.text)),
+                    text,
                 });
                 let (side, ln) = match line.kind {
                     LineKind::Deletion => (Side::Old, line.old_line),
@@ -1092,6 +1128,40 @@ mod tests {
         assert_eq!(sanitize_line("a\u{0}b"), "ab");
         // ANSI CSI color sequence is removed, payload kept.
         assert_eq!(sanitize_line("\u{1b}[31mred\u{1b}[0m"), "red");
+    }
+
+    #[test]
+    fn sanitize_fast_path_matches_clean_ascii_verbatim() {
+        // The printable-ASCII fast path must return the input untouched (it's
+        // the common case and skips the char-by-char loop entirely).
+        for s in [
+            "let x = 1;",
+            "  indented",
+            "a + b - c",
+            "~tilde~ {braces}",
+            "",
+        ] {
+            assert!(is_clean_ascii(s), "{s:?} should be detected as clean ASCII");
+            assert_eq!(sanitize_line(s), s);
+        }
+        // Boundary bytes that must NOT take the fast path: DEL (0x7f), a control
+        // char (< 0x20), and any non-ASCII (>= 0x80).
+        assert!(!is_clean_ascii("a\u{7f}b"));
+        assert!(!is_clean_ascii("a\tb"));
+        assert!(!is_clean_ascii("\u{1b}[0m"));
+        assert!(!is_clean_ascii("caf\u{e9}"));
+    }
+
+    #[test]
+    fn sanitize_into_prefix_does_not_shift_tab_stops() {
+        // `build_rows` prepends a diff sign then sanitizes into the same buffer;
+        // tab stops must be measured from the code text (col 0), so the result
+        // matches sign + independently-sanitized text. The space prefix here is
+        // a 1-col sign, but the tab still expands to the 4-col stop of the code.
+        let mut buf = String::from(" ");
+        sanitize_into(&mut buf, "a\tb");
+        assert_eq!(buf, format!(" {}", sanitize_line("a\tb")));
+        assert_eq!(buf, " a   b");
     }
 
     #[test]
