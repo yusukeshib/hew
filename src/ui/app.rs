@@ -1832,6 +1832,13 @@ impl App {
         // scroll across file boundaries).
         self.hl.warm(self.current_file);
         let area = f.area();
+        // Paint the themed background across the whole frame first; widgets draw
+        // on top, and any gaps (padding, short lines) keep the theme bg instead
+        // of the terminal default.
+        f.render_widget(
+            Block::default().style(Style::default().bg(theme().bg)),
+            area,
+        );
         let chunks = Layout::default()
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(1)])
@@ -1857,6 +1864,7 @@ impl App {
         let diff_block = Block::default()
             .borders(Borders::ALL)
             .border_type(BorderType::Rounded)
+            .style(Style::default().bg(theme().bg))
             .border_style(Style::default().fg(if diff_focused {
                 theme().border_focus
             } else {
@@ -1913,7 +1921,8 @@ impl App {
 
         // Status line.
         f.render_widget(
-            Paragraph::new(self.status.clone()).style(Style::default().fg(theme().muted)),
+            Paragraph::new(self.status.clone())
+                .style(Style::default().fg(theme().muted).bg(theme().bg)),
             chunks[1],
         );
     }
@@ -2032,7 +2041,10 @@ impl App {
                 }
             }
         }
-        f.render_widget(Paragraph::new(lines), inner);
+        f.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(theme().bg)),
+            inner,
+        );
         if need_sb {
             let mut sb = ScrollbarState::new(max + 1)
                 .position(scroll)
@@ -2088,7 +2100,10 @@ impl App {
             let selected = self.in_selection(idx);
             lines.push(self.row_to_line(row, selected, width));
         }
-        f.render_widget(Paragraph::new(lines), area);
+        f.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(theme().bg)),
+            area,
+        );
     }
 
     fn render_split(&self, f: &mut Frame, area: Rect) {
@@ -2104,7 +2119,10 @@ impl App {
             let selected = self.in_selection(idx);
             lines.push(self.split_row_to_line(row, selected, side_w, divider));
         }
-        f.render_widget(Paragraph::new(lines), area);
+        f.render_widget(
+            Paragraph::new(lines).style(Style::default().bg(theme().bg)),
+            area,
+        );
     }
 
     fn split_row_to_line(

@@ -18,6 +18,9 @@ use std::sync::OnceLock;
 /// Semantic colors for the diff viewer's chrome and text.
 #[derive(Clone, Copy)]
 pub struct Theme {
+    /// The global background painted behind every pane.
+    pub bg: Color,
+
     // Diff line backgrounds.
     /// Added line tint.
     pub add_bg: Color,
@@ -67,26 +70,31 @@ pub struct Theme {
 /// focused cursor line, authored in truecolor. Resolved per-terminal by
 /// [`init_theme`]; read the resolved palette via [`theme()`].
 static MASTER: Theme = Theme {
-    add_bg: Color::Rgb(20, 42, 24),
-    del_bg: Color::Rgb(48, 24, 26),
-    cursor_bg: Color::Rgb(38, 116, 180),
-    unfocus_bg: Color::Rgb(40, 42, 48),
-    file_header_bg: Color::Rgb(40, 44, 52),
-    comment_bg: Color::Rgb(28, 30, 34),
+    // Dracula palette (https://draculatheme.com): bg #282a36, current-line
+    // #44475a, fg #f8f8f2, comment #6272a4, cyan #8be9fd, green #50fa7b, orange
+    // #ffb86c, purple #bd93f9, red #ff5555.
+    bg: Color::Rgb(40, 42, 54),
 
-    subtle: Color::Rgb(38, 40, 46),
-    scrollbar_thumb: Color::Rgb(58, 62, 70),
-    border_focus: Color::White,
-    border_unfocus: Color::Rgb(78, 84, 96),
+    add_bg: Color::Rgb(34, 52, 43),
+    del_bg: Color::Rgb(63, 42, 49),
+    cursor_bg: Color::Rgb(68, 71, 90),
+    unfocus_bg: Color::Rgb(52, 54, 68),
+    file_header_bg: Color::Rgb(54, 57, 73),
+    comment_bg: Color::Rgb(45, 47, 61),
 
-    text: Color::Gray,
-    text_strong: Color::White,
-    muted: Color::DarkGray,
-    faint: Color::Rgb(106, 115, 130),
-    accent: Color::Cyan,
-    warn: Color::Yellow,
-    added: Color::Green,
-    removed: Color::Red,
+    subtle: Color::Rgb(54, 57, 73),
+    scrollbar_thumb: Color::Rgb(98, 114, 164),
+    border_focus: Color::Rgb(189, 147, 249),
+    border_unfocus: Color::Rgb(98, 114, 164),
+
+    text: Color::Rgb(248, 248, 242),
+    text_strong: Color::Rgb(255, 255, 255),
+    muted: Color::Rgb(98, 114, 164),
+    faint: Color::Rgb(130, 142, 184),
+    accent: Color::Rgb(139, 233, 253),
+    warn: Color::Rgb(255, 184, 108),
+    added: Color::Rgb(80, 250, 123),
+    removed: Color::Rgb(255, 85, 85),
     none: Color::Reset,
 };
 
@@ -126,6 +134,7 @@ impl Theme {
     fn adapt(&self, truecolor: bool) -> Theme {
         let d = |c: Color| down(c, truecolor);
         Theme {
+            bg: d(self.bg),
             add_bg: d(self.add_bg),
             del_bg: d(self.del_bg),
             cursor_bg: d(self.cursor_bg),
@@ -250,16 +259,16 @@ mod tests {
         // proving a pre-init read can't lock in a palette and block a later
         // `init_theme(false)` from installing the 256-color fallback.
         assert!(std::ptr::eq(theme(), &MASTER));
-        assert_eq!(theme().added, Color::Green);
+        assert_eq!(theme().added, MASTER.added);
     }
 
     #[test]
     fn adapt_downsamples_rgb_fields_but_keeps_named() {
         let dark = MASTER.adapt(false);
-        // An Rgb field becomes Indexed...
+        // Rgb fields become Indexed...
         assert!(matches!(dark.cursor_bg, Color::Indexed(_)));
-        // ...while a named field is preserved.
-        assert_eq!(dark.removed, Color::Red);
+        assert!(matches!(dark.removed, Color::Indexed(_)));
+        // ...while a non-Rgb color (Reset) is preserved.
         assert_eq!(dark.none, Color::Reset);
         // Truecolor adapt is a faithful pass-through.
         let bright = MASTER.adapt(true);
