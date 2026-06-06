@@ -39,16 +39,22 @@ const KEEP_FILES: usize = 2 * PREFETCH_RADIUS + 1;
 /// Build the prefetch order for a focused file: the focused file first (it's
 /// what the render thread needs now), then alternating nearer neighbors
 /// outward (`+1, -1, +2, -2, …`) so the most likely next jump warms soonest.
+///
+/// An out-of-range focus (`focus >= n`, including `n == 0`) has no valid anchor
+/// and yields an empty order. With the focus then known in range, `focus + d`
+/// is bounded with `checked_add` (so a near-`usize::MAX` focus can't wrap into
+/// an in-range index) and every `focus - d` neighbor is itself in range.
 fn prefetch_order(focus: usize, n: usize) -> Vec<usize> {
-    let mut order = Vec::with_capacity(KEEP_FILES);
-    if focus < n {
-        order.push(focus);
+    if focus >= n {
+        return Vec::new();
     }
+    let mut order = Vec::with_capacity(KEEP_FILES);
+    order.push(focus);
     for d in 1..=PREFETCH_RADIUS {
-        if focus + d < n {
+        if focus.checked_add(d).is_some_and(|up| up < n) {
             order.push(focus + d);
         }
-        if focus >= d && focus - d < n {
+        if focus >= d {
             order.push(focus - d);
         }
     }
@@ -278,8 +284,13 @@ mod tests {
         // Clamped at the edges: out-of-range neighbors are dropped.
         assert_eq!(prefetch_order(0, 10), vec![0, 1, 2]);
         assert_eq!(prefetch_order(9, 10), vec![9, 8, 7]);
-        // Out-of-range focus yields nothing.
+        // An out-of-range focus yields nothing: empty changeset, focus == n
+        // (one past the last file), focus past the end, and a near-MAX focus
+        // that must not wrap `focus + d` into an in-range index.
         assert!(prefetch_order(9, 0).is_empty());
+        assert!(prefetch_order(10, 10).is_empty());
+        assert!(prefetch_order(15, 10).is_empty());
+        assert!(prefetch_order(usize::MAX, 10).is_empty());
     }
 
     #[test]
