@@ -938,7 +938,10 @@ impl App {
                     ComposerAnchor::NewThread {
                         file_idx: *file_idx,
                         side: *side,
-                        line: *start,
+                        // Anchor the composer after the *last* line of the
+                        // range (GitHub-style), matching where the resulting
+                        // thread box renders (see `last_anchor_lines`).
+                        line: *end,
                     },
                     title,
                 )
@@ -2220,9 +2223,14 @@ impl App {
     }
 
     /// Whether the floating `comment(i)` button should appear on row `idx`: the
-    /// diff pane is focused, no composer is open, and `idx` is the cursor line.
+    /// diff pane is focused, no composer is open, and `idx` is the *last* row of
+    /// the current selection. A new thread (and its composer) renders after the
+    /// last line of its range, so the button sits there too — right where the
+    /// comment box will open — not on a different end of a range selection.
     fn show_add_button(&self, idx: usize) -> bool {
-        self.composer.is_none() && self.effective_focus() == Focus::Diff && idx == self.selected
+        self.composer.is_none()
+            && self.effective_focus() == Focus::Diff
+            && idx == self.selection_bounds().1
     }
 
     fn render_split(&self, f: &mut Frame, area: Rect) {
@@ -3690,6 +3698,28 @@ mod tests {
             before, app.comments.threads[0].resolved,
             "clicking resolve toggles the thread"
         );
+    }
+
+    #[test]
+    fn range_comment_box_renders_after_the_last_line() {
+        // A New-side range 2..=4 should inject its box right after the row for
+        // line 4 (GitHub-style: below the last line), not after line 2.
+        let cs = parse_report(DIFF).0;
+        let mut store = CommentStore::default();
+        store.add_thread(
+            "f.rs".into(),
+            Side::New,
+            LineRange { start: 2, end: 4 },
+            Some("a".into()),
+            "msg".into(),
+        );
+        let app = App::with_comments(cs, store);
+        let pos = |pred: &dyn Fn(&Row) -> bool| app.rows.iter().position(|r| pred(r)).unwrap();
+        let line4 = pos(&|r| matches!(&r.kind, RowKind::Line { new_line: Some(4), .. }));
+        let top = pos(&|r| {
+            matches!(&r.kind, RowKind::Comment(cl) if matches!(cl.kind, CommentKind::Top))
+        });
+        assert_eq!(top, line4 + 1, "box should immediately follow the last range line");
     }
 
     #[test]
