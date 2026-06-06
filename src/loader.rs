@@ -133,6 +133,42 @@ mod tests {
     }
 
     #[test]
+    fn preserves_non_uuid_ids_verbatim_and_deterministically() {
+        // PR-sourced sidecars carry foreign GitHub ids (numeric REST ids,
+        // GraphQL node ids) in the `id` field. These aren't UUIDs, but they
+        // must be kept VERBATIM so the exit action log is replayable against
+        // the base file. Loading the same file twice must yield identical ids.
+        let json = r#"{
+          "threads": [
+            {
+              "id": "PRRT_kwDOS",
+              "file": "a.rs", "side": "new",
+              "range": { "start": 1, "end": 1 },
+              "comments": [
+                { "id": "1234567890", "author": "x", "body": "hi" }
+              ]
+            }
+          ]
+        }"#;
+        let path = unique_temp("non_uuid_ids");
+        std::fs::write(&path, json).unwrap();
+
+        let a = load_comments(&path).unwrap();
+        assert_eq!(a.threads.len(), 1);
+        assert_eq!(a.threads[0].comments.len(), 1);
+        // Verbatim: ids equal exactly what the file carried.
+        assert_eq!(a.threads[0].id, "PRRT_kwDOS");
+        assert_eq!(a.threads[0].comments[0].id, "1234567890");
+
+        // Deterministic: a second load of the same file yields identical ids.
+        let b = load_comments(&path).unwrap();
+        assert_eq!(a.threads[0].id, b.threads[0].id);
+        assert_eq!(a.threads[0].comments[0].id, b.threads[0].comments[0].id);
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
     fn load_or_default_is_empty_when_missing() {
         let path = unique_temp("missing");
         let _ = std::fs::remove_file(&path);

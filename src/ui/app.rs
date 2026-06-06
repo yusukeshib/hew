@@ -26,7 +26,6 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tui_textarea::TextArea;
-use uuid::Uuid;
 
 /// Diff layout: unified (stacked) or split (old | new, like `git delta`).
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -163,7 +162,7 @@ enum SelKey {
     /// A diff line, keyed by its comment anchor `(file, side, line)`.
     Line(usize, Side, u32),
     /// A comment message, keyed by its stable id.
-    Comment(Uuid),
+    Comment(String),
 }
 
 /// What an open composer will write on submit.
@@ -177,7 +176,7 @@ enum ComposeTarget {
         end: u32,
     },
     /// A reply appended to an existing thread.
-    Reply { thread_id: Uuid },
+    Reply { thread_id: String },
 }
 
 /// In-progress comment text and where it lands. The text + cursor live in a
@@ -239,7 +238,7 @@ pub struct App {
     /// immutable: `D` deletes a single comment, and only ones added in-session,
     /// so an input comment is never removed and the action log never emits a
     /// delete (an in-session add+delete cancels out of the diff).
-    base_comment_ids: HashSet<Uuid>,
+    base_comment_ids: HashSet<String>,
     split_rows: Vec<SplitRow>,
     view: View,
     selected: usize, // index into the active row list
@@ -296,10 +295,10 @@ impl App {
         // Snapshot every loaded comment id: these came from the input sidecar
         // and are protected from deletion (only in-session comments can be
         // removed).
-        let base_comment_ids: HashSet<Uuid> = comments
+        let base_comment_ids: HashSet<String> = comments
             .threads
             .iter()
-            .flat_map(|t| t.comments.iter().map(|c| c.id))
+            .flat_map(|t| t.comments.iter().map(|c| c.id.clone()))
             .collect();
         let stats = file_stats(&changeset);
         let collapsed = HashSet::new();
@@ -851,7 +850,8 @@ impl App {
                 self.is_selectable_at(i) && self.anchor_at(i) == Some((*f, *s, *l))
             }
             SelKey::Comment(cid) => {
-                self.is_stop_at(i) && self.comment_unit_at(i).map(|(_, c)| c) == Some(*cid)
+                self.is_stop_at(i)
+                    && self.comment_unit_at(i).map(|(_, c)| c).as_deref() == Some(cid.as_str())
             }
         })
     }
@@ -889,7 +889,7 @@ impl App {
             }
             ComposeTarget::Reply { thread_id } => (
                 ComposerAnchor::Reply {
-                    thread_id: *thread_id,
+                    thread_id: thread_id.clone(),
                 },
                 " reply ".into(),
             ),
@@ -1127,7 +1127,7 @@ impl App {
                 self.status = "added comment".into();
             }
             ComposeTarget::Reply { thread_id } => {
-                if self.comments.reply(thread_id, Some("you".into()), body) {
+                if self.comments.reply(&thread_id, Some("you".into()), body) {
                     self.status = "added reply".into();
                 } else {
                     self.status = "thread no longer exists".into();
@@ -1138,7 +1138,7 @@ impl App {
     }
 
     /// The id of the first comment thread anchored to the selected line, if any.
-    fn current_thread_id(&self) -> Option<Uuid> {
+    fn current_thread_id(&self) -> Option<String> {
         let (fi, side, line) = self.anchor_at(self.selected)?;
         let file = self.changeset.files.get(fi)?;
         let path = Path::new(file.display_path());
@@ -1146,7 +1146,7 @@ impl App {
             .threads
             .iter()
             .find(|t| t.file.as_path() == path && t.side == side && t.range.contains(line))
-            .map(|t| t.id)
+            .map(|t| t.id.clone())
     }
 
     /// Toggle the resolved state of the focused thread.
@@ -1155,7 +1155,7 @@ impl App {
             self.status = "no comment thread here".into();
             return;
         };
-        match self.comments.toggle_resolved(id) {
+        match self.comments.toggle_resolved(&id) {
             Some(true) => self.status = "resolved thread".into(),
             Some(false) => self.status = "unresolved thread".into(),
             None => return,
@@ -1177,7 +1177,7 @@ impl App {
             self.status = "can't delete a comment from the input".into();
             return;
         }
-        if self.comments.remove_comment(thread_id, comment_id) {
+        if self.comments.remove_comment(&thread_id, &comment_id) {
             self.status = "deleted comment".into();
             self.rebuild_rows();
         }
@@ -1238,9 +1238,9 @@ impl App {
 
     /// `(thread_id, comment_id)` of the message that row `i` belongs to, if it's
     /// a content line of a comment (author/body/gap). Chrome rows return `None`.
-    fn comment_unit_at(&self, i: usize) -> Option<(Uuid, Uuid)> {
+    fn comment_unit_at(&self, i: usize) -> Option<(String, String)> {
         let cl = self.comment_at(i)?;
-        Some((cl.thread_id, cl.comment_id?))
+        Some((cl.thread_id.clone(), cl.comment_id.clone()?))
     }
 
     /// A "stop" is a place the cursor can land: a diff line, or the *first* row
@@ -1261,7 +1261,8 @@ impl App {
     /// is a comment content line. Used to highlight/scroll the whole message.
     fn comment_unit_span(&self, i: usize) -> Option<(usize, usize)> {
         let (_, cid) = self.comment_unit_at(i)?;
-        let same = |j: usize| self.comment_unit_at(j).map(|(_, c)| c) == Some(cid);
+        let same =
+            |j: usize| self.comment_unit_at(j).map(|(_, c)| c).as_deref() == Some(cid.as_str());
         let mut lo = i;
         while lo > 0 && same(lo - 1) {
             lo -= 1;
@@ -1301,15 +1302,15 @@ impl App {
     }
 
     /// `(thread_id, comment_id)` the cursor is currently on, if it's a comment.
-    fn focused_comment(&self) -> Option<(Uuid, Uuid)> {
+    fn focused_comment(&self) -> Option<(String, String)> {
         self.comment_unit_at(self.selected)
     }
 
     /// The thread the cursor acts on: the focused comment's thread, else the
     /// thread anchored to the focused diff line.
-    fn focused_thread_id(&self) -> Option<Uuid> {
+    fn focused_thread_id(&self) -> Option<String> {
         if let Some(cl) = self.comment_at(self.selected) {
-            return Some(cl.thread_id);
+            return Some(cl.thread_id.clone());
         }
         self.current_thread_id()
     }
@@ -2753,7 +2754,7 @@ mod tests {
 
     /// Build an app with one new-side thread (two messages) anchored to `line`,
     /// rendered inline.
-    fn app_with_thread(line: u32) -> (App, Uuid, Uuid) {
+    fn app_with_thread(line: u32) -> (App, String, String) {
         let cs = parse_report(DIFF).0;
         let mut store = CommentStore::default();
         let tid = store.add_thread(
@@ -2766,18 +2767,19 @@ mod tests {
             Some("a".into()),
             "root message".into(),
         );
-        store.reply(tid, Some("b".into()), "a reply".into());
-        let reply_id = store.threads[0].comments[1].id;
+        store.reply(&tid, Some("b".into()), "a reply".into());
+        let reply_id = store.threads[0].comments[1].id.clone();
         let mut app = App::with_comments(cs, store);
         app.height = 40; // tall enough to hold the whole thread
         (app, tid, reply_id)
     }
 
     /// First active row that is a content line of comment `comment_id`.
-    fn comment_head(app: &App, comment_id: Uuid) -> usize {
+    fn comment_head(app: &App, comment_id: &str) -> usize {
         (0..app.active_len())
             .find(|&i| {
-                app.is_stop_at(i) && app.comment_unit_at(i).map(|(_, c)| c) == Some(comment_id)
+                app.is_stop_at(i)
+                    && app.comment_unit_at(i).map(|(_, c)| c).as_deref() == Some(comment_id)
             })
             .expect("comment head row")
     }
@@ -2788,7 +2790,7 @@ mod tests {
         let (mut app, tid, base_reply_id) = app_with_thread(3);
 
         // Cursor on an input comment: `D` is a no-op.
-        app.selected = comment_head(&app, base_reply_id);
+        app.selected = comment_head(&app, &base_reply_id);
         app.delete_current_comment();
         assert_eq!(app.status, "can't delete a comment from the input");
         assert_eq!(
@@ -2798,14 +2800,14 @@ mod tests {
         );
 
         // Add a reply this session (to the same base thread), then delete it.
-        app.selected = comment_head(&app, base_reply_id);
+        app.selected = comment_head(&app, &base_reply_id);
         app.open_reply();
         app.on_key_compose(KeyCode::Char('y'), KeyModifiers::NONE);
         app.submit_compose();
         assert_eq!(app.comments.threads[0].comments.len(), 3);
-        let new_reply_id = app.comments.threads[0].comments[2].id;
+        let new_reply_id = app.comments.threads[0].comments[2].id.clone();
 
-        app.selected = comment_head(&app, new_reply_id);
+        app.selected = comment_head(&app, &new_reply_id);
         app.delete_current_comment();
         assert_eq!(app.status, "deleted comment");
         assert_eq!(
@@ -2833,7 +2835,8 @@ mod tests {
             .iter()
             .find(|t| t.range.contains(1) && t.side == Side::New)
             .expect("new thread")
-            .id;
+            .id
+            .clone();
         let cid = app
             .comments
             .threads
@@ -2841,8 +2844,9 @@ mod tests {
             .find(|t| t.id == new_tid)
             .unwrap()
             .comments[0]
-            .id;
-        app.selected = comment_head(&app, cid);
+            .id
+            .clone();
+        app.selected = comment_head(&app, &cid);
         app.delete_current_comment();
         assert!(
             !app.comments.threads.iter().any(|t| t.id == new_tid),
@@ -2868,7 +2872,7 @@ mod tests {
             "navigation should stop on each comment message (got {comment_stops})"
         );
         // And the reply message is reachable as its own stop.
-        let head = comment_head(&app, reply_id);
+        let head = comment_head(&app, &reply_id);
         assert!(app.is_stop_at(head));
     }
 
@@ -2897,12 +2901,12 @@ mod tests {
         // border, even when the cursor was on it — so an individual comment in a
         // resolved thread gave no visual "selected" feedback. Focus must win.
         let (mut app, tid, reply_id) = app_with_thread(3);
-        app.comments.toggle_resolved(tid);
+        app.comments.toggle_resolved(&tid);
         app.rebuild_rows();
         assert!(app.comments.threads[0].resolved);
 
         // The reply's individual comment is still a reachable stop...
-        let head = comment_head(&app, reply_id);
+        let head = comment_head(&app, &reply_id);
         assert!(app.is_stop_at(head));
 
         // ...and when focused, its box border is the focus color, not muted.
@@ -2972,11 +2976,11 @@ mod tests {
     #[test]
     fn focusing_a_comment_selects_the_whole_message_and_its_thread() {
         let (mut app, tid, reply_id) = app_with_thread(3);
-        let head = comment_head(&app, reply_id);
+        let head = comment_head(&app, &reply_id);
         app.selected = head;
 
         // The focused-thread action target is the comment's thread.
-        assert_eq!(app.focused_thread_id(), Some(tid));
+        assert_eq!(app.focused_thread_id(), Some(tid.clone()));
         assert_eq!(app.focused_comment(), Some((tid, reply_id)));
 
         // Every row of the message (and only those) is in the selection.
@@ -2995,7 +2999,7 @@ mod tests {
     #[test]
     fn comment_selection_survives_view_toggle() {
         let (mut app, tid, reply_id) = app_with_thread(3);
-        app.selected = comment_head(&app, reply_id);
+        app.selected = comment_head(&app, &reply_id);
         app.toggle_view(); // unified <-> split
         assert_eq!(
             app.focused_comment(),

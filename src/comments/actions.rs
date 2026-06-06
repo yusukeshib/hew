@@ -13,7 +13,6 @@ use crate::diff::model::Side;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use uuid::Uuid;
 
 /// One review action in the session output log.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -24,7 +23,7 @@ pub enum Action {
     /// multi-line range, matching GitHub's `start_line`/`line` review-comment
     /// shape. A single-line thread omits `start_line` (then `line` is that line).
     AddComment {
-        thread_id: Uuid,
+        thread_id: String,
         file: PathBuf,
         side: Side,
         #[serde(skip_serializing_if = "Option::is_none")]
@@ -36,15 +35,15 @@ pub enum Action {
     },
     /// A comment appended to an existing (or just-added) thread.
     Reply {
-        thread_id: Uuid,
+        thread_id: String,
         body: String,
         #[serde(skip_serializing_if = "Option::is_none")]
         author: Option<String>,
     },
     /// Marked a thread resolved.
-    Resolve { thread_id: Uuid },
+    Resolve { thread_id: String },
     /// Marked a thread unresolved.
-    Unresolve { thread_id: Uuid },
+    Unresolve { thread_id: String },
 }
 
 /// Emit the actions for a thread that is new relative to the base.
@@ -53,7 +52,7 @@ fn added_thread_actions(t: &Thread, out: &mut Vec<Action>) {
     if let Some(root) = comments.next() {
         let start_line = (t.range.start != t.range.end).then_some(t.range.start);
         out.push(Action::AddComment {
-            thread_id: t.id,
+            thread_id: t.id.clone(),
             file: t.file.clone(),
             side: t.side,
             start_line,
@@ -64,13 +63,15 @@ fn added_thread_actions(t: &Thread, out: &mut Vec<Action>) {
     }
     for c in comments {
         out.push(Action::Reply {
-            thread_id: t.id,
+            thread_id: t.id.clone(),
             body: c.body.clone(),
             author: c.author.clone(),
         });
     }
     if t.resolved {
-        out.push(Action::Resolve { thread_id: t.id });
+        out.push(Action::Resolve {
+            thread_id: t.id.clone(),
+        });
     }
 }
 
@@ -88,18 +89,24 @@ fn added_thread_actions(t: &Thread, out: &mut Vec<Action>) {
 /// in-session threads can be removed, and those cancel out of the diff), so a
 /// base thread is never absent from `cur`.
 pub fn diff(base: &CommentStore, cur: &CommentStore) -> Vec<Action> {
-    let base_by_id: HashMap<Uuid, &Thread> = base.threads.iter().map(|t| (t.id, t)).collect();
+    let base_by_id: HashMap<&str, &Thread> =
+        base.threads.iter().map(|t| (t.id.as_str(), t)).collect();
     let mut out = Vec::new();
 
     for t in &cur.threads {
-        match base_by_id.get(&t.id) {
+        match base_by_id.get(t.id.as_str()) {
             None => added_thread_actions(t, &mut out),
             Some(base_t) => {
                 // New replies, identified by comment id.
-                let base_cids: HashSet<Uuid> = base_t.comments.iter().map(|c| c.id).collect();
-                for c in t.comments.iter().filter(|c| !base_cids.contains(&c.id)) {
+                let base_cids: HashSet<&str> =
+                    base_t.comments.iter().map(|c| c.id.as_str()).collect();
+                for c in t
+                    .comments
+                    .iter()
+                    .filter(|c| !base_cids.contains(c.id.as_str()))
+                {
                     out.push(Action::Reply {
-                        thread_id: t.id,
+                        thread_id: t.id.clone(),
                         body: c.body.clone(),
                         author: c.author.clone(),
                     });
@@ -107,9 +114,13 @@ pub fn diff(base: &CommentStore, cur: &CommentStore) -> Vec<Action> {
                 // Net resolved-state change only.
                 if t.resolved != base_t.resolved {
                     out.push(if t.resolved {
-                        Action::Resolve { thread_id: t.id }
+                        Action::Resolve {
+                            thread_id: t.id.clone(),
+                        }
                     } else {
-                        Action::Unresolve { thread_id: t.id }
+                        Action::Unresolve {
+                            thread_id: t.id.clone(),
+                        }
                     });
                 }
             }
@@ -139,7 +150,7 @@ mod tests {
             Some("you".into()),
             "root".into(),
         );
-        cur.reply(id, Some("you".into()), "more".into());
+        cur.reply(&id, Some("you".into()), "more".into());
 
         let actions = diff(&base, &cur);
         assert_eq!(actions.len(), 2);
@@ -189,8 +200,8 @@ mod tests {
         );
         // Deleting the lone comment empties (and drops) the in-session thread,
         // so the add and delete cancel to an empty log.
-        let cid = cur.threads[0].comments[0].id;
-        cur.remove_comment(id, cid);
+        let cid = cur.threads[0].comments[0].id.clone();
+        cur.remove_comment(&id, &cid);
         assert!(diff(&base, &cur).is_empty());
     }
 
@@ -207,13 +218,13 @@ mod tests {
 
         // Toggle resolve twice => no net change.
         let mut cur = base.clone();
-        cur.toggle_resolved(id);
-        cur.toggle_resolved(id);
+        cur.toggle_resolved(&id);
+        cur.toggle_resolved(&id);
         assert!(diff(&base, &cur).is_empty());
 
         // Resolve once => one Resolve action.
         let mut cur = base.clone();
-        cur.toggle_resolved(id);
+        cur.toggle_resolved(&id);
         let actions = diff(&base, &cur);
         assert_eq!(actions, vec![Action::Resolve { thread_id: id }]);
     }
@@ -229,7 +240,7 @@ mod tests {
             "root".into(),
         );
         let mut cur = base.clone();
-        cur.reply(id, Some("you".into()), "reply".into());
+        cur.reply(&id, Some("you".into()), "reply".into());
         let actions = diff(&base, &cur);
         assert_eq!(actions.len(), 1);
         assert!(matches!(&actions[0], Action::Reply { body, .. } if body == "reply"));
