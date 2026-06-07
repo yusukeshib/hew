@@ -87,6 +87,11 @@ fn lock_cache(
 fn spawn_warm_worker(cache: SharedCache, changeset: Arc<Changeset>) -> Sender<usize> {
     let (tx, rx) = mpsc::channel::<usize>();
     let n = changeset.files.len();
+    // Intentionally detached (fire-and-forget): the worker only touches its own
+    // `Highlighter` and the shared cache (an `Arc<Mutex<…>>`), so there is
+    // nothing to join or flush on shutdown. When `HighlightCache` drops, the
+    // `Sender` drops with it, the worker's `rx.recv()` returns `Err`, and the
+    // thread exits on its own.
     std::thread::spawn(move || {
         let hl = Highlighter::new();
         let mut pending: Option<usize> = None;
