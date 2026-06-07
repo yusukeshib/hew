@@ -165,6 +165,17 @@ fn elide_left(s: &str, w: usize) -> String {
 /// in lockstep). A glyph wider than `budget` lands alone on its own line rather
 /// than being dropped. `bg` is applied to every emitted span. Spans are *not*
 /// padded to `budget`; the caller adds the prefix and trailing fill.
+/// The soft-wrap break decision, shared by [`wrap_runs`] (the span builder) and
+/// [`wrap_count`] (the height oracle) so the two cannot drift: a break occurs
+/// *before* the next glyph (width `cw`) exactly when the current visual line is
+/// non-empty (`w > 0`) and the glyph would overflow `budget`. A glyph wider
+/// than `budget` on an empty line never breaks, so it lands alone on its row
+/// rather than being dropped.
+#[inline]
+fn wrap_break_before(w: usize, cw: usize, budget: usize) -> bool {
+    w > 0 && w + cw > budget
+}
+
 fn wrap_runs(
     runs: &[(Color, String)],
     budget: usize,
@@ -187,7 +198,7 @@ fn wrap_runs(
         let mut buf = String::new();
         for ch in s.chars() {
             let cw = char_width(ch);
-            if w + cw > budget && w > 0 {
+            if wrap_break_before(w, cw, budget) {
                 if !buf.is_empty() {
                     cur.push(Span::styled(std::mem::take(&mut buf), style(*c)));
                 }
@@ -215,7 +226,7 @@ fn wrap_count(text: &str, budget: usize) -> usize {
     let mut w = 0usize;
     for ch in text.chars() {
         let cw = char_width(ch);
-        if w + cw > budget && w > 0 {
+        if wrap_break_before(w, cw, budget) {
             lines += 1;
             w = 0;
         }
