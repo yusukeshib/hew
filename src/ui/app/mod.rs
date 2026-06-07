@@ -378,22 +378,9 @@ pub struct App {
     /// one terminal line (the original 1:1 model and its fast paths are
     /// preserved).
     wrap: bool,
-    /// Per-row display height (terminal lines) of the *active* view, valid only
-    /// while `wrap` is on. A logical row (`self.selected`/`self.scroll` index)
-    /// may span several display lines once wrapped; this caches each row's
-    /// height so the viewport, mouse mapping, and scrollbar can convert between
-    /// row indices and display lines without re-wrapping every frame.
-    row_heights: Vec<u16>,
-    /// Prefix sum of `row_heights` (`row_offsets[i]` = display lines before row
-    /// `i`, length `active_len + 1`), so `display_lines`/scrollbar range sums
-    /// are O(1) instead of O(rows) per draw. Rebuilt with `row_heights`; empty
-    /// while wrap is off (heights are all 1 then, so sums are plain row counts).
-    row_offsets: Vec<usize>,
-    /// Content width `row_heights` was computed for; a resize invalidates them.
-    heights_width: usize,
-    /// Set when the active row list changes (rebuild / view switch / wrap
-    /// toggle), forcing `update_heights` to recompute on the next draw.
-    heights_dirty: bool,
+    /// Cached soft-wrap row heights + prefix sums for the active view; see
+    /// [`wrap::WrapGeom`]. Empty/unused while `wrap` is off.
+    geom: wrap::WrapGeom,
     /// Lazy row-list build: each edit rebuilds only the *active* view's list
     /// (`rebuild_active_view`) and marks the other stale here, so `toggle_view`
     /// reconstructs it on demand. Keeps per-keystroke composer cost proportional
@@ -479,10 +466,11 @@ impl App {
             composer: None,
             visual: false,
             wrap: true,
-            row_heights: Vec::new(),
-            row_offsets: Vec::new(),
-            heights_width: usize::MAX,
-            heights_dirty: true,
+            geom: wrap::WrapGeom {
+                width: usize::MAX,
+                dirty: true,
+                ..Default::default()
+            },
             unified_dirty: false,
             split_dirty: false,
             quit: false,

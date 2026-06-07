@@ -301,7 +301,7 @@ impl App {
         self.ensure_active_view_built();
         self.rebuild_file_spans();
         self.recompute_file_span();
-        self.heights_dirty = true;
+        self.geom.dirty = true;
         // Re-find the same line / comment message in the other layout.
         let target = key.as_ref().and_then(|k| self.find_sel_key(k));
         self.selected = target

@@ -23,7 +23,7 @@ impl App {
             .min(self.active_len().saturating_sub(1));
         self.current_file = self.row_file_idx(self.selected).unwrap_or(cur_file);
         self.recompute_file_span();
-        self.heights_dirty = true;
+        self.geom.dirty = true;
         self.ensure_visible();
     }
 
