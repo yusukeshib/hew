@@ -228,22 +228,30 @@ pub(super) fn last_anchor_lines(
         let Some(indices) = by_path.get(Path::new(file.display_path())) else {
             continue;
         };
+        // Collect the diff's present line numbers per side once, in hunk order
+        // (so each list is ascending), then binary-search each thread's range
+        // instead of re-scanning every line of the file per thread.
+        let mut old_lines: Vec<u32> = Vec::new();
+        let mut new_lines: Vec<u32> = Vec::new();
+        for line in file.hunks.iter().flat_map(|h| h.lines.iter()) {
+            if let Some(l) = line.old_line {
+                old_lines.push(l);
+            }
+            if let Some(l) = line.new_line {
+                new_lines.push(l);
+            }
+        }
         for &i in indices {
             let t = &comments.threads[i];
-            let mut best: Option<u32> = None;
-            for line in file.hunks.iter().flat_map(|h| h.lines.iter()) {
-                let l = match t.side {
-                    Side::Old => line.old_line,
-                    Side::New => line.new_line,
-                };
-                if let Some(l) = l {
-                    if t.range.contains(l) {
-                        best = Some(best.map_or(l, |b| b.max(l)));
-                    }
-                }
-            }
-            if let Some(l) = best {
-                m.insert(t.id.clone(), (t.side, l));
+            let lines = match t.side {
+                Side::Old => &old_lines,
+                Side::New => &new_lines,
+            };
+            // Largest present line <= range.end (the lists are ascending); it's
+            // the thread's anchor when it also falls at/after range.start.
+            let idx = lines.partition_point(|&l| l <= t.range.end);
+            if idx > 0 && lines[idx - 1] >= t.range.start {
+                m.insert(t.id.clone(), (t.side, lines[idx - 1]));
             }
         }
     }
