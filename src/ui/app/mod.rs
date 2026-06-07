@@ -273,8 +273,11 @@ const COMPOSER_CARET: char = '\u{2060}';
 fn body_with_caret(ta: &TextArea<'static>) -> String {
     let (row, col) = ta.cursor();
     let lines = ta.lines();
-    let cap =
-        lines.iter().map(|l| l.len()).sum::<usize>() + lines.len() + COMPOSER_CARET.len_utf8();
+    // Bytes: every line's text + one '\n' between lines (`len - 1`) + the caret
+    // glyph spliced in once. Exact, so the buffer never reallocs.
+    let cap = lines.iter().map(|l| l.len()).sum::<usize>()
+        + lines.len().saturating_sub(1)
+        + COMPOSER_CARET.len_utf8();
     let mut out = String::with_capacity(cap);
     for (i, line) in lines.iter().enumerate() {
         if i > 0 {
