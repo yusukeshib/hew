@@ -4,9 +4,9 @@ use crate::comments::model::{CommentStore, LineRange};
 use crate::diff::model::{Changeset, LineKind, Side};
 use crate::ui::highlight_cache::HighlightCache;
 use crate::ui::render_rows::{
-    build_rows, build_split_rows, char_width, str_width, take_width, CommentKind, CommentLine,
-    ComposerAnchor, ComposerKind, ComposerLine, ComposerSpec, Row, RowKind, SideCell, SplitRow,
-    SplitRowKind,
+    build_file_rows, build_file_split_rows, build_rows, build_split_rows, char_width, str_width,
+    take_width, CommentKind, CommentLine, ComposerAnchor, ComposerKind, ComposerLine, ComposerSpec,
+    Row, RowKind, SideCell, SplitRow, SplitRowKind,
 };
 use crate::ui::sidebar::{
     base_of, build_sidebar_rows, dir_of, file_comment_state, file_status, SbRow,
@@ -165,6 +165,17 @@ fn elide_left(s: &str, w: usize) -> String {
 /// in lockstep). A glyph wider than `budget` lands alone on its own line rather
 /// than being dropped. `bg` is applied to every emitted span. Spans are *not*
 /// padded to `budget`; the caller adds the prefix and trailing fill.
+/// The soft-wrap break decision, shared by [`wrap_runs`] (the span builder) and
+/// [`wrap_count`] (the height oracle) so the two cannot drift: a break occurs
+/// *before* the next glyph (width `cw`) exactly when the current visual line is
+/// non-empty (`w > 0`) and the glyph would overflow `budget`. A glyph wider
+/// than `budget` on an empty line never breaks, so it lands alone on its row
+/// rather than being dropped.
+#[inline]
+fn wrap_break_before(w: usize, cw: usize, budget: usize) -> bool {
+    w > 0 && w + cw > budget
+}
+
 fn wrap_runs(
     runs: &[(Color, String)],
     budget: usize,
@@ -187,7 +198,7 @@ fn wrap_runs(
         let mut buf = String::new();
         for ch in s.chars() {
             let cw = char_width(ch);
-            if w + cw > budget && w > 0 {
+            if wrap_break_before(w, cw, budget) {
                 if !buf.is_empty() {
                     cur.push(Span::styled(std::mem::take(&mut buf), style(*c)));
                 }
@@ -215,7 +226,7 @@ fn wrap_count(text: &str, budget: usize) -> usize {
     let mut w = 0usize;
     for ch in text.chars() {
         let cw = char_width(ch);
-        if w + cw > budget && w > 0 {
+        if wrap_break_before(w, cw, budget) {
             lines += 1;
             w = 0;
         }
@@ -273,8 +284,11 @@ const COMPOSER_CARET: char = '\u{2060}';
 fn body_with_caret(ta: &TextArea<'static>) -> String {
     let (row, col) = ta.cursor();
     let lines = ta.lines();
-    let cap =
-        lines.iter().map(|l| l.len()).sum::<usize>() + lines.len() + COMPOSER_CARET.len_utf8();
+    // Bytes: every line's text + one '\n' between lines (`len - 1`) + the caret
+    // glyph spliced in once. Exact, so the buffer never reallocs.
+    let cap = lines.iter().map(|l| l.len()).sum::<usize>()
+        + lines.len().saturating_sub(1)
+        + COMPOSER_CARET.len_utf8();
     let mut out = String::with_capacity(cap);
     for (i, line) in lines.iter().enumerate() {
         if i > 0 {
@@ -475,8 +489,7 @@ impl App {
             split_dirty: false,
             quit: false,
         };
-        app.rebuild_file_spans();
-        app.recompute_file_span();
+        app.resync_file_spans();
         app.selected = app.first_selectable().unwrap_or(0);
         app
     }
