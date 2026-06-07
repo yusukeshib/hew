@@ -77,6 +77,7 @@ cancels out. An untouched session prints `[]`. See
 | `←` / `→` | Focus the file list / the diff pane |
 | `Ctrl-B` | Toggle the file list sidebar |
 | `Tab` / `s` | Toggle unified ↔ split (side-by-side) layout |
+| `w` | Toggle soft-wrap of long diff lines (on by default; off clips at the right edge) |
 | `y` | Copy the selected line(s) to the clipboard (OSC 52) |
 | `Esc` | Leave visual mode / clear the line selection |
 | `Ctrl-L` | Force a full repaint |
