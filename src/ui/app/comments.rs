@@ -56,8 +56,12 @@ impl App {
         let composer = self.composer_spec();
         match view {
             View::Unified => {
-                self.rows =
-                    build_rows(&self.changeset, &self.comments, self.comment_wrap, composer.as_ref());
+                self.rows = build_rows(
+                    &self.changeset,
+                    &self.comments,
+                    self.comment_wrap,
+                    composer.as_ref(),
+                );
                 self.unified_dirty = false;
             }
             View::Split => {

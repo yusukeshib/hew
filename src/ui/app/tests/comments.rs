@@ -7,8 +7,8 @@ fn toggling_view_rebuilds_the_stale_list_after_an_edit() {
     // edit is reflected there too (regression guard for the lazy-build path).
     let cs = parse_report(DIFF).0;
     let mut app = App::with_comments(cs, CommentStore::default());
-    app.wrap = false;
-    // Default view is Split. Adding a thread rebuilds split, marks unified stale.
+    app.wrap = true; // exercise the wrapped height/render lockstep across the toggle
+                     // Default view is Split. Adding a thread rebuilds split, marks unified stale.
     app.comments.add_thread(
         "f.rs".into(),
         Side::New,
@@ -31,6 +31,12 @@ fn toggling_view_rebuilds_the_stale_list_after_an_edit() {
             .any(|r| matches!(&r.kind, RowKind::Comment(_))),
         "the toggled-to view must show the comment added while it was stale"
     );
+    // A full draw in each view must agree on wrapped row heights (the render
+    // path debug_asserts row_h == produced lines) with a comment present and
+    // comment_wrap recomputed per view by sync_comment_wrap.
+    render(&mut app, 80, 40);
+    app.toggle_view();
+    render(&mut app, 80, 40);
 }
 
 #[test]
