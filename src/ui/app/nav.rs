@@ -209,10 +209,6 @@ impl App {
             .unwrap_or((len, len));
     }
 
-    /// Recompute the `[start, end)` row span of *every* file in the active row
-    /// list in a single pass. Files emit contiguous row blocks (build order),
-    /// so one sweep fills them all; call this whenever the active row list or
-    /// view changes. Keeps per-file-switch span lookup O(1).
     /// After the active row list changes, recompute every file's span and the
     /// cached current-file span together. These two always move as a unit (a
     /// row-list edit invalidates both), so bundling them keeps the invariant in
@@ -222,6 +218,10 @@ impl App {
         self.recompute_file_span();
     }
 
+    /// Recompute the `[start, end)` row span of *every* file in the active row
+    /// list in a single pass. Files emit contiguous row blocks (build order),
+    /// so one sweep fills them all; call this whenever the active row list or
+    /// view changes. Keeps per-file-switch span lookup O(1).
     pub(super) fn rebuild_file_spans(&mut self) {
         let n = self.changeset.files.len();
         let len = self.active_len();
