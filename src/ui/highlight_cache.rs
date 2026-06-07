@@ -114,8 +114,21 @@ fn spawn_warm_worker(cache: SharedCache, changeset: Arc<Changeset>) -> Sender<us
                     continue;
                 };
                 let syntax = hl.syntax_for(file.display_path());
+                // Snapshot the file's already-cached line texts in ONE lock, so
+                // the per-line highlight loop below holds no lock at all (it
+                // was previously two acquisitions per line, interleaved with
+                // the render thread's own per-line lookups). New highlights
+                // accumulate in a local map and merge back under a single lock
+                // at the end of the file.
+                let cached: std::collections::HashSet<String> = lock_cache(&cache)
+                    .get(&file_idx)
+                    .map(|m| m.keys().cloned().collect())
+                    .unwrap_or_default();
+                let mut local: FileCache = HashMap::new();
                 for line in file.hunks.iter().flat_map(|h| h.lines.iter()) {
-                    // A newer job means this work is stale: stash and restart.
+                    // A newer job means this work is stale: drop the local
+                    // batch (the render thread still fills visible lines
+                    // synchronously) and restart on the fresher focus.
                     match rx.try_recv() {
                         Ok(newer) => {
                             pending = Some(newer);
@@ -125,21 +138,23 @@ fn spawn_warm_worker(cache: SharedCache, changeset: Arc<Changeset>) -> Sender<us
                         Err(mpsc::TryRecvError::Empty) => {}
                     }
                     let text = sanitize_line(&line.text);
-                    if lock_cache(&cache)
-                        .get(&file_idx)
-                        .is_some_and(|m| m.contains_key(&text))
-                    {
+                    if cached.contains(&text) || local.contains_key(&text) {
                         continue;
                     }
-                    // Highlight outside the lock (it's the expensive part),
-                    // then insert without clobbering an entry the render thread
-                    // may have added in the meantime.
+                    // Highlight outside the lock (it's the expensive part).
                     let runs = Arc::new(hl.line(syntax, &text));
-                    lock_cache(&cache)
-                        .entry(file_idx)
-                        .or_default()
-                        .entry(text)
-                        .or_insert(runs);
+                    local.insert(text, runs);
+                }
+                if local.is_empty() {
+                    continue;
+                }
+                // Merge the batch in a single lock. `or_insert` keeps any entry
+                // the render thread added while we highlighted, so both threads
+                // converge on a single canonical `Arc`.
+                let mut guard = lock_cache(&cache);
+                let entry = guard.entry(file_idx).or_default();
+                for (text, runs) in local {
+                    entry.entry(text).or_insert(runs);
                 }
             }
         }
