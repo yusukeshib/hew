@@ -1,6 +1,6 @@
 [package]
 name = "hewdiff"
-version = "0.5.0"
+version = "0.6.0"
 edition = "2021"
 description = "High-performance review-first terminal diff viewer with PR-style comments"
 license = "MIT"

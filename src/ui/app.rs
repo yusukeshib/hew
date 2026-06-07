@@ -157,6 +157,73 @@ fn elide_left(s: &str, w: usize) -> String {
     format!("…{tail}")
 }
 
+/// Greedy width-wrap a run of highlighted code spans into visual lines, each at
+/// most `budget` display cells wide. Used by the soft-wrap renderer. Run (i.e.
+/// color) boundaries never force a break — wrapping is purely a function of
+/// cumulative display width — so the line count is independent of how the text
+/// is split into runs (see [`wrap_count`], the height oracle, which must stay
+/// in lockstep). A glyph wider than `budget` lands alone on its own line rather
+/// than being dropped. `bg` is applied to every emitted span. Spans are *not*
+/// padded to `budget`; the caller adds the prefix and trailing fill.
+fn wrap_runs(
+    runs: &[(Color, String)],
+    budget: usize,
+    bg: Option<Color>,
+) -> Vec<Vec<Span<'static>>> {
+    let budget = budget.max(1);
+    let style = |c: Color| {
+        let mut st = Style::default().fg(c);
+        if let Some(b) = bg {
+            st = st.bg(b);
+        }
+        st
+    };
+    let mut lines: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut cur: Vec<Span<'static>> = Vec::new();
+    let mut w = 0usize;
+    for (c, s) in runs {
+        // Accumulate same-color glyphs into `buf`, flushing a span (and ending
+        // the visual line) at the width boundary.
+        let mut buf = String::new();
+        for ch in s.chars() {
+            let cw = char_width(ch);
+            if w + cw > budget && w > 0 {
+                if !buf.is_empty() {
+                    cur.push(Span::styled(std::mem::take(&mut buf), style(*c)));
+                }
+                lines.push(std::mem::take(&mut cur));
+                w = 0;
+            }
+            buf.push(ch);
+            w += cw;
+        }
+        if !buf.is_empty() {
+            cur.push(Span::styled(buf, style(*c)));
+        }
+    }
+    lines.push(cur);
+    lines
+}
+
+/// Number of visual lines `text` occupies when wrapped to `budget` columns —
+/// the height oracle for the wrap layout. Mirrors [`wrap_runs`] exactly (breaks
+/// only on cumulative display width), so `wrap_count(text, b) ==
+/// wrap_runs(runs_of(text), b).len()` for any run split of `text`. Always >= 1.
+fn wrap_count(text: &str, budget: usize) -> usize {
+    let budget = budget.max(1);
+    let mut lines = 1usize;
+    let mut w = 0usize;
+    for ch in text.chars() {
+        let cw = char_width(ch);
+        if w + cw > budget && w > 0 {
+            lines += 1;
+            w = 0;
+        }
+        w += cw;
+    }
+    lines
+}
+
 /// A view-independent handle to the selected row, stable across row rebuilds
 /// and unified/split switches (raw indices are not).
 enum SelKey {
@@ -306,6 +373,27 @@ pub struct App {
     /// Visual line-select mode: movement keeps `sel_anchor` so the user can
     /// grow a multi-line selection (then `i` anchors a comment to the range).
     visual: bool,
+    /// Soft-wrap long diff code lines instead of clipping them at the right
+    /// edge (on by default; toggled with `w`). When off, every row is exactly
+    /// one terminal line (the original 1:1 model and its fast paths are
+    /// preserved).
+    wrap: bool,
+    /// Per-row display height (terminal lines) of the *active* view, valid only
+    /// while `wrap` is on. A logical row (`self.selected`/`self.scroll` index)
+    /// may span several display lines once wrapped; this caches each row's
+    /// height so the viewport, mouse mapping, and scrollbar can convert between
+    /// row indices and display lines without re-wrapping every frame.
+    row_heights: Vec<u16>,
+    /// Prefix sum of `row_heights` (`row_offsets[i]` = display lines before row
+    /// `i`, length `active_len + 1`), so `display_lines`/scrollbar range sums
+    /// are O(1) instead of O(rows) per draw. Rebuilt with `row_heights`; empty
+    /// while wrap is off (heights are all 1 then, so sums are plain row counts).
+    row_offsets: Vec<usize>,
+    /// Content width `row_heights` was computed for; a resize invalidates them.
+    heights_width: usize,
+    /// Set when the active row list changes (rebuild / view switch / wrap
+    /// toggle), forcing `update_heights` to recompute on the next draw.
+    heights_dirty: bool,
     quit: bool,
 }
 
@@ -375,6 +463,11 @@ impl App {
             file_spans: Vec::new(),
             composer: None,
             visual: false,
+            wrap: true,
+            row_heights: Vec::new(),
+            row_offsets: Vec::new(),
+            heights_width: usize::MAX,
+            heights_dirty: true,
             quit: false,
         };
         app.rebuild_file_spans();
@@ -418,6 +511,172 @@ impl App {
             out.push(Span::styled(" ".repeat(width - used), st));
         }
         out
+    }
+
+    // ---- soft-wrap geometry (no-ops while `self.wrap` is off) ----
+
+    /// Columns reserved before the code on a unified diff line: two 5-wide
+    /// line-number columns + a space each (`"{:>5} {:>5} "` = 12) + the 1-col
+    /// add/del sign. Continuation lines pad this width to align under the code.
+    const UNI_PREFIX: usize = 13;
+    /// Columns reserved before the code on one side of a split row
+    /// (`"{:>4} "`). Matches `side_spans`/`side_line_rows`.
+    const SPLIT_PREFIX: usize = 5;
+
+    /// Width of one split column for content area `width`. Single source of
+    /// truth for `render_split`'s `side_w` and the wrap-height budget. Reserves
+    /// the divider's *display* width (cells), not its UTF-8 byte length — the
+    /// glyph in `" │ "` is multi-byte but one cell wide.
+    fn split_side_w(width: usize) -> usize {
+        width.saturating_sub(str_width(SPLIT_DIVIDER)) / 2
+    }
+
+    /// Display height (terminal lines) of row `idx` in the active view. Always 1
+    /// unless `wrap` is on and the row is a code line wide enough to wrap.
+    fn row_h(&self, idx: usize) -> usize {
+        if !self.wrap {
+            return 1;
+        }
+        self.row_heights.get(idx).copied().unwrap_or(1) as usize
+    }
+
+    /// Total display lines spanned by rows `[start, end)` in the active view.
+    /// O(1): a difference of the `row_offsets` prefix sum (or a plain row count
+    /// when wrap is off). Falls back to a direct walk only if the prefix sum is
+    /// stale/missing for the requested range.
+    fn display_lines(&self, start: usize, end: usize) -> usize {
+        if !self.wrap {
+            return end.saturating_sub(start);
+        }
+        if end < self.row_offsets.len() && start <= end {
+            return self.row_offsets[end] - self.row_offsets[start];
+        }
+        (start..end).map(|i| self.row_h(i)).sum()
+    }
+
+    /// The largest top row (>= `start`) such that the rows from it to `end`
+    /// fit within `height` display lines — i.e. the furthest the viewport can
+    /// scroll without revealing empty space past the last line.
+    fn max_scroll_row(&self, start: usize, end: usize, height: usize) -> usize {
+        if end <= start {
+            return start;
+        }
+        let mut acc = 0usize;
+        let mut t = end;
+        while t > start {
+            let h = self.row_h(t - 1);
+            if acc + h > height {
+                break;
+            }
+            acc += h;
+            t -= 1;
+        }
+        // A single bottom row taller than the viewport leaves `t == end`; clamp
+        // so we still scroll to (the top of) that last row.
+        t.min(end - 1).max(start)
+    }
+
+    /// The topmost row that keeps `bottom` (and everything down to it that
+    /// fits) within `height` display lines — used to scroll a selection's last
+    /// row into view from below.
+    fn top_to_show(&self, start: usize, bottom: usize, height: usize) -> usize {
+        let mut acc = 0usize;
+        let mut t = bottom + 1;
+        while t > start {
+            let h = self.row_h(t - 1);
+            if acc + h > height {
+                break;
+            }
+            acc += h;
+            t -= 1;
+        }
+        t.min(bottom).max(start)
+    }
+
+    /// Recompute the per-row display heights for the active view at content
+    /// `width`. A cheap no-op when wrap is off, the width is unchanged, and the
+    /// cache is clean. Called from `draw` before the viewport reads heights.
+    fn update_heights(&mut self, width: usize) {
+        if !self.wrap {
+            if !self.row_heights.is_empty() {
+                self.row_heights.clear();
+                self.row_offsets.clear();
+            }
+            self.heights_width = width;
+            self.heights_dirty = false;
+            return;
+        }
+        if !self.heights_dirty
+            && self.heights_width == width
+            && self.row_heights.len() == self.active_len()
+        {
+            return;
+        }
+        let uni_budget = width.saturating_sub(Self::UNI_PREFIX);
+        let side_budget = Self::split_side_w(width).saturating_sub(Self::SPLIT_PREFIX);
+        let heights: Vec<u16> = match self.view {
+            View::Unified => self
+                .rows
+                .iter()
+                .map(|r| match &r.kind {
+                    // `r.text` is `"{sign}{code}"`; wrap the code only.
+                    RowKind::Line { .. } => {
+                        // Clamp so a pathologically long/wrapped line (e.g. a
+                        // minified file at a tiny budget) can't overflow u16 and
+                        // under-report its height, which would desync
+                        // scroll/click mapping.
+                        wrap_count(r.text.get(1..).unwrap_or(""), uni_budget).min(u16::MAX as usize)
+                            as u16
+                    }
+                    _ => 1,
+                })
+                .collect(),
+            View::Split => self
+                .split_rows
+                .iter()
+                .map(|r| match &r.kind {
+                    SplitRowKind::Pair { left, right } => {
+                        let l = left
+                            .as_ref()
+                            .map_or(1, |c| wrap_count(&c.text, side_budget));
+                        let rr = right
+                            .as_ref()
+                            .map_or(1, |c| wrap_count(&c.text, side_budget));
+                        l.max(rr).min(u16::MAX as usize) as u16
+                    }
+                    _ => 1,
+                })
+                .collect(),
+        };
+        // Prefix sum for O(1) range/scrollbar queries.
+        let mut offsets = Vec::with_capacity(heights.len() + 1);
+        let mut acc = 0usize;
+        offsets.push(0);
+        for &h in &heights {
+            acc += h as usize;
+            offsets.push(acc);
+        }
+        self.row_heights = heights;
+        self.row_offsets = offsets;
+        self.heights_width = width;
+        self.heights_dirty = false;
+    }
+
+    /// Toggle soft-wrap, keeping the cursor in view under the new geometry.
+    fn toggle_wrap(&mut self) {
+        self.wrap = !self.wrap;
+        self.heights_dirty = true;
+        // Heights are recomputed on the next draw (the content width is only
+        // known there); the cleared cache makes `row_h` fall back to 1 until
+        // then, which is harmless for the single ensure_visible below.
+        self.row_heights.clear();
+        self.row_offsets.clear();
+        self.ensure_visible();
+        self.status = if self.wrap {
+            "wrap on".into()
+        } else {
+            "wrap off".into()
+        };
     }
 
     fn first_selectable(&self) -> Option<usize> {
@@ -888,6 +1147,7 @@ impl App {
             .min(self.active_len().saturating_sub(1));
         self.current_file = self.row_file_idx(self.selected).unwrap_or(cur_file);
         self.recompute_file_span();
+        self.heights_dirty = true;
         self.ensure_visible();
     }
 
@@ -1283,8 +1543,21 @@ impl App {
         self.focus = Focus::Diff;
         let (start, end) = self.file_range();
         let top = self.scroll.max(start);
-        let idx = (top + row.saturating_sub(self.diff_area.y) as usize)
-            .clamp(start, end.saturating_sub(1).max(start));
+        // Walk wrapped row heights from the top of the viewport to map the
+        // clicked display offset onto a logical row. With wrap off every height
+        // is 1, so this reduces to `top + offset`.
+        let off = row.saturating_sub(self.diff_area.y) as usize;
+        let mut acc = 0usize;
+        let mut idx = top;
+        while idx < end {
+            let h = self.row_h(idx);
+            if off < acc + h {
+                break;
+            }
+            acc += h;
+            idx += 1;
+        }
+        let idx = idx.clamp(start, end.saturating_sub(1).max(start));
         if let Some(i) = self.stop_for(idx) {
             self.selected = i;
             // A drag-range only makes sense between diff lines; landing on a
@@ -1527,6 +1800,7 @@ impl App {
         // file spans, then the current one, before first_selectable reads it.
         self.rebuild_file_spans();
         self.recompute_file_span();
+        self.heights_dirty = true;
         // Re-find the same line / comment message in the other layout.
         let target = key.as_ref().and_then(|k| self.find_sel_key(k));
         self.selected = target
@@ -1597,6 +1871,8 @@ impl App {
                 return;
             }
             KeyCode::Char('l') if ctrl => return self.needs_clear = true,
+            // Toggle soft-wrap of long diff lines.
+            KeyCode::Char('w') => return self.toggle_wrap(),
             _ => {}
         }
         match self.effective_focus() {
@@ -1814,7 +2090,7 @@ impl App {
         // Cap at the last full screen so the wheel can't scroll past the final
         // line into empty space (which would drag the selection along with it).
         // Mirrors the scrollbar's `total - height` maximum.
-        let max_top = end.saturating_sub(height).max(start) as isize;
+        let max_top = self.max_scroll_row(start, end, height) as isize;
         self.scroll = (self.scroll as isize + delta).clamp(start as isize, max_top) as usize;
         // Scrolling the pane is independent of the selected line: the cursor
         // stays put (and simply scrolls out of view) until the user moves it.
@@ -1828,8 +2104,13 @@ impl App {
         let (top_row, bot_row) = self
             .comment_unit_span(self.selected)
             .unwrap_or((self.selected, self.selected));
-        if bot_row >= self.scroll + height {
-            self.scroll = bot_row + 1 - height;
+        // Scroll down so the unit's last row fits from below, then up so its
+        // first row is visible (the latter wins for a unit taller than the
+        // viewport). Display-line aware, so a wrapped cursor line is followed
+        // by all of its visual lines.
+        let need_top = self.top_to_show(start, bot_row, height);
+        if self.scroll < need_top {
+            self.scroll = need_top;
         }
         if top_row < self.scroll {
             self.scroll = top_row;
@@ -1838,7 +2119,7 @@ impl App {
         // last full screen of content.
         self.scroll = self
             .scroll
-            .clamp(start, end.saturating_sub(height).max(start));
+            .clamp(start, self.max_scroll_row(start, end, height));
     }
 
     fn jump_comment(&mut self, dir: isize) {
@@ -1903,12 +2184,12 @@ impl App {
             View::Unified => inner.saturating_sub(8),
             // Split: the box lives inside one half-column, so wrapping to the
             // full width would clip every line on the right. Mirror
-            // `render_split`'s `side_w = (area - SPLIT_DIVIDER.len()) / 2` for
+            // `render_split`'s `side_w = (area - str_width(SPLIT_DIVIDER)) / 2` for
             // the worst case (a scrollbar present trims the area by 1), then
             // reserve the box chrome (2-col margin + 2 borders + 3-col indent
             // = 7).
             View::Split => {
-                let side = inner.saturating_sub(1 + SPLIT_DIVIDER.len()) / 2;
+                let side = inner.saturating_sub(1 + str_width(SPLIT_DIVIDER)) / 2;
                 side.saturating_sub(7)
             }
         };
@@ -1989,8 +2270,13 @@ impl App {
         f.render_widget(diff_block, diff_outer);
         self.height = diff_inner.height as usize;
         // Reserve the rightmost inner column for a scrollbar when it overflows.
+        // Heights depend on the wrap width, so compute them at the full inner
+        // width first to decide overflow; if a scrollbar then steals a column,
+        // recompute at the narrower content width before rendering so the
+        // viewport/mouse/scrollbar all agree on row heights.
+        self.update_heights(diff_inner.width as usize);
         let (fr_start, fr_end) = self.file_range();
-        let overflow = fr_end - fr_start > self.height;
+        let overflow = self.display_lines(fr_start, fr_end) > self.height;
         let content = if overflow {
             Rect {
                 width: diff_inner.width.saturating_sub(1),
@@ -2010,6 +2296,15 @@ impl App {
         } else {
             Rect::default()
         };
+        self.update_heights(content.width as usize);
+        // Heights for the final content width are now known. A resize (notably
+        // widening, which shrinks wrap heights) can leave `self.scroll` past
+        // the new last full screen, painting empty space beyond EOF; clamp it
+        // before rendering so the viewport stays anchored to content.
+        self.scroll = self.scroll.clamp(
+            fr_start,
+            self.max_scroll_row(fr_start, fr_end, self.height.max(1)),
+        );
         self.render_diff(f, content);
         if overflow {
             self.render_diff_scrollbar(f, diff_inner);
@@ -2051,7 +2346,7 @@ impl App {
         match self.effective_focus() {
             Focus::Sidebar => "j/k move · enter open · h/l fold · tab view · q quit".into(),
             Focus::Diff => {
-                "j/k move · v select · n/N comments · [/] files · tab view · y copy · esc back · q quit"
+                "j/k move · v select · n/N comments · [/] files · tab view · w wrap · y copy · esc back · q quit"
                     .into()
             }
         }
@@ -2200,12 +2495,13 @@ impl App {
     /// A vertical scrollbar on the right edge of `area` for the diff pane.
     fn render_diff_scrollbar(&self, f: &mut Frame, area: Rect) {
         let (start, end) = self.file_range();
-        let total = end - start;
+        // Measured in display lines so the thumb tracks wrapped content too.
+        let total = self.display_lines(start, end);
         if total <= self.height {
             return;
         }
         let max_top = total - self.height;
-        let pos = self.scroll.saturating_sub(start).min(max_top);
+        let pos = self.display_lines(start, self.scroll).min(max_top);
         let mut sb = ScrollbarState::new(max_top + 1)
             .position(pos)
             .viewport_content_length(self.height);
@@ -2223,15 +2519,17 @@ impl App {
 
     fn render_unified(&self, f: &mut Frame, area: Rect) {
         let width = area.width as usize;
+        let height = area.height as usize;
         let (start, file_end) = self.file_range();
         let top = self.scroll.max(start);
-        let end = (top + self.height).min(file_end);
         let mut lines: Vec<Line> = Vec::new();
-        for idx in top..end {
+        let mut idx = top;
+        while lines.len() < height && idx < file_end {
             let row = &self.rows[idx];
             let selected = self.in_selection(idx);
-            let y = area.y + (idx - top) as u16;
-            let line = match &row.kind {
+            // First visual line of this row (action rows / buttons anchor here).
+            let y = area.y + lines.len() as u16;
+            let mut row_lines: Vec<Line> = match &row.kind {
                 RowKind::Comment(cl) if matches!(cl.kind, CommentKind::Actions) => {
                     let border = if cl.resolved {
                         theme().muted
@@ -2239,27 +2537,41 @@ impl App {
                         theme().border_unfocus
                     };
                     let btns = self.comment_buttons(cl);
-                    self.action_row_line(&btns, border, area.x, y, width, 0, width)
+                    vec![self.action_row_line(&btns, border, area.x, y, width, 0, width)]
                 }
                 RowKind::Composer(c) if matches!(c.kind, ComposerKind::Hint) => {
                     let btns = self.composer_buttons();
-                    self.action_row_line(&btns, theme().accent, area.x, y, width, 0, width)
+                    vec![self.action_row_line(&btns, theme().accent, area.x, y, width, 0, width)]
                 }
-                RowKind::Line { .. } if self.show_add_button(idx) => {
-                    let base = self.row_to_line(row, selected, width).spans;
-                    self.append_right_button(
-                        base,
+                _ => self.row_to_lines(row, selected, width),
+            };
+            if matches!(row.kind, RowKind::Line { .. }) && self.show_add_button(idx) {
+                if let Some(first) = row_lines.first_mut() {
+                    let spans = std::mem::take(&mut first.spans);
+                    *first = self.append_right_button(
+                        spans,
                         width,
                         "comment(i)",
                         theme().accent,
                         ButtonAction::AddComment,
                         area.x,
                         y,
-                    )
+                    );
                 }
-                _ => self.row_to_line(row, selected, width),
-            };
-            lines.push(line);
+            }
+            debug_assert!(
+                !self.wrap || row_lines.len() == self.row_h(idx),
+                "render produced {} lines for row {idx} but row_h says {}",
+                row_lines.len(),
+                self.row_h(idx)
+            );
+            for l in row_lines {
+                if lines.len() >= height {
+                    break;
+                }
+                lines.push(l);
+            }
+            idx += 1;
         }
         f.render_widget(
             Paragraph::new(lines).style(Style::default().bg(theme().bg)),
@@ -2281,17 +2593,18 @@ impl App {
     fn render_split(&self, f: &mut Frame, area: Rect) {
         let total = area.width as usize;
         let divider = SPLIT_DIVIDER;
-        let side_w = total.saturating_sub(divider.len()) / 2;
+        let side_w = Self::split_side_w(total);
         let (start, file_end) = self.file_range();
         let top = self.scroll.max(start);
-        let end = (top + self.height).min(file_end);
+        let height = area.height as usize;
         let dw = divider.chars().count();
         let mut lines: Vec<Line> = Vec::new();
-        for idx in top..end {
+        let mut idx = top;
+        while lines.len() < height && idx < file_end {
             let row = &self.split_rows[idx];
             let selected = self.in_selection(idx);
-            let y = area.y + (idx - top) as u16;
-            let line = match &row.kind {
+            let y = area.y + lines.len() as u16;
+            let mut row_lines: Vec<Line> = match &row.kind {
                 SplitRowKind::Comment { side, line: cl }
                     if matches!(cl.kind, CommentKind::Actions) =>
                 {
@@ -2306,7 +2619,7 @@ impl App {
                     } else {
                         side_w + dw
                     };
-                    self.action_row_line(&btns, border, area.x, y, total, left, side_w)
+                    vec![self.action_row_line(&btns, border, area.x, y, total, left, side_w)]
                 }
                 SplitRowKind::Composer { side, line: cl }
                     if matches!(cl.kind, ComposerKind::Hint) =>
@@ -2317,28 +2630,116 @@ impl App {
                     } else {
                         side_w + dw
                     };
-                    self.action_row_line(&btns, theme().accent, area.x, y, total, left, side_w)
+                    vec![self.action_row_line(
+                        &btns,
+                        theme().accent,
+                        area.x,
+                        y,
+                        total,
+                        left,
+                        side_w,
+                    )]
                 }
-                SplitRowKind::Pair { .. } if self.show_add_button(idx) => {
-                    let base = self.split_row_to_line(row, selected, side_w, divider).spans;
-                    self.append_right_button(
-                        base,
+                _ => self.split_row_to_lines(row, selected, side_w, divider),
+            };
+            if matches!(row.kind, SplitRowKind::Pair { .. }) && self.show_add_button(idx) {
+                if let Some(first) = row_lines.first_mut() {
+                    let spans = std::mem::take(&mut first.spans);
+                    *first = self.append_right_button(
+                        spans,
                         total,
                         "comment(i)",
                         theme().accent,
                         ButtonAction::AddComment,
                         area.x,
                         y,
-                    )
+                    );
                 }
-                _ => self.split_row_to_line(row, selected, side_w, divider),
-            };
-            lines.push(line);
+            }
+            debug_assert!(
+                !self.wrap || row_lines.len() == self.row_h(idx),
+                "render produced {} lines for split row {idx} but row_h says {}",
+                row_lines.len(),
+                self.row_h(idx)
+            );
+            for l in row_lines {
+                if lines.len() >= height {
+                    break;
+                }
+                lines.push(l);
+            }
+            idx += 1;
         }
         f.render_widget(
             Paragraph::new(lines).style(Style::default().bg(theme().bg)),
             area,
         );
+    }
+
+    /// One logical split row expanded into its display lines. A single line
+    /// unless `wrap` is on and a `Pair` has code wide enough to wrap on either
+    /// side; the pair's height is the taller of the two columns, with the
+    /// shorter column blank-padded so the divider stays aligned.
+    fn split_row_to_lines(
+        &self,
+        row: &SplitRow,
+        selected: bool,
+        side_w: usize,
+        divider: &str,
+    ) -> Vec<Line<'static>> {
+        match &row.kind {
+            SplitRowKind::Pair { left, right } if self.wrap => {
+                let lr = self.side_line_rows(left.as_ref(), row.file_idx, side_w, selected);
+                let rr = self.side_line_rows(right.as_ref(), row.file_idx, side_w, selected);
+                let n = lr.len().max(rr.len());
+                let mut out = Vec::with_capacity(n);
+                for i in 0..n {
+                    let mut spans = lr
+                        .get(i)
+                        .cloned()
+                        .unwrap_or_else(|| self.blank_side(left.as_ref(), side_w, selected));
+                    spans.push(Span::styled(
+                        divider.to_string(),
+                        Style::default().fg(theme().subtle),
+                    ));
+                    spans.extend(
+                        rr.get(i)
+                            .cloned()
+                            .unwrap_or_else(|| self.blank_side(right.as_ref(), side_w, selected)),
+                    );
+                    out.push(Line::from(spans));
+                }
+                out
+            }
+            _ => vec![self.split_row_to_line(row, selected, side_w, divider)],
+        }
+    }
+
+    /// A blank `width`-wide column for continuation rows of the shorter side of
+    /// a wrapped pair, tinted with that side's background so it reads as part
+    /// of the same cell.
+    fn blank_side(
+        &self,
+        cell: Option<&SideCell>,
+        width: usize,
+        selected: bool,
+    ) -> Vec<Span<'static>> {
+        let st = match cell {
+            None => Style::default().bg(theme().comment_bg),
+            Some(c) => {
+                let bg = if selected {
+                    Some(self.diff_cursor_bg())
+                } else {
+                    match c.kind {
+                        LineKind::Addition => Some(theme().add_bg),
+                        LineKind::Deletion => Some(theme().del_bg),
+                        LineKind::Context => None,
+                    }
+                };
+                bg.map_or(Style::default(), |b| Style::default().bg(b))
+            }
+        };
+        vec![Span::styled(" ".repeat(width), st)]
     }
 
     fn split_row_to_line(
@@ -2455,6 +2856,155 @@ impl App {
                 spans
             }
         }
+    }
+
+    /// Soft-wrap one side of a split pair into `>= 1` rows, each exactly `width`
+    /// cells wide (prefix + code + tint fill). The first row carries the line
+    /// number; continuation rows pad the 5-col prefix. Mirrors `side_spans` for
+    /// the non-wrapping single-row case.
+    fn side_line_rows(
+        &self,
+        cell: Option<&SideCell>,
+        file_idx: usize,
+        width: usize,
+        selected: bool,
+    ) -> Vec<Vec<Span<'static>>> {
+        const PREFIX: usize = 5;
+        let Some(c) = cell else {
+            return vec![vec![Span::styled(
+                " ".repeat(width),
+                Style::default().bg(theme().comment_bg),
+            )]];
+        };
+        let num = c
+            .line
+            .map(|n| format!("{n:>4}"))
+            .unwrap_or_else(|| "    ".into());
+        let bg = if selected {
+            Some(self.diff_cursor_bg())
+        } else {
+            match c.kind {
+                LineKind::Addition => Some(theme().add_bg),
+                LineKind::Deletion => Some(theme().del_bg),
+                LineKind::Context => None,
+            }
+        };
+        let budget = width.saturating_sub(PREFIX);
+        let runs = self.hl.runs(file_idx, &c.text);
+        let wrapped = wrap_runs(&runs, budget, bg);
+        let mut out = Vec::with_capacity(wrapped.len());
+        for (i, code_spans) in wrapped.into_iter().enumerate() {
+            let prefix = if i == 0 {
+                format!("{num} ")
+            } else {
+                " ".repeat(PREFIX)
+            };
+            let mut spans = vec![Span::styled(prefix, Style::default().fg(theme().muted))];
+            let code_w: usize = code_spans.iter().map(|s| str_width(&s.content)).sum();
+            spans.extend(code_spans);
+            let used = PREFIX + code_w;
+            // Pad to the full column width so the divider/right side align.
+            // `styled_fit` always pads (even with no bg), so match that to keep
+            // the column a fixed width regardless of tint.
+            if used < width {
+                let mut st = Style::default();
+                if let Some(b) = bg {
+                    st = st.bg(b);
+                }
+                spans.push(Span::styled(" ".repeat(width - used), st));
+            }
+            out.push(spans);
+        }
+        out
+    }
+
+    /// One logical unified row expanded into its display lines. A single line
+    /// unless `wrap` is on and the row is a long code line, in which case the
+    /// code is soft-wrapped with continuation lines indented under it.
+    fn row_to_lines(&self, row: &Row, selected: bool, width: usize) -> Vec<Line<'static>> {
+        match &row.kind {
+            RowKind::Line {
+                kind,
+                old_line,
+                new_line,
+            } if self.wrap => {
+                self.wrapped_code_lines(row, *kind, *old_line, *new_line, selected, width)
+            }
+            _ => vec![self.row_to_line(row, selected, width)],
+        }
+    }
+
+    /// Soft-wrap a unified code line. The first display line carries the line
+    /// numbers + sign; continuation lines pad that 13-col prefix so the code
+    /// stays aligned, and the diff background tint spans every line.
+    fn wrapped_code_lines(
+        &self,
+        row: &Row,
+        kind: LineKind,
+        old_line: Option<u32>,
+        new_line: Option<u32>,
+        selected: bool,
+        width: usize,
+    ) -> Vec<Line<'static>> {
+        let num = format!(
+            "{:>5} {:>5} ",
+            old_line.map(|n| n.to_string()).unwrap_or_default(),
+            new_line.map(|n| n.to_string()).unwrap_or_default(),
+        );
+        let (sign, code) = row.text.split_at(1);
+        let bg = if selected {
+            Some(self.diff_cursor_bg())
+        } else {
+            match kind {
+                LineKind::Addition => Some(theme().add_bg),
+                LineKind::Deletion => Some(theme().del_bg),
+                LineKind::Context => None,
+            }
+        };
+        let sign_color = match kind {
+            LineKind::Addition => theme().added,
+            LineKind::Deletion => theme().removed,
+            LineKind::Context => theme().muted,
+        };
+        let with_bg = |st: Style| match bg {
+            Some(b) => st.bg(b),
+            None => st,
+        };
+        let budget = width.saturating_sub(Self::UNI_PREFIX);
+        let runs = self.hl.runs(row.file_idx, code);
+        let wrapped = wrap_runs(&runs, budget, bg);
+        let mut out = Vec::with_capacity(wrapped.len());
+        for (i, code_spans) in wrapped.into_iter().enumerate() {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            if i == 0 {
+                spans.push(Span::styled(
+                    num.clone(),
+                    with_bg(Style::default().fg(theme().muted)),
+                ));
+                spans.push(Span::styled(
+                    sign.to_string(),
+                    with_bg(Style::default().fg(sign_color)),
+                ));
+            } else {
+                spans.push(Span::styled(
+                    " ".repeat(Self::UNI_PREFIX),
+                    with_bg(Style::default()),
+                ));
+            }
+            let code_w: usize = code_spans.iter().map(|s| str_width(&s.content)).sum();
+            spans.extend(code_spans);
+            let used = Self::UNI_PREFIX + code_w;
+            // Fill the rest so the tint / selection spans the whole line
+            // (only when there is a background to extend, matching `row_to_line`).
+            if bg.is_some() && used < width {
+                spans.push(Span::styled(
+                    " ".repeat(width - used),
+                    with_bg(Style::default()),
+                ));
+            }
+            out.push(Line::from(spans));
+        }
+        out
     }
 
     fn row_to_line(&self, row: &Row, selected: bool, width: usize) -> Line<'static> {
@@ -2977,6 +3527,9 @@ mod tests {
         let cs = parse_report(diff).0;
         let mut app = App::with_comments(cs, CommentStore::default());
         app.height = 4; // deterministic viewport for scroll math
+                        // Pin the legacy 1:1 geometry for tests that assert exact row/line
+                        // positions; the wrap-specific tests opt back in explicitly.
+        app.wrap = false;
         app
     }
 
@@ -3227,6 +3780,7 @@ mod tests {
         let reply_id = store.threads[0].comments[1].id.clone();
         let mut app = App::with_comments(cs, store);
         app.height = 40; // tall enough to hold the whole thread
+        app.wrap = false;
         (app, tid, reply_id)
     }
 
@@ -3399,12 +3953,13 @@ mod tests {
         );
         let mut app = App::with_comments(cs, store);
         app.view = View::Split;
+        app.wrap = false;
 
         // Mirror render_split's column math for a known inner width.
         let inner: u16 = 90;
         app.sync_comment_wrap(inner);
         // Worst case (scrollbar present) side column, as render computes it.
-        let side_w = (inner as usize).saturating_sub(1 + SPLIT_DIVIDER.len()) / 2;
+        let side_w = (inner as usize).saturating_sub(1 + str_width(SPLIT_DIVIDER)) / 2;
         let inner_w = side_w - 2; // borders
         let indent = 3; // columns reserved for the body indent in comment_wrap
 
@@ -3875,5 +4430,221 @@ mod tests {
         let hits = app.button_hits.borrow();
         assert!(hits.iter().any(|(_, a)| matches!(a, ButtonAction::Submit)));
         assert!(hits.iter().any(|(_, a)| matches!(a, ButtonAction::Cancel)));
+    }
+
+    // ---- soft-wrap ----
+
+    // A single addition with a long code body, so wrapping it produces several
+    // display lines while the row count stays tiny.
+    const LONG_DIFF: &str = "\
+--- a/f.rs
++++ b/f.rs
+@@ -1,2 +1,3 @@
+ a
++let total = alpha + beta + gamma + delta + epsilon + zeta + eta + theta + iota;
+ f
+";
+
+    #[test]
+    fn wrap_count_matches_wrap_runs_for_any_run_split() {
+        // The height oracle (`wrap_count`) must agree with the renderer
+        // (`wrap_runs`) regardless of how the text is partitioned into colored
+        // runs — wrapping breaks only on cumulative display width.
+        let red = Color::Red;
+        let blue = Color::Blue;
+        let long = "x".repeat(50);
+        let cases = [
+            "",
+            "abc",
+            "hello world this is a longer sentence to wrap",
+            "日本語のテキストを折り返す", // wide glyphs
+            "a日b本c語d",
+            long.as_str(),
+        ];
+        for text in cases {
+            for budget in [1usize, 2, 3, 4, 7, 10, 13, 80] {
+                // Split `text` into two runs at every byte boundary that lands
+                // on a char boundary, to exercise run-independence.
+                let mut splits = vec![0usize, text.len()];
+                for (i, _) in text.char_indices() {
+                    splits.push(i);
+                }
+                for &cut in &splits {
+                    if !text.is_char_boundary(cut) {
+                        continue;
+                    }
+                    let runs = vec![
+                        (red, text[..cut].to_string()),
+                        (blue, text[cut..].to_string()),
+                    ];
+                    let got = wrap_runs(&runs, budget, None).len();
+                    assert_eq!(
+                        got,
+                        wrap_count(text, budget),
+                        "text={text:?} budget={budget} cut={cut}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn wrap_off_keeps_one_display_line_per_row() {
+        // Regression guard: with wrap off the geometry is the original 1:1
+        // model (every row is height 1), so display-line math == row count.
+        let mut app = app_with(LONG_DIFF);
+        app.view = View::Unified;
+        app.rebuild_file_spans();
+        app.recompute_file_span();
+        render(&mut app, 40, 20);
+        assert!(!app.wrap);
+        let (s, e) = app.file_range();
+        assert_eq!(app.display_lines(s, e), e - s);
+        assert!((s..e).all(|i| app.row_h(i) == 1));
+    }
+
+    #[test]
+    fn long_line_wraps_into_several_display_lines() {
+        let mut app = app_with(LONG_DIFF);
+        app.view = View::Unified;
+        app.rebuild_file_spans();
+        app.recompute_file_span();
+        app.toggle_wrap();
+        assert!(app.wrap);
+        // A narrow viewport forces the long addition to wrap.
+        render(&mut app, 40, 20);
+        let (s, e) = app.file_range();
+        // The long addition is the only row that should exceed one line.
+        let tall = (s..e).filter(|&i| app.row_h(i) > 1).count();
+        assert_eq!(tall, 1, "exactly the long code line wraps");
+        assert!(
+            app.display_lines(s, e) > e - s,
+            "wrapping adds display lines over the row count"
+        );
+    }
+
+    #[test]
+    fn click_below_a_wrapped_line_maps_to_the_next_row() {
+        let mut app = app_with(LONG_DIFF);
+        app.view = View::Unified;
+        app.rebuild_file_spans();
+        app.recompute_file_span();
+        app.toggle_wrap();
+        render(&mut app, 40, 20);
+        let (s, e) = app.file_range();
+        // Find the wrapped (tall) code row and the next selectable row.
+        let tall = (s..e).find(|&i| app.row_h(i) > 1).expect("a wrapped row");
+        let next = (tall + 1..e)
+            .find(|&i| app.is_selectable_at(i))
+            .expect("a row after the wrapped one");
+        app.scroll = s;
+        // The wrapped row occupies `row_h(tall)` display lines starting at the
+        // top of the viewport; clicking just past them must land on `next`,
+        // not on the wrapped row's last visual line.
+        let mut off = 0usize;
+        for i in s..tall {
+            off += app.row_h(i);
+        }
+        off += app.row_h(tall); // first display line of `next`
+        let area = app.diff_area;
+        let row = area.y + off as u16;
+        click(
+            &mut app,
+            Rect {
+                x: area.x + 8,
+                y: row,
+                width: 1,
+                height: 1,
+            },
+        );
+        assert_eq!(app.selected, next, "click maps through the wrapped row");
+    }
+
+    #[test]
+    fn wrapping_a_real_patch_keeps_heights_and_render_in_sync() {
+        // Exercises the `debug_assert!` in render (row_h must equal the lines
+        // actually produced) over a real, highlighted patch in both views at a
+        // range of widths — the tightest guard against oracle/renderer drift.
+        use crate::loader::load_patch;
+        let cs = load_patch(Some(Path::new("examples/rust-long-en.patch"))).unwrap();
+        let mut app = App::with_comments(cs, CommentStore::default());
+        app.wrap = true;
+        app.heights_dirty = true;
+        for view in [View::Unified, View::Split] {
+            if app.view != view {
+                app.toggle_view();
+            }
+            for w in [50u16, 80, 120, 200] {
+                render(&mut app, w, 30);
+                // Scroll through the whole file so every row is rendered.
+                for _ in 0..40 {
+                    app.move_by(1, app.height.max(1));
+                    render(&mut app, w, 30);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn display_lines_prefix_sum_matches_a_direct_walk() {
+        // The O(1) prefix-sum query must equal the naive per-row sum it
+        // replaces, for every sub-range of the file.
+        let mut app = app_with(LONG_DIFF);
+        app.view = View::Unified;
+        app.rebuild_file_spans();
+        app.recompute_file_span();
+        app.toggle_wrap();
+        render(&mut app, 40, 20);
+        let (s, e) = app.file_range();
+        assert_eq!(app.row_offsets.len(), app.active_len() + 1);
+        for a in s..=e {
+            for b in a..=e {
+                let walk: usize = (a..b).map(|i| app.row_h(i)).sum();
+                assert_eq!(app.display_lines(a, b), walk, "range {a}..{b}");
+            }
+        }
+    }
+
+    #[test]
+    fn widening_reclamps_scroll_off_the_end() {
+        // Regression: after a resize that shrinks wrap heights, a scroll value
+        // valid for the narrow geometry must be clamped so the viewport never
+        // paints empty space past EOF.
+        let mut app = app_with(LONG_DIFF);
+        app.view = View::Unified;
+        app.rebuild_file_spans();
+        app.recompute_file_span();
+        app.toggle_wrap();
+        // Narrow + short viewport so the long line wraps and content overflows;
+        // scroll to the bottom.
+        render(&mut app, 30, 4);
+        app.scroll_view(100);
+        render(&mut app, 30, 4);
+        // Now widen a lot: the long line no longer wraps, so far less content.
+        render(&mut app, 400, 4);
+        let (s, e) = app.file_range();
+        assert!(
+            app.scroll <= app.max_scroll_row(s, e, app.height.max(1)),
+            "scroll {} must be clamped to max {}",
+            app.scroll,
+            app.max_scroll_row(s, e, app.height.max(1))
+        );
+    }
+
+    #[test]
+    fn toggling_wrap_recomputes_heights_and_holds_the_cursor() {
+        let mut app = app_with(LONG_DIFF);
+        app.view = View::Unified;
+        app.rebuild_file_spans();
+        app.recompute_file_span();
+        render(&mut app, 40, 6);
+        let before = app.selected;
+        app.toggle_wrap();
+        render(&mut app, 40, 6);
+        // Heights now reflect wrapping, and the cursor stayed put and in view.
+        assert!(!app.row_heights.is_empty());
+        assert_eq!(app.selected, before);
+        let (s, _) = app.file_range();
+        assert!(app.scroll >= s);
     }
 }
