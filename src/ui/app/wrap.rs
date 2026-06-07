@@ -2,6 +2,26 @@
 
 use super::*;
 
+/// Per-row soft-wrap display geometry, recomputed lazily by
+/// [`App::update_heights`]. A code line may span several display lines once
+/// wrapped; `heights` caches each active-view row's height so the viewport,
+/// mouse mapping, and scrollbar convert between row indices and display lines
+/// without re-wrapping every frame. `offsets` is the prefix sum of `heights`
+/// (`offsets[i]` = display lines before row `i`, length `active_len + 1`), so
+/// `display_lines`/scrollbar range sums are O(1) instead of O(rows) per draw.
+/// `width` is the content width the heights were computed for (a resize
+/// invalidates them) and `dirty` is set whenever the active row list changes
+/// (rebuild / view switch / wrap toggle), forcing a recompute on the next draw.
+/// All four move together; grouping them keeps that invariant explicit. Empty
+/// while wrap is off (heights are all 1 then, so sums are plain row counts).
+#[derive(Default)]
+pub(super) struct WrapGeom {
+    pub heights: Vec<u16>,
+    pub offsets: Vec<usize>,
+    pub width: usize,
+    pub dirty: bool,
+}
+
 impl App {
     // ---- soft-wrap geometry (no-ops while `self.wrap` is off) ----
 
@@ -28,7 +48,7 @@ impl App {
         if !self.wrap {
             return 1;
         }
-        self.row_heights.get(idx).copied().unwrap_or(1) as usize
+        self.geom.heights.get(idx).copied().unwrap_or(1) as usize
     }
 
     /// Total display lines spanned by rows `[start, end)` in the active view.
@@ -39,8 +59,8 @@ impl App {
         if !self.wrap {
             return end.saturating_sub(start);
         }
-        if end < self.row_offsets.len() && start <= end {
-            return self.row_offsets[end] - self.row_offsets[start];
+        if end < self.geom.offsets.len() && start <= end {
+            return self.geom.offsets[end] - self.geom.offsets[start];
         }
         (start..end).map(|i| self.row_h(i)).sum()
     }
@@ -89,17 +109,17 @@ impl App {
     /// cache is clean. Called from `draw` before the viewport reads heights.
     pub(super) fn update_heights(&mut self, width: usize) {
         if !self.wrap {
-            if !self.row_heights.is_empty() {
-                self.row_heights.clear();
-                self.row_offsets.clear();
+            if !self.geom.heights.is_empty() {
+                self.geom.heights.clear();
+                self.geom.offsets.clear();
             }
-            self.heights_width = width;
-            self.heights_dirty = false;
+            self.geom.width = width;
+            self.geom.dirty = false;
             return;
         }
-        if !self.heights_dirty
-            && self.heights_width == width
-            && self.row_heights.len() == self.active_len()
+        if !self.geom.dirty
+            && self.geom.width == width
+            && self.geom.heights.len() == self.active_len()
         {
             return;
         }
@@ -147,21 +167,21 @@ impl App {
             acc += h as usize;
             offsets.push(acc);
         }
-        self.row_heights = heights;
-        self.row_offsets = offsets;
-        self.heights_width = width;
-        self.heights_dirty = false;
+        self.geom.heights = heights;
+        self.geom.offsets = offsets;
+        self.geom.width = width;
+        self.geom.dirty = false;
     }
 
     /// Toggle soft-wrap, keeping the cursor in view under the new geometry.
     pub(super) fn toggle_wrap(&mut self) {
         self.wrap = !self.wrap;
-        self.heights_dirty = true;
+        self.geom.dirty = true;
         // Heights are recomputed on the next draw (the content width is only
         // known there); the cleared cache makes `row_h` fall back to 1 until
         // then, which is harmless for the single ensure_visible below.
-        self.row_heights.clear();
-        self.row_offsets.clear();
+        self.geom.heights.clear();
+        self.geom.offsets.clear();
         self.ensure_visible();
         self.status = if self.wrap {
             "wrap on".into()

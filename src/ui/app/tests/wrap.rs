@@ -124,7 +124,7 @@ fn wrapping_a_real_patch_keeps_heights_and_render_in_sync() {
     let cs = load_patch(Some(Path::new("examples/rust-long-en.patch"))).unwrap();
     let mut app = App::with_comments(cs, CommentStore::default());
     app.wrap = true;
-    app.heights_dirty = true;
+    app.geom.dirty = true;
     for view in [View::Unified, View::Split] {
         if app.view != view {
             app.toggle_view();
@@ -151,7 +151,7 @@ fn display_lines_prefix_sum_matches_a_direct_walk() {
     app.toggle_wrap();
     render(&mut app, 40, 20);
     let (s, e) = app.file_range();
-    assert_eq!(app.row_offsets.len(), app.active_len() + 1);
+    assert_eq!(app.geom.offsets.len(), app.active_len() + 1);
     for a in s..=e {
         for b in a..=e {
             let walk: usize = (a..b).map(|i| app.row_h(i)).sum();
@@ -197,7 +197,7 @@ fn toggling_wrap_recomputes_heights_and_holds_the_cursor() {
     app.toggle_wrap();
     render(&mut app, 40, 6);
     // Heights now reflect wrapping, and the cursor stayed put and in view.
-    assert!(!app.row_heights.is_empty());
+    assert!(!app.geom.heights.is_empty());
     assert_eq!(app.selected, before);
     let (s, _) = app.file_range();
     assert!(app.scroll >= s);

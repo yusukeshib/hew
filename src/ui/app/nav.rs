@@ -294,11 +294,14 @@ impl App {
             View::Unified => View::Split,
             View::Split => View::Unified,
         };
-        // The active list switched (unified/split spans differ); recompute all
-        // file spans, then the current one, before first_selectable reads it.
+        // The active list switched (unified/split spans differ). The target
+        // view's row list may be stale from an edit made while it was inactive
+        // (lazy build), so reconstruct it before anything reads it; then
+        // recompute all file spans and the current one before first_selectable.
+        self.ensure_active_view_built();
         self.rebuild_file_spans();
         self.recompute_file_span();
-        self.heights_dirty = true;
+        self.geom.dirty = true;
         // Re-find the same line / comment message in the other layout.
         let target = key.as_ref().and_then(|k| self.find_sel_key(k));
         self.selected = target
