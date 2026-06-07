@@ -14,8 +14,7 @@ impl App {
         self.rebuild_active_view();
         // Rows changed; recompute every file's span, then the current one,
         // before first_selectable/ensure_visible read it.
-        self.rebuild_file_spans();
-        self.recompute_file_span();
+        self.resync_file_spans();
         let target = key.as_ref().and_then(|k| self.find_sel_key(k));
         self.selected = target
             .or_else(|| self.first_selectable())

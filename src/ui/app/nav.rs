@@ -213,6 +213,15 @@ impl App {
     /// list in a single pass. Files emit contiguous row blocks (build order),
     /// so one sweep fills them all; call this whenever the active row list or
     /// view changes. Keeps per-file-switch span lookup O(1).
+    /// After the active row list changes, recompute every file's span and the
+    /// cached current-file span together. These two always move as a unit (a
+    /// row-list edit invalidates both), so bundling them keeps the invariant in
+    /// one place instead of relying on each call site to pair them correctly.
+    pub(super) fn resync_file_spans(&mut self) {
+        self.rebuild_file_spans();
+        self.recompute_file_span();
+    }
+
     pub(super) fn rebuild_file_spans(&mut self) {
         let n = self.changeset.files.len();
         let len = self.active_len();
@@ -299,8 +308,7 @@ impl App {
         // (lazy build), so reconstruct it before anything reads it; then
         // recompute all file spans and the current one before first_selectable.
         self.ensure_active_view_built();
-        self.rebuild_file_spans();
-        self.recompute_file_span();
+        self.resync_file_spans();
         self.geom.dirty = true;
         // Re-find the same line / comment message in the other layout.
         let target = key.as_ref().and_then(|k| self.find_sel_key(k));

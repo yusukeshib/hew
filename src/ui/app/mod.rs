@@ -478,8 +478,7 @@ impl App {
             split_dirty: false,
             quit: false,
         };
-        app.rebuild_file_spans();
-        app.recompute_file_span();
+        app.resync_file_spans();
         app.selected = app.first_selectable().unwrap_or(0);
         app
     }
