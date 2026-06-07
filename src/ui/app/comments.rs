@@ -8,19 +8,10 @@ impl App {
     pub(super) fn rebuild_rows(&mut self) {
         let key = self.sel_key();
         let cur_file = self.current_file;
-        let composer = self.composer_spec();
-        self.rows = build_rows(
-            &self.changeset,
-            &self.comments,
-            self.comment_wrap,
-            composer.as_ref(),
-        );
-        self.split_rows = build_split_rows(
-            &self.changeset,
-            &self.comments,
-            self.comment_wrap,
-            composer.as_ref(),
-        );
+        // Rebuild only the view on screen; mark the other stale so toggle_view
+        // rebuilds it on demand. Halves per-keystroke composer cost — both lists
+        // derive from the same comments/width, so the lazy rebuild is lossless.
+        self.rebuild_active_view();
         // Rows changed; recompute every file's span, then the current one,
         // before first_selectable/ensure_visible read it.
         self.rebuild_file_spans();
@@ -34,6 +25,51 @@ impl App {
         self.recompute_file_span();
         self.heights_dirty = true;
         self.ensure_visible();
+    }
+
+    /// Rebuild the active view's row list from the current comments/composer,
+    /// marking the *inactive* view stale (it is reconstructed lazily by
+    /// [`Self::ensure_active_view_built`] when `toggle_view` switches to it).
+    fn rebuild_active_view(&mut self) {
+        self.build_view(self.view);
+        match self.view {
+            View::Unified => self.split_dirty = true,
+            View::Split => self.unified_dirty = true,
+        }
+    }
+
+    /// Ensure the active view's row list is current, rebuilding it when a prior
+    /// edit left it stale. A cheap no-op when it's already fresh. Call before
+    /// any code reads the active row list after a view switch.
+    pub(super) fn ensure_active_view_built(&mut self) {
+        let stale = match self.view {
+            View::Unified => self.unified_dirty,
+            View::Split => self.split_dirty,
+        };
+        if stale {
+            self.build_view(self.view);
+        }
+    }
+
+    /// Build one view's row list from the current state, clearing its stale flag.
+    fn build_view(&mut self, view: View) {
+        let composer = self.composer_spec();
+        match view {
+            View::Unified => {
+                self.rows =
+                    build_rows(&self.changeset, &self.comments, self.comment_wrap, composer.as_ref());
+                self.unified_dirty = false;
+            }
+            View::Split => {
+                self.split_rows = build_split_rows(
+                    &self.changeset,
+                    &self.comments,
+                    self.comment_wrap,
+                    composer.as_ref(),
+                );
+                self.split_dirty = false;
+            }
+        }
     }
 
     /// Translate the live composer into a row-stream injection spec (where the

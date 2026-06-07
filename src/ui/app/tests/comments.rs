@@ -1,6 +1,39 @@
 use super::*;
 
 #[test]
+fn toggling_view_rebuilds_the_stale_list_after_an_edit() {
+    // Lazy row build: an edit rebuilds only the active view's list and marks
+    // the other stale. Switching to the stale view must reconstruct it so the
+    // edit is reflected there too (regression guard for the lazy-build path).
+    let cs = parse_report(DIFF).0;
+    let mut app = App::with_comments(cs, CommentStore::default());
+    app.wrap = false;
+    // Default view is Split. Adding a thread rebuilds split, marks unified stale.
+    app.comments.add_thread(
+        "f.rs".into(),
+        Side::New,
+        LineRange { start: 3, end: 3 },
+        Some("a".into()),
+        "hi".into(),
+    );
+    app.rebuild_rows();
+    assert!(
+        app.unified_dirty,
+        "a split-view edit must mark the unified list stale"
+    );
+    // Switching to unified must rebuild its list to include the new comment.
+    app.toggle_view();
+    assert!(matches!(app.view, View::Unified));
+    assert!(!app.unified_dirty, "toggle must clear the stale flag");
+    assert!(
+        app.rows
+            .iter()
+            .any(|r| matches!(&r.kind, RowKind::Comment(_))),
+        "the toggled-to view must show the comment added while it was stale"
+    );
+}
+
+#[test]
 fn delete_targets_session_comments_only() {
     // Both the root and the reply here come from the input sidecar.
     let (mut app, tid, base_reply_id) = app_with_thread(3);

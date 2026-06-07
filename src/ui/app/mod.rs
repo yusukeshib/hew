@@ -394,6 +394,13 @@ pub struct App {
     /// Set when the active row list changes (rebuild / view switch / wrap
     /// toggle), forcing `update_heights` to recompute on the next draw.
     heights_dirty: bool,
+    /// Lazy row-list build: each edit rebuilds only the *active* view's list
+    /// (`rebuild_active_view`) and marks the other stale here, so `toggle_view`
+    /// reconstructs it on demand. Keeps per-keystroke composer cost proportional
+    /// to one layout instead of two. Both lists derive from the same
+    /// (changeset, comments, width, composer), so a lazy rebuild is lossless.
+    unified_dirty: bool,
+    split_dirty: bool,
     quit: bool,
 }
 
@@ -476,6 +483,8 @@ impl App {
             row_offsets: Vec::new(),
             heights_width: usize::MAX,
             heights_dirty: true,
+            unified_dirty: false,
+            split_dirty: false,
             quit: false,
         };
         app.rebuild_file_spans();
