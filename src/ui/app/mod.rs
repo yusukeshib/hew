@@ -401,6 +401,7 @@ mod comments;
 mod input;
 mod nav;
 mod render;
+mod render_boxes;
 mod render_lines;
 mod wrap;
 

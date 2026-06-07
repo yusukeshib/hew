@@ -1,4 +1,4 @@
-use super::text::is_clean_ascii;
+use super::text::{is_clean_ascii, wrap_preserve, wrap_text};
 use super::*;
 use crate::comments::model::{CommentStore, LineRange};
 use crate::diff::parse::parse_report;
