@@ -220,14 +220,13 @@ impl App {
         let runs = self.hl.runs(file_idx, &c.text);
         let wrapped = wrap_runs(&runs, budget, bg);
         let mut out = Vec::with_capacity(wrapped.len());
-        for (i, code_spans) in wrapped.into_iter().enumerate() {
+        for (i, (code_spans, code_w)) in wrapped.into_iter().enumerate() {
             let prefix = if i == 0 {
                 format!("{num} ")
             } else {
                 " ".repeat(PREFIX)
             };
             let mut spans = vec![Span::styled(prefix, Style::default().fg(theme().muted))];
-            let code_w: usize = code_spans.iter().map(|s| str_width(&s.content)).sum();
             spans.extend(code_spans);
             let used = PREFIX + code_w;
             // Pad to the full column width so the divider/right side align.
@@ -306,7 +305,7 @@ impl App {
         let runs = self.hl.runs(row.file_idx, code);
         let wrapped = wrap_runs(&runs, budget, bg);
         let mut out = Vec::with_capacity(wrapped.len());
-        for (i, code_spans) in wrapped.into_iter().enumerate() {
+        for (i, (code_spans, code_w)) in wrapped.into_iter().enumerate() {
             let mut spans: Vec<Span<'static>> = Vec::new();
             if i == 0 {
                 spans.push(Span::styled(
@@ -323,7 +322,7 @@ impl App {
                     with_bg(Style::default()),
                 ));
             }
-            let code_w: usize = code_spans.iter().map(|s| str_width(&s.content)).sum();
+            // `code_w` is the visual line's content width, returned by wrap_runs.
             spans.extend(code_spans);
             let used = Self::UNI_PREFIX + code_w;
             // Fill the rest so the tint / selection spans the whole line

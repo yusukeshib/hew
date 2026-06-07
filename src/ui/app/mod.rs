@@ -169,7 +169,7 @@ fn wrap_runs(
     runs: &[(Color, String)],
     budget: usize,
     bg: Option<Color>,
-) -> Vec<Vec<Span<'static>>> {
+) -> Vec<(Vec<Span<'static>>, usize)> {
     let budget = budget.max(1);
     let style = |c: Color| {
         let mut st = Style::default().fg(c);
@@ -178,7 +178,7 @@ fn wrap_runs(
         }
         st
     };
-    let mut lines: Vec<Vec<Span<'static>>> = Vec::new();
+    let mut lines: Vec<(Vec<Span<'static>>, usize)> = Vec::new();
     let mut cur: Vec<Span<'static>> = Vec::new();
     let mut w = 0usize;
     for (c, s) in runs {
@@ -191,7 +191,7 @@ fn wrap_runs(
                 if !buf.is_empty() {
                     cur.push(Span::styled(std::mem::take(&mut buf), style(*c)));
                 }
-                lines.push(std::mem::take(&mut cur));
+                lines.push((std::mem::take(&mut cur), w));
                 w = 0;
             }
             buf.push(ch);
@@ -201,7 +201,7 @@ fn wrap_runs(
             cur.push(Span::styled(buf, style(*c)));
         }
     }
-    lines.push(cur);
+    lines.push((cur, w));
     lines
 }
 
