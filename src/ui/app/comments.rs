@@ -6,12 +6,30 @@ impl App {
     /// Rebuild the diff row lists from the changeset + inline comment threads,
     /// keeping the cursor on the same (file, side, line) anchor.
     pub(super) fn rebuild_rows(&mut self) {
+        self.rebuild_rows_inner(false);
+    }
+
+    /// Like [`Self::rebuild_rows`] but re-lays *every* file's rows, not just
+    /// `current_file`'s block. Required when the comment-wrap width changes
+    /// (see [`Self::sync_comment_wrap`]): a width change re-wraps every inline
+    /// comment body, so the single-file incremental splice would leave threads
+    /// on other files wrapped at the previous width (e.g. the construction-time
+    /// width `0`, which clamps to one character per line).
+    pub(super) fn rebuild_rows_full(&mut self) {
+        self.rebuild_rows_inner(true);
+    }
+
+    fn rebuild_rows_inner(&mut self, full: bool) {
         let key = self.sel_key();
         let cur_file = self.current_file;
         // Rebuild only the view on screen; mark the other stale so toggle_view
         // rebuilds it on demand. Halves per-keystroke composer cost — both lists
         // derive from the same comments/width, so the lazy rebuild is lossless.
-        self.rebuild_active_view();
+        if full {
+            self.rebuild_active_view_full();
+        } else {
+            self.rebuild_active_view();
+        }
         // Rows changed; recompute every file's span, then the current one,
         // before first_selectable/ensure_visible read it.
         self.resync_file_spans();
@@ -39,6 +57,33 @@ impl App {
     /// old block to replace; `rebuild_rows` recomputes the spans right after.
     /// Falls back to a full rebuild if the span is somehow unavailable.
     fn rebuild_active_view(&mut self) {
+        self.rebuild_active_view_with(false);
+    }
+
+    /// Rebuild the active view's row list across *all* files (full rebuild),
+    /// marking the inactive view stale. Used when the comment-wrap width
+    /// changes, which re-wraps every file's inline comment bodies (a
+    /// single-file splice would leave other files at the old width).
+    fn rebuild_active_view_full(&mut self) {
+        self.rebuild_active_view_with(true);
+    }
+
+    fn rebuild_active_view_with(&mut self, full: bool) {
+        if full {
+            // Force a whole-list rebuild of the active view, then mark the
+            // inactive one stale so `toggle_view` rebuilds it lazily.
+            match self.view {
+                View::Unified => {
+                    self.build_view(View::Unified);
+                    self.split_dirty = true;
+                }
+                View::Split => {
+                    self.build_view(View::Split);
+                    self.unified_dirty = true;
+                }
+            }
+            return;
+        }
         let fi = self.current_file;
         let span = self.file_spans.get(fi).copied();
         let composer = self.composer_spec();

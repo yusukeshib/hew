@@ -40,6 +40,71 @@ fn toggling_view_rebuilds_the_stale_list_after_an_edit() {
 }
 
 #[test]
+fn width_sync_rewraps_threads_on_non_current_files() {
+    // Regression: a wrap-width change (the first `sync_comment_wrap` after
+    // construction, which goes from the placeholder width 0 to the real diff
+    // width) re-wraps *every* file's inline comment bodies. The per-edit
+    // incremental splice only re-lays `current_file`, so before the fix a
+    // thread on any other file stayed wrapped at width 0 (clamped to 1) and
+    // rendered one character per line.
+    let cs = parse_report(TWO_FILES).0;
+    let mut store = CommentStore::default();
+    // Thread on the SECOND file; current_file defaults to 0, so this thread is
+    // never the incrementally-rebuilt one.
+    store.add_thread(
+        "two.rs".into(),
+        Side::New,
+        LineRange { start: 2, end: 2 },
+        Some("a".into()),
+        "this is a sufficiently long comment body that must wrap across \
+         several display lines when laid out at the real diff width"
+            .into(),
+    );
+    let mut app = App::with_comments(cs, store);
+    app.wrap = true;
+    assert_eq!(
+        app.current_file, 0,
+        "thread must live on a non-current file"
+    );
+
+    // A draw runs `sync_comment_wrap`, which must fully re-wrap all files.
+    render(&mut app, 120, 40);
+
+    let body_widths: Vec<usize> = app
+        .split_rows
+        .iter()
+        .filter_map(|r| match &r.kind {
+            SplitRowKind::Comment {
+                line:
+                    CommentLine {
+                        kind: CommentKind::Body(b),
+                        ..
+                    },
+                ..
+            } if !b.is_empty() => Some(b.chars().count()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        !body_widths.is_empty(),
+        "the second file's thread body must be present in split_rows"
+    );
+    assert!(
+        body_widths.iter().any(|&w| w > 1),
+        "thread on a non-current file must wrap at the real width, not one \
+         char per line; got body line widths {body_widths:?}"
+    );
+    // And the active list must equal a clean full rebuild at the synced width.
+    let full = build_split_rows(
+        &app.changeset,
+        &app.comments,
+        app.comment_wrap,
+        app.composer_spec().as_ref(),
+    );
+    assert_eq!(format!("{:?}", app.split_rows), format!("{full:?}"));
+}
+
+#[test]
 fn incremental_rebuild_matches_full_rebuild() {
     // The per-file splice on a comment/composer edit is a pure optimization: the
     // resulting active row list must be byte-for-byte what a full whole-changeset

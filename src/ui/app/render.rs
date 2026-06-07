@@ -67,9 +67,14 @@ impl App {
         if cw != self.comment_wrap && !self.resizing {
             self.comment_wrap = cw;
             // Re-wrap when there are inline boxes to re-wrap: comment threads
-            // or an open composer (which renders inline too).
+            // or an open composer (which renders inline too). A width change
+            // re-wraps *every* file's comment bodies, so this must be a full
+            // rebuild — the per-edit incremental splice only re-lays
+            // `current_file`, which would leave threads on other files wrapped
+            // at the previous width (e.g. the construction-time width `0`,
+            // clamping to one char per line).
             if !self.comments.threads.is_empty() || self.composer.is_some() {
-                self.rebuild_rows();
+                self.rebuild_rows_full();
             }
         }
     }
