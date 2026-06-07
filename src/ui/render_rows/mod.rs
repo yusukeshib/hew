@@ -16,8 +16,8 @@ pub use text::{char_width, sanitize_line, str_width, take_width};
 
 mod threads;
 use threads::{
-    comment_rows_for, composer_lines, last_anchor_lines, new_thread_composer, threads_by_path,
-    Injected, ThreadsByPath,
+    comment_rows_for, composer_lines, last_anchor_lines, last_anchor_lines_for,
+    new_thread_composer, threads_by_path, Injected, ThreadsByPath,
 };
 pub use threads::{
     thread_lines, CommentKind, CommentLine, ComposerAnchor, ComposerKind, ComposerLine,
@@ -145,12 +145,37 @@ pub fn build_split_rows(
     width: usize,
     composer: Option<&ComposerSpec>,
 ) -> Vec<SplitRow> {
+    build_split_rows_inner(changeset, comments, width, composer, None)
+}
+
+/// Split rows for a single file (`fi`). See [`build_file_rows`] for the
+/// incremental-rebuild rationale; this is its split-view counterpart.
+pub fn build_file_split_rows(
+    changeset: &Changeset,
+    comments: &CommentStore,
+    width: usize,
+    composer: Option<&ComposerSpec>,
+    fi: usize,
+) -> Vec<SplitRow> {
+    build_split_rows_inner(changeset, comments, width, composer, Some(fi))
+}
+
+fn build_split_rows_inner(
+    changeset: &Changeset,
+    comments: &CommentStore,
+    width: usize,
+    composer: Option<&ComposerSpec>,
+    only: Option<usize>,
+) -> Vec<SplitRow> {
     let mut rows = Vec::new();
     let mut emitted: HashSet<String> = HashSet::new();
     let mut composer_emitted = false;
     let by_path = threads_by_path(comments);
-    let last = last_anchor_lines(changeset, comments, &by_path);
+    let last = last_for(changeset, comments, &by_path, only);
     for (fi, file) in changeset.files.iter().enumerate() {
+        if only.is_some_and(|o| o != fi) {
+            continue;
+        }
         let path = file.display_path();
         rows.push(SplitRow {
             file_idx: fi,
@@ -397,19 +422,67 @@ fn orphan_thread_rows(
     out
 }
 
-/// Build the unified (stack) row list.
+/// Build the unified (stack) row list for the whole changeset.
 pub fn build_rows(
     changeset: &Changeset,
     comments: &CommentStore,
     width: usize,
     composer: Option<&ComposerSpec>,
 ) -> Vec<Row> {
+    build_rows_inner(changeset, comments, width, composer, None)
+}
+
+/// Build the unified rows for a *single* file (`fi`), used by the incremental
+/// per-edit rebuild: a comment/composer edit only changes the rows of the file
+/// it is anchored to, so we rebuild just that file's contiguous row block and
+/// splice it into the active list instead of re-sanitizing every line of every
+/// file. `file_idx` on the returned rows still equals `fi`, so they slot
+/// straight back in.
+pub fn build_file_rows(
+    changeset: &Changeset,
+    comments: &CommentStore,
+    width: usize,
+    composer: Option<&ComposerSpec>,
+    fi: usize,
+) -> Vec<Row> {
+    build_rows_inner(changeset, comments, width, composer, Some(fi))
+}
+
+/// Anchor map scoped to what the build needs: every file for a full build, or
+/// just the one file for a single-file (`Some(fi)`) rebuild.
+fn last_for(
+    changeset: &Changeset,
+    comments: &CommentStore,
+    by_path: &ThreadsByPath<'_>,
+    only: Option<usize>,
+) -> HashMap<String, (Side, u32)> {
+    match only.and_then(|fi| changeset.files.get(fi)) {
+        Some(file) => last_anchor_lines_for(file, comments, by_path),
+        None => last_anchor_lines(changeset, comments, by_path),
+    }
+}
+
+/// Shared core: build rows for every file (`only == None`) or just one
+/// (`only == Some(fi)`). The whole-changeset path threads a single `emitted`
+/// set across files (its long-standing behavior, byte-for-byte unchanged); the
+/// single-file path starts fresh, which differs only in the pathological case
+/// of two diff entries sharing one display path.
+fn build_rows_inner(
+    changeset: &Changeset,
+    comments: &CommentStore,
+    width: usize,
+    composer: Option<&ComposerSpec>,
+    only: Option<usize>,
+) -> Vec<Row> {
     let mut rows = Vec::new();
     let mut emitted: HashSet<String> = HashSet::new();
     let mut composer_emitted = false;
     let by_path = threads_by_path(comments);
-    let last = last_anchor_lines(changeset, comments, &by_path);
+    let last = last_for(changeset, comments, &by_path, only);
     for (fi, file) in changeset.files.iter().enumerate() {
+        if only.is_some_and(|o| o != fi) {
+            continue;
+        }
         let path = file.display_path();
         rows.push(Row {
             file_idx: fi,

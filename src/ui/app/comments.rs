@@ -29,11 +29,54 @@ impl App {
     /// Rebuild the active view's row list from the current comments/composer,
     /// marking the *inactive* view stale (it is reconstructed lazily by
     /// [`Self::ensure_active_view_built`] when `toggle_view` switches to it).
+    ///
+    /// A comment/composer edit only changes the rows of `current_file` (the
+    /// only file the diff pane shows, and where the composer/focused thread
+    /// lives), and each file occupies a contiguous block of the active list. So
+    /// we rebuild just that file's block and splice it in, instead of
+    /// re-sanitizing and re-allocating every line of every file on every
+    /// keystroke. `file_spans` is current from the previous rebuild, giving the
+    /// old block to replace; `rebuild_rows` recomputes the spans right after.
+    /// Falls back to a full rebuild if the span is somehow unavailable.
     fn rebuild_active_view(&mut self) {
-        self.build_view(self.view);
+        let fi = self.current_file;
+        let span = self.file_spans.get(fi).copied();
+        let composer = self.composer_spec();
         match self.view {
-            View::Unified => self.split_dirty = true,
-            View::Split => self.unified_dirty = true,
+            View::Unified => {
+                match span {
+                    Some((s, e)) => {
+                        let seg = build_file_rows(
+                            &self.changeset,
+                            &self.comments,
+                            self.comment_wrap,
+                            composer.as_ref(),
+                            fi,
+                        );
+                        self.rows.splice(s..e, seg);
+                    }
+                    None => self.build_view(View::Unified),
+                }
+                self.unified_dirty = false;
+                self.split_dirty = true;
+            }
+            View::Split => {
+                match span {
+                    Some((s, e)) => {
+                        let seg = build_file_split_rows(
+                            &self.changeset,
+                            &self.comments,
+                            self.comment_wrap,
+                            composer.as_ref(),
+                            fi,
+                        );
+                        self.split_rows.splice(s..e, seg);
+                    }
+                    None => self.build_view(View::Split),
+                }
+                self.split_dirty = false;
+                self.unified_dirty = true;
+            }
         }
     }
 

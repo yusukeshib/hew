@@ -40,6 +40,61 @@ fn toggling_view_rebuilds_the_stale_list_after_an_edit() {
 }
 
 #[test]
+fn incremental_rebuild_matches_full_rebuild() {
+    // The per-file splice on a comment/composer edit is a pure optimization: the
+    // resulting active row list must be byte-for-byte what a full whole-changeset
+    // rebuild would produce. Exercised on the *second* file so the splice has to
+    // land at a non-zero offset, with a composer open (mid-typing) and after
+    // submit, in both views.
+    let assert_split_matches = |app: &App| {
+        let full = build_split_rows(
+            &app.changeset,
+            &app.comments,
+            app.comment_wrap,
+            app.composer_spec().as_ref(),
+        );
+        assert_eq!(format!("{:?}", app.split_rows), format!("{full:?}"));
+    };
+    let assert_unified_matches = |app: &App| {
+        let full = build_rows(
+            &app.changeset,
+            &app.comments,
+            app.comment_wrap,
+            app.composer_spec().as_ref(),
+        );
+        assert_eq!(format!("{:?}", app.rows), format!("{full:?}"));
+    };
+
+    let cs = parse_report(TWO_FILES).0;
+    let mut app = App::with_comments(cs, CommentStore::default());
+    app.wrap = false;
+    app.set_current_file(1); // two.rs
+    goto(&mut app, Side::New, 2); // the "+q" addition
+
+    // Split view (default, active): composer open, then each keystroke.
+    app.open_new_thread();
+    assert_split_matches(&app);
+    for ch in "hello".chars() {
+        app.on_key_compose(KeyCode::Char(ch), KeyModifiers::NONE);
+        assert_split_matches(&app);
+    }
+    app.submit_compose();
+    assert_split_matches(&app);
+
+    // Unified view: toggle (full rebuild of the lazily-stale list), then a
+    // reply edit drives the unified incremental splice path.
+    app.toggle_view();
+    assert!(matches!(app.view, View::Unified));
+    app.open_reply();
+    for ch in "yo".chars() {
+        app.on_key_compose(KeyCode::Char(ch), KeyModifiers::NONE);
+        assert_unified_matches(&app);
+    }
+    app.submit_compose();
+    assert_unified_matches(&app);
+}
+
+#[test]
 fn delete_targets_session_comments_only() {
     // Both the root and the reply here come from the input sidecar.
     let (mut app, tid, base_reply_id) = app_with_thread(3);

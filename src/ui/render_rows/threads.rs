@@ -5,7 +5,7 @@
 
 use super::text::{fmt_date, sanitize_line, wrap_preserve, wrap_text};
 use crate::comments::model::{CommentStore, Thread};
-use crate::diff::model::{Changeset, Side};
+use crate::diff::model::{Changeset, DiffFile, Side};
 use std::collections::{HashMap, HashSet};
 use std::path::Path;
 
@@ -225,37 +225,60 @@ pub(super) fn last_anchor_lines(
 ) -> HashMap<String, (Side, u32)> {
     let mut m = HashMap::new();
     for file in &changeset.files {
-        let Some(indices) = by_path.get(Path::new(file.display_path())) else {
-            continue;
-        };
-        // Collect the diff's present line numbers per side once, in hunk order
-        // (so each list is ascending), then binary-search each thread's range
-        // instead of re-scanning every line of the file per thread.
-        let mut old_lines: Vec<u32> = Vec::new();
-        let mut new_lines: Vec<u32> = Vec::new();
-        for line in file.hunks.iter().flat_map(|h| h.lines.iter()) {
-            if let Some(l) = line.old_line {
-                old_lines.push(l);
-            }
-            if let Some(l) = line.new_line {
-                new_lines.push(l);
-            }
-        }
-        for &i in indices {
-            let t = &comments.threads[i];
-            let lines = match t.side {
-                Side::Old => &old_lines,
-                Side::New => &new_lines,
-            };
-            // Largest present line <= range.end (the lists are ascending); it's
-            // the thread's anchor when it also falls at/after range.start.
-            let idx = lines.partition_point(|&l| l <= t.range.end);
-            if idx > 0 && lines[idx - 1] >= t.range.start {
-                m.insert(t.id.clone(), (t.side, lines[idx - 1]));
-            }
-        }
+        last_anchor_lines_in_file(file, comments, by_path, &mut m);
     }
     m
+}
+
+/// `last_anchor_lines` restricted to a single file, for the incremental
+/// per-edit rebuild (which only re-lays-out one file's rows). Avoids scanning
+/// every other file's hunks just to anchor the edited file's threads.
+pub(super) fn last_anchor_lines_for(
+    file: &DiffFile,
+    comments: &CommentStore,
+    by_path: &ThreadsByPath<'_>,
+) -> HashMap<String, (Side, u32)> {
+    let mut m = HashMap::new();
+    last_anchor_lines_in_file(file, comments, by_path, &mut m);
+    m
+}
+
+/// Insert the `(side, line)` anchors for `file`'s threads into `m`.
+fn last_anchor_lines_in_file(
+    file: &DiffFile,
+    comments: &CommentStore,
+    by_path: &ThreadsByPath<'_>,
+    m: &mut HashMap<String, (Side, u32)>,
+) {
+    let Some(indices) = by_path.get(Path::new(file.display_path())) else {
+        return;
+    };
+    // Collect the diff's present line numbers per side once, in hunk order
+    // (so each list is ascending), then binary-search each thread's range
+    // instead of re-scanning every line of the file per thread.
+    let mut old_lines: Vec<u32> = Vec::new();
+    let mut new_lines: Vec<u32> = Vec::new();
+    for line in file.hunks.iter().flat_map(|h| h.lines.iter()) {
+        if let Some(l) = line.old_line {
+            old_lines.push(l);
+        }
+        if let Some(l) = line.new_line {
+            new_lines.push(l);
+        }
+    }
+    for &i in indices {
+        let t = &comments.threads[i];
+        let lines = match t.side {
+            Side::Old => &old_lines,
+            Side::New => &new_lines,
+        };
+        // Largest present line <= range.end (the lists are ascending); it's
+        // the thread's anchor when it also falls at/after range.start.
+        let idx = lines.partition_point(|&l| l <= t.range.end);
+        if idx > 0 && lines[idx - 1] >= t.range.start {
+            m.insert(t.id.clone(), (t.side, lines[idx - 1]));
+        }
+    }
 }
 
 /// Inline-comment lines to inject after a code row, for every thread whose

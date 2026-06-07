@@ -4,9 +4,9 @@ use crate::comments::model::{CommentStore, LineRange};
 use crate::diff::model::{Changeset, LineKind, Side};
 use crate::ui::highlight_cache::HighlightCache;
 use crate::ui::render_rows::{
-    build_rows, build_split_rows, char_width, str_width, take_width, CommentKind, CommentLine,
-    ComposerAnchor, ComposerKind, ComposerLine, ComposerSpec, Row, RowKind, SideCell, SplitRow,
-    SplitRowKind,
+    build_file_rows, build_file_split_rows, build_rows, build_split_rows, char_width, str_width,
+    take_width, CommentKind, CommentLine, ComposerAnchor, ComposerKind, ComposerLine, ComposerSpec,
+    Row, RowKind, SideCell, SplitRow, SplitRowKind,
 };
 use crate::ui::sidebar::{
     base_of, build_sidebar_rows, dir_of, file_comment_state, file_status, SbRow,
