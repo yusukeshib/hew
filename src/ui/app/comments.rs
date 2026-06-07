@@ -44,18 +44,9 @@ impl App {
         self.ensure_visible();
     }
 
-    /// Rebuild the active view's row list from the current comments/composer,
-    /// marking the *inactive* view stale (it is reconstructed lazily by
-    /// [`Self::ensure_active_view_built`] when `toggle_view` switches to it).
-    ///
-    /// A comment/composer edit only changes the rows of `current_file` (the
-    /// only file the diff pane shows, and where the composer/focused thread
-    /// lives), and each file occupies a contiguous block of the active list. So
-    /// we rebuild just that file's block and splice it in, instead of
-    /// re-sanitizing and re-allocating every line of every file on every
-    /// keystroke. `file_spans` is current from the previous rebuild, giving the
-    /// old block to replace; `rebuild_rows` recomputes the spans right after.
-    /// Falls back to a full rebuild if the span is somehow unavailable.
+    /// Incrementally rebuild the active view's row list (just `current_file`'s
+    /// block), marking the *inactive* view stale. See
+    /// [`Self::rebuild_active_view_with`] for the splice rationale.
     fn rebuild_active_view(&mut self) {
         self.rebuild_active_view_with(false);
     }
@@ -68,19 +59,31 @@ impl App {
         self.rebuild_active_view_with(true);
     }
 
+    /// Rebuild the active view's row list from the current comments/composer,
+    /// marking the *inactive* view stale (it is reconstructed lazily by
+    /// [`Self::ensure_active_view_built`] when `toggle_view` switches to it).
+    ///
+    /// With `full = false` (the per-edit path): a comment/composer edit only
+    /// changes the rows of `current_file` (the only file the diff pane shows,
+    /// and where the composer/focused thread lives), and each file occupies a
+    /// contiguous block of the active list. So we rebuild just that file's
+    /// block and splice it in, instead of re-sanitizing and re-allocating every
+    /// line of every file on every keystroke. `file_spans` is current from the
+    /// previous rebuild, giving the old block to replace; `rebuild_rows`
+    /// recomputes the spans right after. Falls back to a full rebuild if the
+    /// span is somehow unavailable.
+    ///
+    /// With `full = true`: rebuild every file's rows (used on a comment-wrap
+    /// width change, which re-wraps every file's bodies — a single-file splice
+    /// would leave other files at the old width).
     fn rebuild_active_view_with(&mut self, full: bool) {
         if full {
             // Force a whole-list rebuild of the active view, then mark the
             // inactive one stale so `toggle_view` rebuilds it lazily.
+            self.build_view(self.view);
             match self.view {
-                View::Unified => {
-                    self.build_view(View::Unified);
-                    self.split_dirty = true;
-                }
-                View::Split => {
-                    self.build_view(View::Split);
-                    self.unified_dirty = true;
-                }
+                View::Unified => self.split_dirty = true,
+                View::Split => self.unified_dirty = true,
             }
             return;
         }
