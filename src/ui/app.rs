@@ -384,6 +384,11 @@ pub struct App {
     /// height so the viewport, mouse mapping, and scrollbar can convert between
     /// row indices and display lines without re-wrapping every frame.
     row_heights: Vec<u16>,
+    /// Prefix sum of `row_heights` (`row_offsets[i]` = display lines before row
+    /// `i`, length `active_len + 1`), so `display_lines`/scrollbar range sums
+    /// are O(1) instead of O(rows) per draw. Rebuilt with `row_heights`; empty
+    /// while wrap is off (heights are all 1 then, so sums are plain row counts).
+    row_offsets: Vec<usize>,
     /// Content width `row_heights` was computed for; a resize invalidates them.
     heights_width: usize,
     /// Set when the active row list changes (rebuild / view switch / wrap
@@ -460,6 +465,7 @@ impl App {
             visual: false,
             wrap: true,
             row_heights: Vec::new(),
+            row_offsets: Vec::new(),
             heights_width: usize::MAX,
             heights_dirty: true,
             quit: false,
@@ -517,10 +523,12 @@ impl App {
     /// (`"{:>4} "`). Matches `side_spans`/`side_line_rows`.
     const SPLIT_PREFIX: usize = 5;
 
-    /// Width of one split column for content area `width` (mirrors
-    /// `render_split`'s `side_w`).
+    /// Width of one split column for content area `width`. Single source of
+    /// truth for `render_split`'s `side_w` and the wrap-height budget. Reserves
+    /// the divider's *display* width (cells), not its UTF-8 byte length — the
+    /// glyph in `" │ "` is multi-byte but one cell wide.
     fn split_side_w(width: usize) -> usize {
-        width.saturating_sub(SPLIT_DIVIDER.len()) / 2
+        width.saturating_sub(str_width(SPLIT_DIVIDER)) / 2
     }
 
     /// Display height (terminal lines) of row `idx` in the active view. Always 1
@@ -533,9 +541,15 @@ impl App {
     }
 
     /// Total display lines spanned by rows `[start, end)` in the active view.
+    /// O(1): a difference of the `row_offsets` prefix sum (or a plain row count
+    /// when wrap is off). Falls back to a direct walk only if the prefix sum is
+    /// stale/missing for the requested range.
     fn display_lines(&self, start: usize, end: usize) -> usize {
         if !self.wrap {
             return end.saturating_sub(start);
+        }
+        if end < self.row_offsets.len() && start <= end {
+            return self.row_offsets[end] - self.row_offsets[start];
         }
         (start..end).map(|i| self.row_h(i)).sum()
     }
@@ -586,6 +600,7 @@ impl App {
         if !self.wrap {
             if !self.row_heights.is_empty() {
                 self.row_heights.clear();
+                self.row_offsets.clear();
             }
             self.heights_width = width;
             self.heights_dirty = false;
@@ -606,7 +621,12 @@ impl App {
                 .map(|r| match &r.kind {
                     // `r.text` is `"{sign}{code}"`; wrap the code only.
                     RowKind::Line { .. } => {
-                        wrap_count(r.text.get(1..).unwrap_or(""), uni_budget) as u16
+                        // Clamp so a pathologically long/wrapped line (e.g. a
+                        // minified file at a tiny budget) can't overflow u16 and
+                        // under-report its height, which would desync
+                        // scroll/click mapping.
+                        wrap_count(r.text.get(1..).unwrap_or(""), uni_budget).min(u16::MAX as usize)
+                            as u16
                     }
                     _ => 1,
                 })
@@ -622,13 +642,22 @@ impl App {
                         let rr = right
                             .as_ref()
                             .map_or(1, |c| wrap_count(&c.text, side_budget));
-                        l.max(rr) as u16
+                        l.max(rr).min(u16::MAX as usize) as u16
                     }
                     _ => 1,
                 })
                 .collect(),
         };
+        // Prefix sum for O(1) range/scrollbar queries.
+        let mut offsets = Vec::with_capacity(heights.len() + 1);
+        let mut acc = 0usize;
+        offsets.push(0);
+        for &h in &heights {
+            acc += h as usize;
+            offsets.push(acc);
+        }
         self.row_heights = heights;
+        self.row_offsets = offsets;
         self.heights_width = width;
         self.heights_dirty = false;
     }
@@ -641,6 +670,7 @@ impl App {
         // known there); the cleared cache makes `row_h` fall back to 1 until
         // then, which is harmless for the single ensure_visible below.
         self.row_heights.clear();
+        self.row_offsets.clear();
         self.ensure_visible();
         self.status = if self.wrap {
             "wrap on".into()
@@ -2154,12 +2184,12 @@ impl App {
             View::Unified => inner.saturating_sub(8),
             // Split: the box lives inside one half-column, so wrapping to the
             // full width would clip every line on the right. Mirror
-            // `render_split`'s `side_w = (area - SPLIT_DIVIDER.len()) / 2` for
+            // `render_split`'s `side_w = (area - str_width(SPLIT_DIVIDER)) / 2` for
             // the worst case (a scrollbar present trims the area by 1), then
             // reserve the box chrome (2-col margin + 2 borders + 3-col indent
             // = 7).
             View::Split => {
-                let side = inner.saturating_sub(1 + SPLIT_DIVIDER.len()) / 2;
+                let side = inner.saturating_sub(1 + str_width(SPLIT_DIVIDER)) / 2;
                 side.saturating_sub(7)
             }
         };
@@ -2267,6 +2297,14 @@ impl App {
             Rect::default()
         };
         self.update_heights(content.width as usize);
+        // Heights for the final content width are now known. A resize (notably
+        // widening, which shrinks wrap heights) can leave `self.scroll` past
+        // the new last full screen, painting empty space beyond EOF; clamp it
+        // before rendering so the viewport stays anchored to content.
+        self.scroll = self.scroll.clamp(
+            fr_start,
+            self.max_scroll_row(fr_start, fr_end, self.height.max(1)),
+        );
         self.render_diff(f, content);
         if overflow {
             self.render_diff_scrollbar(f, diff_inner);
@@ -2555,7 +2593,7 @@ impl App {
     fn render_split(&self, f: &mut Frame, area: Rect) {
         let total = area.width as usize;
         let divider = SPLIT_DIVIDER;
-        let side_w = total.saturating_sub(divider.len()) / 2;
+        let side_w = Self::split_side_w(total);
         let (start, file_end) = self.file_range();
         let top = self.scroll.max(start);
         let height = area.height as usize;
@@ -3921,7 +3959,7 @@ mod tests {
         let inner: u16 = 90;
         app.sync_comment_wrap(inner);
         // Worst case (scrollbar present) side column, as render computes it.
-        let side_w = (inner as usize).saturating_sub(1 + SPLIT_DIVIDER.len()) / 2;
+        let side_w = (inner as usize).saturating_sub(1 + str_width(SPLIT_DIVIDER)) / 2;
         let inner_w = side_w - 2; // borders
         let indent = 3; // columns reserved for the body indent in comment_wrap
 
@@ -4545,6 +4583,52 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn display_lines_prefix_sum_matches_a_direct_walk() {
+        // The O(1) prefix-sum query must equal the naive per-row sum it
+        // replaces, for every sub-range of the file.
+        let mut app = app_with(LONG_DIFF);
+        app.view = View::Unified;
+        app.rebuild_file_spans();
+        app.recompute_file_span();
+        app.toggle_wrap();
+        render(&mut app, 40, 20);
+        let (s, e) = app.file_range();
+        assert_eq!(app.row_offsets.len(), app.active_len() + 1);
+        for a in s..=e {
+            for b in a..=e {
+                let walk: usize = (a..b).map(|i| app.row_h(i)).sum();
+                assert_eq!(app.display_lines(a, b), walk, "range {a}..{b}");
+            }
+        }
+    }
+
+    #[test]
+    fn widening_reclamps_scroll_off_the_end() {
+        // Regression: after a resize that shrinks wrap heights, a scroll value
+        // valid for the narrow geometry must be clamped so the viewport never
+        // paints empty space past EOF.
+        let mut app = app_with(LONG_DIFF);
+        app.view = View::Unified;
+        app.rebuild_file_spans();
+        app.recompute_file_span();
+        app.toggle_wrap();
+        // Narrow + short viewport so the long line wraps and content overflows;
+        // scroll to the bottom.
+        render(&mut app, 30, 4);
+        app.scroll_view(100);
+        render(&mut app, 30, 4);
+        // Now widen a lot: the long line no longer wraps, so far less content.
+        render(&mut app, 400, 4);
+        let (s, e) = app.file_range();
+        assert!(
+            app.scroll <= app.max_scroll_row(s, e, app.height.max(1)),
+            "scroll {} must be clamped to max {}",
+            app.scroll,
+            app.max_scroll_row(s, e, app.height.max(1))
+        );
     }
 
     #[test]
