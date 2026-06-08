@@ -16,7 +16,7 @@ fn main() -> Result<()> {
     // review: reading stdin would block on EOF (a Ctrl-D footgun). Show help
     // and exit non-zero instead. An explicit `-` still means "read stdin".
     if args.file.is_none() && std::io::stdin().is_terminal() {
-        Cli::command().print_help()?;
+        Cli::command().print_long_help()?;
         std::process::exit(2);
     }
 
