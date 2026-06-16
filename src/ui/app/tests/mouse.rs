@@ -51,6 +51,72 @@ fn clicking_the_resolve_button_toggles_the_thread() {
     );
 }
 
+// Index of the (single) composer row in the active list.
+fn composer_row(app: &App) -> usize {
+    (0..app.active_len())
+        .find(|&i| app.is_composer_at(i))
+        .expect("composer row")
+}
+
+#[test]
+fn clicking_resolve_anchors_the_cursor_to_the_clicked_thread() {
+    // Regression (bug1): with the cursor parked at the file top (e.g. after a wheel
+    // scroll, which leaves the selection untouched), clicking a thread's
+    // resolve button used to re-anchor the rebuild to the parked cursor and
+    // snap the viewport to the top. The click must move the cursor to the
+    // resolved thread so it stays on screen.
+    let (mut app, tid, _rid) = app_with_thread(2);
+    render(&mut app, 160, 40);
+    app.selected = app.first_selectable().unwrap(); // park at the top
+    let rect = app
+        .button_hits
+        .borrow()
+        .iter()
+        .find(|(_, a)| matches!(a, ButtonAction::ToggleResolve(_)))
+        .map(|(r, _)| *r)
+        .expect("resolve button recorded");
+    click(&mut app, rect);
+    assert_eq!(
+        app.focused_thread_id().as_deref(),
+        Some(tid.as_str()),
+        "cursor should land on the resolved thread, not the parked top row"
+    );
+}
+
+#[test]
+fn clicking_reply_keeps_the_composer_in_view() {
+    // Regression (bug2): with a small viewport scrolled down to a thread while
+    // the cursor was parked at the file top, the reply rebuild re-anchored to
+    // the parked cursor and the composer could land outside the viewport. The
+    // click must anchor the cursor to the replied thread so the composer is
+    // shown.
+    let (mut app, tid, _rid) = app_with_thread(2);
+    render(&mut app, 160, 40);
+    app.height = 4; // small viewport so scroll position matters
+    app.selected = app.first_selectable().unwrap(); // park at the top
+    let rect = app
+        .button_hits
+        .borrow()
+        .iter()
+        .find(|(_, a)| matches!(a, ButtonAction::Reply(t) if *t == tid))
+        .map(|(r, _)| *r)
+        .expect("reply button recorded");
+    click(&mut app, rect);
+    assert!(app.composer.is_some(), "reply opens the composer");
+    assert_eq!(
+        app.focused_thread_id().as_deref(),
+        Some(tid.as_str()),
+        "cursor should anchor to the replied thread"
+    );
+    let row = composer_row(&app);
+    assert!(
+        row >= app.scroll && row < app.scroll + app.height,
+        "composer row {row} should be within the viewport [{}, {})",
+        app.scroll,
+        app.scroll + app.height
+    );
+}
+
 #[test]
 fn range_comment_box_renders_after_the_last_line() {
     // A New-side range 2..=4 should inject its box right after the row for

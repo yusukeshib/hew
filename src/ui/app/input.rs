@@ -20,9 +20,18 @@ impl App {
             ButtonAction::AddComment => self.open_new_thread(),
             ButtonAction::Submit => self.submit_compose(),
             ButtonAction::Cancel => self.cancel_compose(),
-            ButtonAction::Reply(tid) => self.open_reply_to(tid),
-            ButtonAction::ToggleResolve(tid) => self.toggle_resolved_thread(tid),
-            ButtonAction::Delete(tid, cid) => self.delete_comment(tid, cid),
+            ButtonAction::Reply(tid) => {
+                self.select_thread(&tid);
+                self.open_reply_to(tid);
+            }
+            ButtonAction::ToggleResolve(tid) => {
+                self.select_thread(&tid);
+                self.toggle_resolved_thread(tid);
+            }
+            ButtonAction::Delete(tid, cid) => {
+                self.select_thread(&tid);
+                self.delete_comment(tid, cid);
+            }
         }
     }
 
