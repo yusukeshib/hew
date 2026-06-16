@@ -180,6 +180,26 @@ impl App {
         self.current_thread_id()
     }
 
+    /// Move the cursor to the first row of `thread_id` (and switch to its
+    /// file). Button clicks (reply/resolve/delete) act on the clicked box
+    /// regardless of where the cursor sits, but the rebuild that follows
+    /// re-anchors the viewport to `self.selected`. Without this the viewport
+    /// snaps to the parked cursor — typically the file's top after a wheel
+    /// scroll, since scrolling leaves the selection untouched. Anchoring to the
+    /// acted-on thread keeps it on screen (and gives `ensure_composer_visible`
+    /// the right `current_file` to find the reply box in).
+    pub(super) fn select_thread(&mut self, thread_id: &str) {
+        let len = self.active_len();
+        let Some(row) = (0..len)
+            .find(|&i| self.comment_at(i).map(|cl| cl.thread_id.as_str()) == Some(thread_id))
+        else {
+            return;
+        };
+        self.current_file = self.row_file_idx(row).unwrap_or(self.current_file);
+        self.recompute_file_span();
+        self.selected = self.stop_for(row).unwrap_or(row);
+    }
+
     /// The file index a row belongs to (header rows included).
     pub(super) fn row_file_idx(&self, i: usize) -> Option<usize> {
         match self.view {
