@@ -43,6 +43,17 @@ TURN-BASED WORKFLOW (the \"bridge\" to GitHub is an agent, not hew):
   git diff | hew --comments base.json > actions.json
   agent applies actions.json   # post to GitHub / fix code / next step
 
+LLM / AGENT QUICK START:
+  - Feed hew a plain unified diff (`git diff`, `git diff --staged`, or
+    `gh pr diff`). Do not feed format-patch mailbox output.
+  - Put your draft inline review threads in --comments JSON before launching.
+  - Let the human edit/resolve/add comments in the TUI.
+  - After hew exits, parse stdout as JSON. Treat it as commands to apply to
+    your original base: add_comment, reply, resolve, unresolve.
+  - If stdout is [], the human made no changes. Do not infer approval unless
+    your surrounding workflow says so.
+  - Keep stderr/tty separate from stdout; stdout is the only machine contract.
+
 INPUT — comment sidecar (--comments), an immutable base:
   {\"threads\":[{\"id\":\"<id>\",\"file\":\"src/x.rs\",\"side\":\"new\",
    \"range\":{\"start\":10,\"end\":12},\"resolved\":false,

@@ -1,8 +1,9 @@
 //! Parse a unified diff into the normalized [`Changeset`] model.
 //!
-//! Backed by the mature `patch` crate (handles `@@` headers, line prefixes,
-//! `\ No newline at end of file`, rename/mode metadata, etc.). We only adapt
-//! its AST into our internal representation.
+//! Backed by the mature `patch` crate for text hunks (`@@` headers, line
+//! prefixes, `\ No newline at end of file`, etc.). We supplement it with a
+//! small scan for hunk-less git metadata entries (pure renames, mode-only
+//! changes, empty-file adds/deletes) so they do not disappear from the TUI.
 
 use crate::diff::model::{Changeset, DiffFile, DiffLine, Hunk, LineKind};
 
@@ -27,10 +28,12 @@ pub fn parse_report(input: &str) -> (Changeset, Option<String>) {
     };
     let mut files = text_files;
     let binaries = binary_files(input);
-    let had_binaries = !binaries.is_empty();
+    let metadata = metadata_only_files(input);
+    let recovered = !binaries.is_empty() || !metadata.is_empty();
     files.extend(binaries);
+    extend_missing(&mut files, metadata);
 
-    let error = parse_err.filter(|_| !had_binaries && looks_like_patch(input));
+    let error = parse_err.filter(|_| !recovered && looks_like_patch(input));
     (Changeset { files }, error)
 }
 
@@ -64,6 +67,84 @@ fn binary_files(input: &str) -> Vec<DiffFile> {
             })
         })
         .collect()
+}
+
+fn metadata_only_files(input: &str) -> Vec<DiffFile> {
+    input
+        .split("\ndiff --git ")
+        .filter_map(|block| {
+            let block = block.strip_prefix("diff --git ").unwrap_or(block);
+            parse_git_block(block)
+        })
+        .filter(|file| !file.old_path.is_empty() || !file.new_path.is_empty())
+        .collect()
+}
+
+fn parse_git_block(block: &str) -> Option<DiffFile> {
+    let mut lines = block.lines();
+    let header = lines.next()?.trim();
+    let (mut old_path, mut new_path) = parse_git_header(header)?;
+    let mut has_hunks = false;
+    let mut has_binary = false;
+    let mut new_file = false;
+    let mut deleted_file = false;
+
+    for line in lines {
+        if line.starts_with("@@ -") || line.starts_with("--- ") || line.starts_with("+++ ") {
+            has_hunks = true;
+        } else if line.trim().starts_with("Binary files ") {
+            has_binary = true;
+        } else if line.starts_with("rename from ") || line.starts_with("copy from ") {
+            old_path = strip_prefix(line.split_once(' ')?.1.trim_start_matches("from "));
+        } else if line.starts_with("rename to ") || line.starts_with("copy to ") {
+            new_path = strip_prefix(line.split_once(' ')?.1.trim_start_matches("to "));
+        } else if line.starts_with("new file mode ") {
+            new_file = true;
+        } else if line.starts_with("deleted file mode ") {
+            deleted_file = true;
+        }
+    }
+
+    if has_hunks || has_binary {
+        return None;
+    }
+    if new_file {
+        old_path = "/dev/null".into();
+    } else if deleted_file {
+        new_path = "/dev/null".into();
+    }
+    Some(DiffFile {
+        old_path,
+        new_path,
+        hunks: Vec::new(),
+        is_binary: false,
+    })
+}
+
+fn parse_git_header(header: &str) -> Option<(String, String)> {
+    let paths = parse_header_paths(header);
+    let old = *paths.first()?;
+    let new = *paths.get(1)?;
+    if !old.starts_with("a/") || !new.starts_with("b/") {
+        return None;
+    }
+    Some((strip_prefix(old), strip_prefix(new)))
+}
+
+fn parse_header_paths(header: &str) -> Vec<&str> {
+    header.split_whitespace().take(2).collect()
+}
+
+fn extend_missing(files: &mut Vec<DiffFile>, candidates: Vec<DiffFile>) {
+    for candidate in candidates {
+        if !files.iter().any(|file| same_file(file, &candidate)) {
+            files.push(candidate);
+        }
+    }
+}
+
+fn same_file(a: &DiffFile, b: &DiffFile) -> bool {
+    a.old_path == b.old_path && a.new_path == b.new_path
 }
 
 fn strip_prefix(path: &str) -> String {
@@ -249,5 +330,57 @@ diff --git a/src/main.rs b/src/main.rs
         let deleted = parse_report("Binary files a/old.bin and /dev/null differ\n").0;
         assert_eq!(deleted.files.len(), 1);
         assert_eq!(deleted.files[0].display_path(), "old.bin");
+    }
+
+    #[test]
+    fn pure_rename_is_not_dropped() {
+        let input = "\
+diff --git a/old.txt b/new.txt
+similarity index 100%
+rename from old.txt
+rename to new.txt
+";
+        let (cs, err) = parse_report(input);
+        assert!(err.is_none());
+        assert_eq!(cs.files.len(), 1);
+        let f = &cs.files[0];
+        assert_eq!(f.old_path, "old.txt");
+        assert_eq!(f.new_path, "new.txt");
+        assert!(f.hunks.is_empty());
+        assert!(!f.is_binary);
+    }
+
+    #[test]
+    fn mode_only_change_is_not_dropped() {
+        let input = "\
+diff --git a/script.sh b/script.sh
+old mode 100644
+new mode 100755
+";
+        let (cs, err) = parse_report(input);
+        assert!(err.is_none());
+        assert_eq!(cs.files.len(), 1);
+        assert_eq!(cs.files[0].display_path(), "script.sh");
+        assert!(cs.files[0].hunks.is_empty());
+    }
+
+    #[test]
+    fn content_rename_is_not_duplicated() {
+        let input = "\
+diff --git a/old.txt b/new.txt
+similarity index 88%
+rename from old.txt
+rename to new.txt
+--- a/old.txt
++++ b/new.txt
+@@ -1 +1 @@
+-old
++new
+";
+        let cs = parse_report(input).0;
+        assert_eq!(cs.files.len(), 1);
+        assert_eq!(cs.files[0].old_path, "old.txt");
+        assert_eq!(cs.files[0].new_path, "new.txt");
+        assert_eq!(cs.files[0].hunks.len(), 1);
     }
 }
