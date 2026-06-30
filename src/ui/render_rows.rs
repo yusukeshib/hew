@@ -122,6 +122,39 @@ impl SplitRow {
     }
 }
 
+fn file_title(file: &crate::diff::model::DiffFile) -> String {
+    if file.old_path != file.new_path
+        && file.old_path != "/dev/null"
+        && file.new_path != "/dev/null"
+        && !file.old_path.is_empty()
+        && !file.new_path.is_empty()
+    {
+        format!("{} → {}", file.old_path, file.new_path)
+    } else {
+        file.display_path().to_string()
+    }
+}
+
+fn hunkless_description(file: &crate::diff::model::DiffFile) -> Option<String> {
+    if file.is_binary || !file.hunks.is_empty() {
+        return None;
+    }
+    if file.old_path != file.new_path
+        && file.old_path != "/dev/null"
+        && file.new_path != "/dev/null"
+        && !file.old_path.is_empty()
+        && !file.new_path.is_empty()
+    {
+        Some("Renamed with no textual changes".into())
+    } else if file.old_path == "/dev/null" || file.old_path.is_empty() {
+        Some("Added empty file".into())
+    } else if file.new_path == "/dev/null" || file.new_path.is_empty() {
+        Some("Deleted empty file".into())
+    } else {
+        Some("No textual changes".into())
+    }
+}
+
 fn hunk_header(hunk: &crate::diff::model::Hunk) -> String {
     format!(
         "@@ -{},{} +{},{} @@{}",
@@ -180,13 +213,21 @@ fn build_split_rows_inner(
         rows.push(SplitRow {
             file_idx: fi,
             kind: SplitRowKind::FileHeader,
-            text: file.display_path().to_string(),
+            text: file_title(file),
         });
         if file.is_binary {
             rows.push(SplitRow {
                 file_idx: fi,
                 kind: SplitRowKind::HunkHeader,
                 text: "Binary file".into(),
+            });
+            continue;
+        }
+        if let Some(description) = hunkless_description(file) {
+            rows.push(SplitRow {
+                file_idx: fi,
+                kind: SplitRowKind::HunkHeader,
+                text: description,
             });
             continue;
         }
@@ -487,13 +528,21 @@ fn build_rows_inner(
         rows.push(Row {
             file_idx: fi,
             kind: RowKind::FileHeader,
-            text: file.display_path().to_string(),
+            text: file_title(file),
         });
         if file.is_binary {
             rows.push(Row {
                 file_idx: fi,
                 kind: RowKind::HunkHeader,
                 text: "Binary file".into(),
+            });
+            continue;
+        }
+        if let Some(description) = hunkless_description(file) {
+            rows.push(Row {
+                file_idx: fi,
+                kind: RowKind::HunkHeader,
+                text: description,
             });
             continue;
         }
