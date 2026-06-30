@@ -5,7 +5,7 @@ mod loader;
 mod ui;
 
 use anyhow::Result;
-use clap::{CommandFactory, Parser};
+use clap::Parser;
 use cli::Cli;
 use std::io::IsTerminal;
 
@@ -13,10 +13,11 @@ fn main() -> Result<()> {
     let args = Cli::parse();
 
     // Bare `hew` with no file arg and an interactive stdin has nothing to
-    // review: reading stdin would block on EOF (a Ctrl-D footgun). Show help
-    // and exit non-zero instead. An explicit `-` still means "read stdin".
+    // review: reading stdin would block on EOF (a Ctrl-D footgun). Show the
+    // short help and exit non-zero instead. An explicit `-` still means "read
+    // stdin"; `hew --help` remains the long, agent-oriented manual.
     if args.file.is_none() && std::io::stdin().is_terminal() {
-        Cli::command().print_long_help()?;
+        print!("{}", cli::SHORT_HELP);
         std::process::exit(2);
     }
 

@@ -51,54 +51,98 @@ pub fn base_of(path: &str) -> &str {
     path.rsplit('/').next().unwrap_or(path)
 }
 
-/// Build the collapsible file tree (keeping file order). Directory segments
-/// become `Dir` nodes; files nest under them. Subtrees under a collapsed
-/// directory are omitted. Returns the rows plus a `file_idx -> row` map
-/// (`usize::MAX` for files hidden by a collapse).
+/// Build the collapsible file tree. Directory segments become `Dir` nodes and
+/// repeated directory prefixes are merged into one subtree, with sibling order
+/// based on first appearance in the diff. Subtrees under a collapsed directory
+/// are omitted. Returns the rows plus a `file_idx -> row` map (`usize::MAX` for
+/// files hidden by a collapse).
 pub fn build_sidebar_rows(
     changeset: &Changeset,
     collapsed: &HashSet<String>,
 ) -> (Vec<SbRow>, Vec<usize>) {
-    let mut rows = Vec::new();
-    let mut map = vec![usize::MAX; changeset.files.len()];
-    let mut prev: Vec<String> = Vec::new();
+    #[derive(Default)]
+    struct DirNode {
+        children: Vec<Node>,
+    }
+
+    enum Node {
+        Dir {
+            path: String,
+            name: String,
+            node: DirNode,
+        },
+        File(usize),
+    }
+
+    fn child_dir_mut<'a>(children: &'a mut Vec<Node>, path: &str, name: &str) -> &'a mut DirNode {
+        if let Some(pos) = children
+            .iter()
+            .position(|child| matches!(child, Node::Dir { path: p, .. } if p == path))
+        {
+            match &mut children[pos] {
+                Node::Dir { node, .. } => return node,
+                Node::File(_) => unreachable!(),
+            }
+        }
+
+        children.push(Node::Dir {
+            path: path.to_string(),
+            name: name.to_string(),
+            node: DirNode::default(),
+        });
+        match children.last_mut().unwrap() {
+            Node::Dir { node, .. } => node,
+            Node::File(_) => unreachable!(),
+        }
+    }
+
+    fn flatten(
+        children: &[Node],
+        depth: usize,
+        collapsed: &HashSet<String>,
+        rows: &mut Vec<SbRow>,
+        map: &mut [usize],
+    ) {
+        for child in children {
+            match child {
+                Node::Dir { path, name, node } => {
+                    rows.push(SbRow::Dir {
+                        path: path.clone(),
+                        name: name.clone(),
+                        depth,
+                    });
+                    if !collapsed.contains(path) {
+                        flatten(&node.children, depth + 1, collapsed, rows, map);
+                    }
+                }
+                Node::File(idx) => {
+                    map[*idx] = rows.len();
+                    rows.push(SbRow::File { idx: *idx, depth });
+                }
+            }
+        }
+    }
+
+    let mut root = DirNode::default();
     for (i, f) in changeset.files.iter().enumerate() {
         let dir = dir_of(f.display_path());
-        let segs: Vec<String> = if dir.is_empty() {
+        let segs: Vec<&str> = if dir.is_empty() {
             Vec::new()
         } else {
-            dir.split('/').map(|s| s.to_string()).collect()
+            dir.split('/').collect()
         };
-        // Longest directory prefix shared with the previous file (already open).
-        let mut common = 0;
-        while common < segs.len() && common < prev.len() && segs[common] == prev[common] {
-            common += 1;
+
+        let mut children = &mut root.children;
+        for d in 0..segs.len() {
+            let path = segs[..=d].join("/");
+            children = &mut child_dir_mut(children, &path, segs[d]).children;
         }
-        // Emit any newly-entered directory segments, unless an ancestor is
-        // collapsed (then the whole subtree is hidden).
-        for d in common..segs.len() {
-            let ancestor_collapsed = (0..d).any(|a| collapsed.contains(&segs[..=a].join("/")));
-            if ancestor_collapsed {
-                continue;
-            }
-            rows.push(SbRow::Dir {
-                path: segs[..=d].join("/"),
-                name: segs[d].clone(),
-                depth: d,
-            });
-        }
-        prev = segs.clone();
-        // Hide the file when any ancestor dir is collapsed.
-        let hidden = (0..segs.len()).any(|d| collapsed.contains(&segs[..=d].join("/")));
-        if hidden {
-            continue;
-        }
-        map[i] = rows.len();
-        rows.push(SbRow::File {
-            idx: i,
-            depth: segs.len(),
-        });
+        children.push(Node::File(i));
     }
+
+    let mut rows = Vec::new();
+    let mut map = vec![usize::MAX; changeset.files.len()];
+    flatten(&root.children, 0, collapsed, &mut rows, &mut map);
     (rows, map)
 }
 
@@ -181,6 +225,25 @@ mod tests {
         assert_eq!(map[0], usize::MAX); // src/a.rs hidden
         assert_eq!(map[1], usize::MAX); // src/ui/c.rs hidden
         assert_ne!(map[2], usize::MAX); // top.rs visible
+    }
+
+    #[test]
+    fn reuses_non_contiguous_directories() {
+        let changeset = cs(&[
+            ".github/workflows/a.yml",
+            "src/lib.rs",
+            ".github/workflows/b.yml",
+        ]);
+        let (rows, map) = build_sidebar_rows(&changeset, &HashSet::new());
+        let dirs: Vec<&str> = rows
+            .iter()
+            .filter_map(|r| match r {
+                SbRow::Dir { path, .. } => Some(path.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(dirs, vec![".github", ".github/workflows", "src"]);
+        assert!(map.iter().all(|&r| r != usize::MAX));
     }
 
     #[test]
