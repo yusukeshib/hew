@@ -20,9 +20,25 @@ pub struct Cli {
     pub comments: Option<PathBuf>,
 }
 
-/// Shown on `--help` (terse `about` stays on `-h`). Written so an agent can
-/// drive hew from `hew --help` alone: the channel contract, the turn-based
-/// workflow, and the input/output JSON schemas.
+/// Shown for bare `hew` when stdin is interactive and there is no patch to
+/// review. Keep this terse; `hew --help` is the full agent-oriented manual.
+pub const SHORT_HELP: &str = "\
+review-first terminal patch viewer
+
+Usage: hew [OPTIONS] [FILE]
+
+Arguments:
+  [FILE]  Patch file to review. Omit or use `-` to read from stdin.
+
+Options:
+      --comments <FILE>  Load existing review comments from a sidecar JSON file (immutable input)
+  -h, --help             Print help (the full agent-oriented manual)
+  -V, --version          Print version
+";
+
+/// Shown on `--help`. Written so an agent can drive hew from `hew --help`
+/// alone: the channel contract, the turn-based workflow, and the input/output
+/// JSON schemas.
 const LONG_ABOUT: &str = "\
 review-first terminal patch viewer
 
@@ -81,3 +97,26 @@ OUTPUT — action log (stdout), the minimal delta turning base into reviewed:
     resolve toggled back, leaves no trace in the log.
 
 Note: hew parses plain unified diffs, not git format-patch mailbox output.";
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use clap::CommandFactory;
+
+    #[test]
+    fn bare_help_is_short() {
+        assert!(SHORT_HELP.contains("Usage: hew [OPTIONS] [FILE]"));
+        assert!(!SHORT_HELP.contains("CHANNELS"));
+        assert!(!SHORT_HELP.contains("TURN-BASED WORKFLOW"));
+    }
+
+    #[test]
+    fn clap_help_is_long_manual() {
+        let mut help = Vec::new();
+        Cli::command().write_long_help(&mut help).unwrap();
+        let help = String::from_utf8(help).unwrap();
+        assert!(help.contains("CHANNELS"));
+        assert!(help.contains("TURN-BASED WORKFLOW"));
+        assert!(help.contains("INPUT — comment sidecar"));
+    }
+}
